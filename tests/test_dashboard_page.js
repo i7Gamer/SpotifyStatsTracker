@@ -20,8 +20,8 @@ global.document = {
   createElement(tag) { return { tag, classList: { add() {} }, appendChild() {} }; },
 };
 
-const { calendarTooltipLabel, friendsStripSignature, friendsChipLink,
-        progressPercent, pollIsStale } = require('../static/js/dashboard-page.js');
+const { calendarTooltipLabel, friendsStripSignature, friendsChipAnchor,
+        friendsChipLink, progressPercent, pollIsStale } = require('../static/js/dashboard-page.js');
 
 function run(name, fn) {
   try { fn(); console.log(`ok - ${name}`); }
@@ -159,6 +159,21 @@ run('nothing to link to is text, not an empty anchor', () => {
 
 run('a missing name renders empty rather than "undefined"', () => {
   assert.strictEqual(friendsChipLink(undefined, '/song/t1', 'x').textContent, '');
+});
+
+run('the cover wrapper is the same link with nothing written into it', () => {
+  // The cover art links to the track like its title does, so it shares the
+  // anchor builder - but it holds an <img>, and a stray '' textContent would
+  // be a text node beside it.
+  const el = friendsChipAnchor('/song/t1', 'friends-listening-cover-link');
+
+  assert.strictEqual(el.tag, 'a');
+  assert.strictEqual(el.href, '/song/t1');
+  assert.strictEqual(el.textContent, undefined);
+});
+
+run('a cover with no track to link to wraps nothing clickable', () => {
+  assert.strictEqual(friendsChipAnchor('', 'friends-listening-cover-link').tag, 'span');
 });
 
 // --- the progress bar between polls ------------------------------------------

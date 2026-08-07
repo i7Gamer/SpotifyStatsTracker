@@ -4227,6 +4227,16 @@ html.theme-red {
   font-weight: 600;
 }
 
+/* The artwork links to the track like its title does, so the img is wrapped -
+   which makes this anchor the flex item, and the cover's own flex-shrink no
+   longer reaches anything that can shrink. line-height: 0 keeps the wrapper
+   from adding a descender's worth of height under a 30px image. */
+.friends-listening-cover-link {
+  display: block;
+  line-height: 0;
+  flex-shrink: 0;
+}
+
 .friends-listening-cover {
   width: 30px;
   height: 30px;

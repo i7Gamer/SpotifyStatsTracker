@@ -194,6 +194,25 @@ class TestTheChipIsThreeLinks(unittest.TestCase):
     def test_each_artist_links_to_that_artist(self):
         self.assertIn("each.name, each.url", self._renderFriends())
 
+    def test_the_cover_goes_where_the_track_title_does(self):
+        """It is the track's own artwork, so clicking it should not do
+        something different from clicking its name."""
+        rendered = self._renderFriends()
+
+        self.assertIn("friendsChipAnchor(friend.trackUrl, 'friends-listening-cover-link')",
+                      rendered)
+        self.assertIn("coverLink.appendChild(cover)", rendered)
+
+    def test_the_cover_link_is_not_a_second_tab_stop_to_the_same_place(self):
+        """The title beside it already links there, and four chips would
+        otherwise cost eight tab stops to reach four destinations. Both halves
+        are needed: aria-hidden alone would leave a focusable element hidden
+        from the screen reader reading it."""
+        rendered = self._renderFriends()
+
+        self.assertIn("coverLink.setAttribute('aria-hidden', 'true')", rendered)
+        self.assertIn("coverLink.tabIndex = -1", rendered)
+
     def test_no_url_is_built_in_the_browser(self):
         """Every internal path goes through url_for server-side; a literal
         '/song/' here would be unroutable and silently wrong after a rename."""
@@ -294,6 +313,13 @@ class TestStripStyling(unittest.TestCase):
 
         self.assertIn("text-decoration: none", block)
         self.assertIn("color: inherit", block)
+
+    def test_the_cover_link_does_not_squash_the_artwork(self):
+        """Wrapping the img in an <a> made the ANCHOR the flex item, so the
+        cover's own flex-shrink no longer reaches the thing that can shrink."""
+        block = self._block(".friends-listening-cover-link")
+
+        self.assertIn("flex-shrink: 0", block)
 
     def test_each_link_highlights_on_its_own_hover(self):
         """The whole-chip rule this replaced lit the track title while the

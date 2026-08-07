@@ -117,22 +117,19 @@ function friendsStripSignature(friends, moreCount) {
   }).join('\u001e') + '\u001d' + moreCount;
 }
 
-// One of the three things a chip names, as a link - or as plain text where
-// there is nothing to link to (a track with no id, artists the connect-state
-// fallback knows only by name).
+// The <a> behind anything a chip links, or an inert <span> where there is
+// nothing to link to (a track with no id, artists the connect-state fallback
+// knows only by name). An <a href=""> would be a link back to the current
+// page, which is worse than no link at all.
 //
 // Internal or external is read off the URL rather than carried as a payload
 // field of its own: every internal link is built with url_for and so arrives
 // as an app-relative path, and the only other thing the payload ever holds is
 // a Spotify URL. Only that one opens in a new tab - following a link that
 // stays inside the app should not spawn one.
-//
-// textContent, not innerHTML: every one of these strings is another user's
-// data, and two of them are names Spotify supplied.
-function friendsChipLink(text, url, className) {
+function friendsChipAnchor(url, className) {
   var el = document.createElement(url ? 'a' : 'span');
   el.className = className;
-  el.textContent = text || '';
   if (url) {
     el.href = url;
     if (url.charAt(0) !== '/') {
@@ -140,6 +137,17 @@ function friendsChipLink(text, url, className) {
       el.rel = 'noreferrer noopener';
     }
   }
+  return el;
+}
+
+// One of the three things a chip NAMES. The cover art uses the anchor above
+// directly, since it wraps an image rather than text.
+//
+// textContent, not innerHTML: every one of these strings is another user's
+// data, and two of them are names Spotify supplied.
+function friendsChipLink(text, url, className) {
+  var el = friendsChipAnchor(url, className);
+  el.textContent = text || '';
   return el;
 }
 
@@ -338,12 +346,12 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     renderedFriends = signature;
     friendsChips.textContent = '';
     friends.forEach(function (friend) {
-      // The chip is a container of three INDEPENDENT links, not one link
-      // wrapping everything: it names a person, a track and some artists, and
-      // those are three different places to go. (It used to be a single <a> to
-      // /compare, which made the track title a link to a page about the
-      // friend.) Every href is built server-side - see routes/system.py's
-      // _friendChip - so they all go through url_for like the rest of the app.
+      // The chip is a container of INDEPENDENT links, not one link wrapping
+      // everything: it shows a person, a track and some artists, and those are
+      // three different places to go. (It used to be a single <a> to /compare,
+      // which made the track title a link to a page about the friend.) Every
+      // href is built server-side - see routes/system.py's _friendChip - so
+      // they all go through url_for like the rest of the app.
       var chip = document.createElement('div');
       chip.className = 'friends-listening-chip';
 
@@ -356,7 +364,17 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
         ? '/img/' + encodeURIComponent(USERNAME) + '/tracks/' + encodeURIComponent(friend.imageId) + '.jpeg'
         : window.PLACEHOLDER_IMG;
       cover.onerror = function () { this.onerror = null; this.src = window.PLACEHOLDER_IMG; };
-      chip.appendChild(cover);
+      // The artwork is the track's, so it goes where the track's title goes -
+      // the same destination, not a fourth one. Kept out of the tab order and
+      // out of the accessibility tree because it is a DUPLICATE of the title
+      // link beside it: four chips would otherwise cost eight tab stops to
+      // reach four places, and a screen reader would announce every track
+      // twice. The img is alt="" already, so nothing is lost by hiding it.
+      var coverLink = friendsChipAnchor(friend.trackUrl, 'friends-listening-cover-link');
+      coverLink.setAttribute('aria-hidden', 'true');
+      coverLink.tabIndex = -1;
+      coverLink.appendChild(cover);
+      chip.appendChild(coverLink);
 
       var meta = document.createElement('div');
       meta.className = 'friends-listening-meta';
@@ -555,6 +573,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     calendarTooltipLabel: calendarTooltipLabel,
     friendsStripSignature: friendsStripSignature,
+    friendsChipAnchor: friendsChipAnchor,
     friendsChipLink: friendsChipLink,
     progressPercent: progressPercent,
     pollIsStale: pollIsStale,
