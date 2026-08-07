@@ -174,6 +174,36 @@ class TestShell(ChartsHtmxTestCase):
     def test_the_placeholder_triggers_the_first_load(self):
         self.assertIn('hx-trigger="load"', self._shell())
 
+    def test_the_first_load_swaps_into_the_card_and_not_the_placeholder(self):
+        """The one thing that makes the canvases draw. charts-page.js redraws
+        in htmx:afterSwap and keys its guard on the swapped target being
+        #chartsCard, so the first load has to land THERE. htmx defaults a
+        request's target to the element that fired it, and the placeholder is
+        not that element - without an hx-target on the card for it to inherit
+        it swaps into itself, afterSwap carries an id-less div, the guard bails,
+        and the page paints eight blank canvases under their headings.
+
+        Asserted on the card rather than on the placeholder because inheriting
+        it is the point: /history and /genres put the same four attributes on
+        their swap container for the same reason (see their templates)."""
+        body = self._shell()
+        card = body[body.index('id="chartsCard"'):]
+        card = card[:card.index('hx-trigger="load"')]   #< the card's own tag only
+
+        self.assertIn('hx-target="#chartsCard"', card)
+        self.assertIn('hx-swap="innerHTML"', card)
+
+    def test_the_first_load_dims_the_card_and_joins_the_abort_queue(self):
+        """The other two inherited attributes: a slow first load gets the same
+        fade every filter change gets, and a filter changed while it is still
+        in flight aborts it instead of racing it."""
+        body = self._shell()
+        card = body[body.index('id="chartsCard"'):]
+        card = card[:card.index('hx-trigger="load"')]
+
+        self.assertIn('hx-indicator="#chartsCard"', card)
+        self.assertIn('hx-sync="#chartsCard:replace"', card)
+
     def test_filter_changes_replace_the_url_and_never_push_it(self):
         body = self._shell()
 

@@ -110,7 +110,20 @@
      (and its abort-path cleanup) did by hand - and it dims the whole card
      rather than just the canvas wraps, because the headings now change with the
      range too. #}
-  <section class="card chart-card htmx-fade-target" id="chartsCard">
+  {# The hx-* here are inherited by everything swapped into it - which on this
+     page means the first-load placeholder below, and it is load-bearing rather
+     than tidy. htmx defaults a request's target to the element that FIRED it,
+     so without hx-target the placeholder swapped into itself: the card arrived
+     nested a level deeper, htmx:afterSwap carried an id-less <div>, and
+     charts-page.js's guard (which keys on the target being #chartsCard) bailed
+     - leaving eight blank canvases under their headings until the first filter
+     change, which goes through the form and so did land on the card.
+     /history and /genres carry the same four attributes on their containers. #}
+  <section class="card chart-card htmx-fade-target" id="chartsCard"
+           hx-target="#chartsCard"
+           hx-swap="innerHTML"
+           hx-sync="#chartsCard:replace"
+           hx-indicator="#chartsCard">
     {# The first load. Living on the placeholder rather than on the container
        means it fires once and is then swapped away, so there is no separate
        "have we loaded yet" state to keep.
