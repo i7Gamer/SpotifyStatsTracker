@@ -35,12 +35,14 @@ from pathlib import Path
 
 try:
     import Database.db as db
-    from Database.db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, BEHAVIORAL_COLUMNS
+    from Database.db import (ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
+                             BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH)
     from Database.secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
                                        keyFingerprint)
 except ModuleNotFoundError:
     import db
-    from db import ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, BEHAVIORAL_COLUMNS
+    from db import (ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
+                    BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH)
     from secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
                               keyFingerprint)
 
@@ -64,6 +66,14 @@ SKIP_RATE_PRIOR_WEIGHT = 10
 # processed - covers restricted/blanked albums whose metadata Spotify may fill in
 # (or unblock) later, without hammering the API for permanently dateless albums.
 ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
+
+# How long the ISRC backfiller waits before re-asking about a track Spotify
+# returned no ISRC for. Longer than the album window (which chases metadata that
+# genuinely gets filled in later) because an ISRC is assigned once, when the
+# recording is registered - a track that has none today is very unlikely to
+# grow one next week, and the catalog is ~25k tracks against a 50-per-request
+# endpoint. Tracks that DO get an ISRC leave the queue permanently.
+TRACK_ISRC_RETRY_SECONDS = 30 * 24 * 3600
 
 # How long the Last.fm genre backfiller waits before re-attempting an entity
 # whose lookup came back empty/not-found. Entities that got real (non-inherited)

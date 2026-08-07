@@ -187,7 +187,9 @@ class TestMetadataBackfiller(DatabaseTestCase):
 
         Database._active_backfills.clear()
         db.backfiller_stop_event = MagicMock()
-        db.backfiller_stop_event.is_set.side_effect = [False, True]
+        #< loop head, the ISRC step's shutdown guard, loop head again - see the
+        #  same three-value sequence in test_backfiller_loop_fetches_and_deduplicates
+        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
         db.backfiller_stop_event.wait.return_value = False
 
         db._metadataBackfillLoop()
@@ -299,8 +301,11 @@ class TestMetadataBackfiller(DatabaseTestCase):
 
         # Mock backfiller_stop_event to break the loop after one run
         db.backfiller_stop_event = MagicMock()
-        # Side effect: first call returns False (do run), second call returns True (exit loop)
-        db.backfiller_stop_event.is_set.side_effect = [False, True]
+        # Side effect: loop head (do run), the ISRC step's own shutdown guard
+        # (keep going), then the loop head again (exit). The ISRC step is a
+        # no-op here regardless - its queue only accepts real 22-char Spotify
+        # ids, and these fixtures use short fake ones.
+        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
         db.backfiller_stop_event.wait.return_value = False
 
         # Run one iteration of the backfiller
@@ -355,7 +360,11 @@ class TestMetadataBackfiller(DatabaseTestCase):
         db.repo.getAlbumsMissingMetadata = MagicMock(side_effect=RuntimeError("db unavailable"))
 
         db.backfiller_stop_event = MagicMock()
-        db.backfiller_stop_event.is_set.side_effect = [False, True]
+        #< loop head, the ISRC step's shutdown guard, loop head again - see the
+        #  same three-value sequence in test_backfiller_loop_fetches_and_deduplicates.
+        #  The ISRC step runs BEFORE the album queue, so it must not swallow the
+        #  RuntimeError this test is checking the telemetry for.
+        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
         db.backfiller_stop_event.wait.return_value = False
 
         db._metadataBackfillLoop()

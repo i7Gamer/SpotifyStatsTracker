@@ -122,6 +122,23 @@ class SchemaQueries:
             if "created_reason" not in columns:
                 conn.execute("ALTER TABLE tracks ADD COLUMN created_reason TEXT")
 
+    def addTrackIsrcAttemptedColumnIfMissing(self) -> None:
+        """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
+        a tracks table that already existed before isrc_attempted_at was added
+        needs an explicit ALTER TABLE (migrate1_47_0). Guarded so re-running the
+        migration against an already-migrated database doesn't fail.
+
+        Deliberately not indexed: the ISRC queue is a bounded LIMIT scan over a
+        ~25k-row catalog that runs once per backfill cycle, and SCHEMA is
+        re-stamped onto older databases BEFORE their migrations run - an index
+        naming a column that doesn't exist yet would fail stamping (the same trap
+        documented above the plays table for is_skip)."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+        if "isrc_attempted_at" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE tracks ADD COLUMN isrc_attempted_at REAL")
+
     def addPlayMetadataColumnsIfMissing(self) -> None:
         """Add created_at and created_reason columns to plays table if missing.
         Guarded so re-running the migration doesn't fail."""

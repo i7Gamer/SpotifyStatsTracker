@@ -133,7 +133,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     created_at      REAL,
     created_reason  TEXT,
     lastfm_attempted_at REAL,
-    availability_reason TEXT
+    availability_reason TEXT,
+    isrc_attempted_at REAL
 );
 -- tracks.album_id is a foreign key filtered/joined by every "tracks on this
 -- album" lookup (album detail, artist-per-album rollups, play scans, genre

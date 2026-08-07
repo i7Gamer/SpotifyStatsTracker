@@ -96,6 +96,13 @@ class TrackQueries:
         # a fallback row (synthetic or restricted, see db.py) being overwritten by real
         # metadata drops the fallback marker, so the UI stops badging a track that
         # turned out to be fully available on Spotify after all.
+        #
+        # isrc follows the same blank-isn't-data rule as duration_ms, and for a
+        # sharper reason: NO live ingest path supplies one. The pathfinder client
+        # cannot expose ISRCs (Database/Spotify/formatting.py) and the export
+        # importer has no such field, so both send "". Assigning excluded.isrc
+        # unconditionally meant the Web-API backfiller's value survived only until
+        # the track's next play - which, for anything in rotation, is hours.
         conn.execute(
             """
             INSERT INTO tracks (id, name, url, album_id, image_id, duration_ms, explicit, isrc, disc_number, track_number, created_at, created_reason, availability_reason)
@@ -103,7 +110,8 @@ class TrackQueries:
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, url=excluded.url, album_id=excluded.album_id, image_id=excluded.image_id,
                 duration_ms = CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms ELSE tracks.duration_ms END,
-                explicit=excluded.explicit, isrc=excluded.isrc,
+                explicit=excluded.explicit,
+                isrc = CASE WHEN excluded.isrc <> '' THEN excluded.isrc ELSE tracks.isrc END,
                 disc_number=excluded.disc_number, track_number=excluded.track_number,
                 availability_reason=excluded.availability_reason,
                 created_at=CASE
@@ -605,6 +613,58 @@ class TrackQueries:
             conn.execute(
                 f"UPDATE albums SET backfill_attempted_at = ? WHERE id IN ({placeholders})",
                 [time.time(), *albumIds],
+            )
+
+    def getTracksMissingIsrc(self, limit: int) -> list[str]:
+        """Real Spotify tracks with no ISRC recorded yet.
+
+        Fabricated ids are excluded by length: the export importer's surrogate
+        is a bare 32-char md5 of "name::artist" with no prefix to test for, so
+        shape is the only discriminator (SPOTIFY_TRACK_ID_LENGTH / the shared
+        looksLikeSpotifyTrackId, whose rule this mirrors in SQL). Asking Spotify
+        about a surrogate 404s forever.
+
+        isrc_attempted_at rate-limits retries the same way albums use
+        backfill_attempted_at - see TRACK_ISRC_RETRY_SECONDS for why this window
+        is the longer one."""
+        conn = self._conn()
+        retryCutoff = time.time() - TRACK_ISRC_RETRY_SECONDS
+        rows = conn.execute(
+            """
+            SELECT id FROM tracks
+            WHERE (isrc IS NULL OR isrc = '')
+              AND LENGTH(id) = ?
+              AND (isrc_attempted_at IS NULL OR isrc_attempted_at < ?)
+            LIMIT ?
+            """,
+            (SPOTIFY_TRACK_ID_LENGTH, retryCutoff, limit),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    def updateTrackIsrcs(self, isrcByTrackId: dict[str, str]) -> None:
+        """Store the ISRCs a backfill response carried. Blank values are skipped
+        rather than written: an absent external_ids.isrc is "Spotify didn't say",
+        not "this recording has no ISRC", and writing '' would be
+        indistinguishable from the never-fetched state the queue reads."""
+        pairs = [(isrc, trackId) for trackId, isrc in isrcByTrackId.items() if isrc]
+        if not pairs:
+            return
+        conn = self._conn()
+        with conn:
+            conn.executemany("UPDATE tracks SET isrc = ? WHERE id = ?", pairs)
+
+    def markTracksIsrcAttempted(self, trackIds: list[str]) -> None:
+        """Stamp tracks as asked-about so they leave the queue for
+        TRACK_ISRC_RETRY_SECONDS - including the ones Spotify returned no ISRC
+        for, which would otherwise be re-requested every cycle forever."""
+        if not trackIds:
+            return
+        conn = self._conn()
+        placeholders = ",".join("?" for _ in trackIds)
+        with conn:
+            conn.execute(
+                f"UPDATE tracks SET isrc_attempted_at = ? WHERE id IN ({placeholders})",
+                [time.time(), *trackIds],
             )
 
     def updateAlbumMetadata(self, album_id: str, release_date: float, total_tracks: int, name: str | None = None) -> None:

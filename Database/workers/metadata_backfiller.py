@@ -26,6 +26,10 @@ from Database.utils import flaskDebugEnabled
 # cookie-client fallback's per-cycle batch so both paths pace identically.
 SPOTIFY_BULK_ALBUM_LIMIT = 20
 
+# The Web API's GET /v1/tracks hard cap on ids per request. Higher than the
+# album cap because it is a different endpoint, not because ISRCs are cheaper.
+SPOTIFY_BULK_TRACK_LIMIT = 50
+
 
 class MetadataBackfillMixin:
     """The Spotify Web-API metadata backfiller (missing album/track dates, artistless tracks)."""
@@ -66,6 +70,66 @@ class MetadataBackfillMixin:
             artists.append({"id": artistId, "name": name, "url": url, "imageId": artistId})
         return artists
 
+    def _backfillTrackIsrcs(self, creds: dict | None, stop_event: threading.Event) -> None:
+        """Fill in tracks.isrc from GET /v1/tracks, one batch per backfill cycle.
+
+        Web-API only, with no cookie-client fallback - and that is a property of
+        the data, not an omission. The pathfinder client cannot expose ISRCs at
+        all (Database/Spotify/formatting.py), so an instance whose users have no
+        Web-API credentials simply has no ISRC source; attempting the fallback
+        would burn a request per track to learn nothing. Nothing is stamped in
+        that case either, so the queue is intact the moment credentials arrive.
+
+        The ISRC is what makes "the single and the album track are the same
+        recording" answerable without guessing at names: both releases carry the
+        issuer's identifier for the master. (A remaster is a new master and gets
+        its own ISRC, so this is a precise key, not a fuzzy one.)"""
+        if not (creds and creds.get("client_id") and creds.get("client_secret")
+                and creds.get("refresh_token")):
+            return
+        if stop_event.is_set():
+            return
+
+        target_ids = self.repo.getTracksMissingIsrc(SPOTIFY_BULK_TRACK_LIMIT)
+        if not target_ids:
+            return
+
+        from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+        import requests
+
+        access_token = _refresh_spotify_access_token(
+            creds["client_id"], creds["client_secret"], creds["refresh_token"])
+        if not access_token:
+            _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token; skipping ISRC backfill",
+                                   self.user)
+            return
+
+        resp = requests.get(f"https://api.spotify.com/v1/tracks?ids={','.join(target_ids)}",
+                            headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        if resp.status_code != 200:
+            # Not a definitive "no ISRC" - a 429/5xx stamped as attempted would
+            # park these tracks for the whole retry window over a transient.
+            if flaskDebugEnabled():
+                _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned status %d",
+                                       self.user, resp.status_code)
+            return
+
+        isrcByTrackId = {}
+        for track_raw in resp.json().get("tracks") or []:
+            if not track_raw:
+                continue   #< an id Spotify has no data for; still counts as attempted below
+            track_id = track_raw.get("id")
+            isrc = (track_raw.get("external_ids") or {}).get("isrc")
+            if track_id and isrc:
+                isrcByTrackId[track_id] = isrc
+
+        self.repo.updateTrackIsrcs(isrcByTrackId)
+        self.repo.markTracksIsrcAttempted(target_ids)
+
+        if isrcByTrackId:
+            _dbmod.logger.info("[Backfiller-%s] Recorded ISRCs for %d/%d track(s)",
+                                self.user, len(isrcByTrackId), len(target_ids))
+
     def _metadataBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Periodically queries Spotify for missing album release dates and tracks.
 
@@ -93,6 +157,15 @@ class MetadataBackfillMixin:
 
                     # 2. Get Spotify API credentials if configured
                     creds = self.getUserSpotifyCredentials()
+
+                    # 2b. One ISRC batch per cycle. Deliberately ahead of the
+                    # album queue's early-out below: albums run dry long before
+                    # tracks do (the album queue only holds rows with MISSING
+                    # metadata, while every track in the catalog starts without
+                    # an ISRC), so placing this after the `continue` would have
+                    # meant the ISRC backfill silently stopped the moment album
+                    # metadata was complete - which is the steady state.
+                    self._backfillTrackIsrcs(creds, stop_event)
 
                     # 3. Query up to N missing album IDs. Albums whose tracks
                     # lack artist links piggyback on the same fetch: the album
