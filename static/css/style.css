@@ -542,7 +542,7 @@ button {
 }
 
 .change-negative {
-  color: #ff6f6f;
+  color: var(--danger);
 }
 
 .grid {

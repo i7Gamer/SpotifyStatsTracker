@@ -85,6 +85,21 @@ class TestRankMoveColour(unittest.TestCase):
         self.assertEqual(self._declaration(".change-positive", "color"),
                          self._declaration(".rank-move-up", "color"))
 
+    def test_the_summary_deltas_and_the_badge_share_one_negative_red(self):
+        """And the same on the other side: `.change-negative` carried its own
+        red (#ff6f6f) next to --danger's #e05252 for the identical meaning."""
+        self.assertEqual(self._declaration(".change-negative", "color"),
+                         self._declaration(".rank-move-down", "color"))
+
+    def test_every_better_or_worse_colour_in_the_app_is_one_of_the_two_tokens(self):
+        """The point of the pair: a fifth hex for "good" or "bad" should have to
+        go through a token, so a theme or a contrast fix has one place to land."""
+        for selector in (".change-positive", ".change-negative",
+                         ".rank-move-up", ".rank-move-down"):
+            with self.subTest(selector=selector):
+                self.assertIn(self._declaration(selector, "color"),
+                              (f"var({_POSITIVE_TOKEN})", f"var({_NEGATIVE_TOKEN})"))
+
     def _resolve(self, value):
         """`value` with a single `var(--token)` indirection followed into
         `:root`; returned unchanged if it is already a literal."""
