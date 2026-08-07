@@ -1683,34 +1683,36 @@ class TestCompareRoute(AppTestCase):
 
         self.assertIn('href="/profile/sharing"', self._heroSection(client))
 
-    def test_manage_shares_carries_the_shared_button_class(self):
-        """.button is where the page's hover fill and active press live (see
-        static/css/style.css) - the link opts into them by wearing the class
-        rather than by growing a second set of rules under its own name."""
+    def test_manage_shares_is_a_sentence_link_in_the_hero_copy(self):
+        """Same shape as the Import page's "Spotify privacy settings" link: it
+        finishes a sentence in the hero paragraph rather than standing on its
+        own. Being inside the <p> IS the styling - `.hero-content p a` gives it
+        the site's text-link treatment and its color-to-accent hover."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        hero = self._heroSection(client)
+        paragraph = hero[hero.index("<p>"):hero.rindex("</p>")]
+
+        self.assertIn('href="/profile/sharing"', paragraph)
+
+    def test_manage_shares_is_not_a_standalone_control(self):
+        """The button treatment it briefly had gave one sentence of hero copy
+        two competing calls to action."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
         hero = self._heroSection(client)
 
-        self.assertIn('class="button compare-manage-shares"', hero)
-
-    def test_manage_shares_is_not_inside_a_hero_paragraph(self):
-        """`.hero-content p a` restyles link color on both rest and hover at a
-        higher specificity than .button, so a <p> wrapper would silently undo
-        the button's own colors."""
-        self._accept("alice", "bob")
-        client = self._loginAs("alice")
-
-        hero = self._heroSection(client)
-        afterLastParagraph = hero[hero.rindex("</p>"):]
-
-        self.assertIn('class="button compare-manage-shares"', afterLastParagraph)
+        self.assertNotIn("compare-manage-shares", hero)
+        self.assertNotIn('class="button"', hero)
 
 
-class TestManageSharesButtonStyling(unittest.TestCase):
-    """The hover/press affordance the Manage shares link inherits from .button
-    (templates/compare.html). Asserted against the stylesheet because that is
-    where it is decided - the template only names the class."""
+class TestHeroTextLinkStyling(unittest.TestCase):
+    """What a link inside hero copy looks like - the treatment both the Compare
+    and Import heroes get by putting the anchor in the paragraph and nothing
+    else. Asserted against the stylesheet because that is where it is decided;
+    the templates only supply the <p> a is nested in."""
 
     def setUp(self):
         cssPath = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
@@ -1722,39 +1724,30 @@ class TestManageSharesButtonStyling(unittest.TestCase):
         self.assertIsNotNone(match, f"{selector} missing from style.css")
         return match.group(1)
 
-    def test_button_hover_fills_with_the_accent(self):
-        block = self._block(".button:hover")
+    def test_a_hero_link_reads_as_emphasis_not_as_a_link(self):
+        """It carries no underline, so weight and the full-strength text color
+        against the muted paragraph are what set it apart at rest."""
+        block = self._block(".hero-content p a")
 
-        self.assertIn("background: var(--accent)", block)
-        self.assertIn("color: white", block)
+        self.assertIn("color: var(--text)", block)
+        self.assertIn("font-weight: 600", block)
+        self.assertIn("text-decoration: none", block)
 
-    def test_button_transitions_into_that_hover_state(self):
-        """Without the transition the fill snaps, which reads as a repaint
-        rather than as feedback."""
-        self.assertIn("transition:", self._block(".button"))
+    def test_hovering_a_hero_link_takes_it_to_the_accent(self):
+        self.assertIn("color: var(--accent)", self._block(".hero-content p a:hover"))
 
-    def test_manage_shares_takes_a_line_of_its_own(self):
-        """.button is inline-flex, and so is the taste-match badge right above
-        it once the <=700px rule drops that badge back into the flow - two
-        inline boxes with room to spare would share a line, baseline-aligned at
-        two very different text sizes. Block-level, but only as wide as its own
-        label."""
-        block = self._block(".compare-manage-shares")
+    def test_that_hover_is_eased_rather_than_snapped(self):
+        self.assertIn("transition: color", self._block(".hero-content p a"))
 
-        self.assertIn("display: flex", block)
-        self.assertIn("width: fit-content", block)
+    def test_the_compare_link_has_no_rule_of_its_own_left(self):
+        """It is styled by being hero copy, full stop - a leftover
+        .compare-manage-shares rule would be styling nothing.
 
-    def test_the_taste_match_badge_is_still_the_inline_box_that_forces_this(self):
-        """If it ever stops being inline-level the rule above is dead weight."""
-        self.assertIn("display: inline-flex", self._block(".taste-match"))
-
-    def test_manage_shares_only_positions_itself(self):
-        """Its own rule must not re-set anything .button decides - the two are
-        the same specificity, so whichever lands later would win by accident."""
-        block = self._block(".compare-manage-shares")
-
-        for property_ in ("color", "background", "border", "font-size", "padding"):
-            self.assertNotIn(property_ + ":", block)
+        assertIsNone rather than assertNotIn: the subject here is the whole
+        stylesheet, and a failing assertNotIn prints all of it."""
+        self.assertIsNone(
+            re.search(r"\.compare-manage-shares\b", self.css),
+            "style.css still has a .compare-manage-shares rule, matching nothing")
 
 
 if __name__ == "__main__":

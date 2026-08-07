@@ -29,20 +29,20 @@
 <section class="hero">
   <div class="hero-content">
     <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername | displayName }}</span></h1>
-    <p>See how your listening stats stack up against someone who shares their data with you.</p>
-    {% include '_compare_taste_match.html' %}
     {# Adding or dropping a counterpart is what you reach for while looking at
-       this page, so it sits with the hero copy rather than orphaned in the gap
-       above the filters. A link rather than a panel: this page only exists once
-       you already have an accepted share, so it can't be the only way in - the
-       badges and compare_empty.html point at the same place.
+       this page, so the way there finishes the sentence that explains what the
+       page is - the same shape as the Import page's "Spotify privacy settings"
+       link. Sitting inside this <p> IS the styling: `.hero-content p a` gives
+       every hero link the site's text-link weight and its hover to the accent,
+       so there is no rule under this link's own name to keep in step.
 
-       .button is the whole styling: same resting outline, hover fill and press
-       as every other button on the site. Deliberately NOT inside a <p> - the
-       `.hero-content p a` rules outrank .button on both colors and would leave
-       an outlined button whose text ignores its own hover. #}
-    <a class="button compare-manage-shares"
-       href="{{ url_for('profileSharingPage') }}">Manage shares</a>
+       It reads as a mention rather than a call to action on purpose. This page
+       only exists once you already have an accepted share, so it is never the
+       only way in - the badges below and compare_empty.html both point at the
+       same place. #}
+    <p>See how your listening stats stack up against someone who shares their data with you.
+       To add or remove people, visit your <a href="{{ url_for('profileSharingPage') }}">share settings</a>.</p>
+    {% include '_compare_taste_match.html' %}
   </div>
 </section>
 

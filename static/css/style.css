@@ -985,22 +985,6 @@ progress::-moz-progress-bar {
   padding: 0.5rem 2rem;
 }
 
-/* The Compare page's way back to share management (see compare.html). It is a
-   .button, and everything about how it LOOKS is decided there - all this rule
-   does is place it in the hero. Setting anything else here would be a coin
-   toss: .button matches at the same specificity and lands later, which is also
-   why display is claimed from a child selector rather than this one.
-
-   Block-level so it gets a line to itself: .button is inline-flex, and the
-   taste-match badge directly above it is too once the <=700px rule drops that
-   badge back into the flow - side by side they'd baseline-align a 1.6rem
-   number against a 0.95rem label. fit-content keeps it button-width. */
-.hero-content > .compare-manage-shares {
-  display: flex;
-  width: fit-content;
-  margin-top: 18px;
-}
-
 .login-card {
   width: min(420px, 100%);
   padding: 32px;
