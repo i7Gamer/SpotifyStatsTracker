@@ -70,7 +70,7 @@ class MetadataBackfillMixin:
             artists.append({"id": artistId, "name": name, "url": url, "imageId": artistId})
         return artists
 
-    def _backfillTrackIsrcs(self, creds: dict | None, stop_event: threading.Event) -> None:
+    def _backfillTrackIsrcs(self, access_token: str | None, stop_event: threading.Event) -> None:
         """Fill in tracks.isrc from GET /v1/tracks, one batch per backfill cycle.
 
         Web-API only, with no cookie-client fallback - and that is a property of
@@ -79,43 +79,52 @@ class MetadataBackfillMixin:
         Web-API credentials simply has no ISRC source; attempting the fallback
         would burn a request per track to learn nothing. Nothing is stamped in
         that case either, so the queue is intact the moment credentials arrive.
+        `access_token` is None exactly then - and also when a refresh failed,
+        which wants the same treatment for the same reason.
 
         The ISRC is what makes "the single and the album track are the same
         recording" answerable without guessing at names: both releases carry the
         issuer's identifier for the master. (A remaster is a new master and gets
-        its own ISRC, so this is a precise key, not a fuzzy one.)"""
-        if not (creds and creds.get("client_id") and creds.get("client_secret")
-                and creds.get("refresh_token")):
-            return
+        its own ISRC, so this is a precise key, not a fuzzy one.)
+
+        Nothing raises out of here. This step runs FIRST in the cycle (see the
+        loop, which explains why), so an escaping exception is caught by the
+        per-cycle handler and costs the album and artist-link repair their whole
+        turn - a DNS blip on this request stalling unrelated work for five
+        minutes."""
+        #< the shutdown check first: a worker being torn down should stop
+        #  whether or not this instance has credentials, and it is the one gate
+        #  here that is about the process rather than about the data
         if stop_event.is_set():
+            return
+        if not access_token:
             return
 
         target_ids = self.repo.getTracksMissingIsrc(SPOTIFY_BULK_TRACK_LIMIT)
         if not target_ids:
             return
 
-        from Database.Listeners.spotifyListener import _refresh_spotify_access_token
         import requests
 
-        access_token = _refresh_spotify_access_token(
-            creds["client_id"], creds["client_secret"], creds["refresh_token"])
-        if not access_token:
-            _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token; skipping ISRC backfill",
-                                   self.user)
-            return
-
-        resp = requests.get(f"https://api.spotify.com/v1/tracks?ids={','.join(target_ids)}",
-                            headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
-        if resp.status_code != 200:
-            # Not a definitive "no ISRC" - a 429/5xx stamped as attempted would
-            # park these tracks for the whole retry window over a transient.
-            if flaskDebugEnabled():
-                _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned status %d",
-                                       self.user, resp.status_code)
+        try:
+            resp = requests.get(f"https://api.spotify.com/v1/tracks?ids={','.join(target_ids)}",
+                                headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+            if resp.status_code != 200:
+                # Not a definitive "no ISRC" - a 429/5xx stamped as attempted would
+                # park these tracks for the whole retry window over a transient.
+                if flaskDebugEnabled():
+                    _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned status %d",
+                                           self.user, resp.status_code)
+                return
+            payload = resp.json()
+        except Exception as e:
+            #< a timeout, a reset, a 200 that isn't JSON. Same verdict as a 429:
+            #  nothing learned, so nothing stamped, and the ids stay queued
+            _dbmod.logger.warning("[Backfiller-%s] ISRC lookup failed: %s", self.user, e)
             return
 
         isrcByTrackId = {}
-        for track_raw in resp.json().get("tracks") or []:
+        for track_raw in payload.get("tracks") or []:
             if not track_raw:
                 continue   #< an id Spotify has no data for; still counts as attempted below
             track_id = track_raw.get("id")
@@ -155,8 +164,22 @@ class MetadataBackfillMixin:
                             break
                         continue
 
-                    # 2. Get Spotify API credentials if configured
+                    # 2. Get Spotify API credentials if configured, and mint the
+                    # one access token this cycle's Web-API work shares. Both
+                    # steps below want it and each used to refresh its own, so a
+                    # cycle spent two round-trips on Spotify's token endpoint to
+                    # be told the same thing twice.
+                    #
+                    #< all three, like the listener's own gate - see the same
+                    #  comment on _fetchArtistImageUrl's copy in media_fetch.py
                     creds = self.getUserSpotifyCredentials()
+                    hasWebApiCreds = bool(creds and creds.get("client_id") and creds.get("client_secret")
+                                          and creds.get("refresh_token"))
+                    access_token = None
+                    if hasWebApiCreds:
+                        from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+                        access_token = _refresh_spotify_access_token(
+                            creds["client_id"], creds["client_secret"], creds["refresh_token"])
 
                     # 2b. One ISRC batch per cycle. Deliberately ahead of the
                     # album queue's early-out below: albums run dry long before
@@ -164,8 +187,9 @@ class MetadataBackfillMixin:
                     # metadata, while every track in the catalog starts without
                     # an ISRC), so placing this after the `continue` would have
                     # meant the ISRC backfill silently stopped the moment album
-                    # metadata was complete - which is the steady state.
-                    self._backfillTrackIsrcs(creds, stop_event)
+                    # metadata was complete - which is the steady state. That
+                    # ordering is also why it swallows its own failures.
+                    self._backfillTrackIsrcs(access_token, stop_event)
 
                     # 3. Query up to N missing album IDs. Albums whose tracks
                     # lack artist links piggyback on the same fetch: the album
@@ -204,38 +228,33 @@ class MetadataBackfillMixin:
                     attempted_ids = []  #< albums that got a definitive response (incl. "gone") - rate-limits their next retry
                     use_fallback = True
 
-                    #< all three, like the listener's own gate - see the same
-                    #  comment on _fetchArtistImageUrl's copy in media_fetch.py
-                    if creds and creds.get("client_id") and creds.get("client_secret") and creds.get("refresh_token"):
-                        from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+                    #< the token was minted once at the top of this cycle (step
+                    #  2), so there is nothing to refresh here
+                    if access_token:
                         import requests
 
-                        access_token = _refresh_spotify_access_token(
-                            creds["client_id"], creds["client_secret"], creds["refresh_token"]
-                        )
-                        if access_token:
-                            headers = {"Authorization": f"Bearer {access_token}"}
-                            ids_str = ",".join(target_ids)
-                            url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
-                            resp = requests.get(url, headers=headers, timeout=10)
-                            if resp.status_code == 200:
-                                albums_data = resp.json().get("albums") or []
-                                for album_raw in albums_data:
-                                    if album_raw:
-                                        fetched_albums.append(album_raw)
-                                # Null entries are albums Spotify has no data for -
-                                # count those as attempted too, or they'd be re-queued
-                                # every cycle forever.
-                                attempted_ids = list(target_ids)
-                                use_fallback = False
-                            else:
-                                if flaskDebugEnabled():
-                                    _dbmod.logger.warning(
-                                        "[Backfiller-%s] Spotify Web API returned status %d. Falling back to the cookie client.",
-                                        self.user, resp.status_code
-                                    )
+                        headers = {"Authorization": f"Bearer {access_token}"}
+                        ids_str = ",".join(target_ids)
+                        url = f"https://api.spotify.com/v1/albums?ids={ids_str}"
+                        resp = requests.get(url, headers=headers, timeout=10)
+                        if resp.status_code == 200:
+                            albums_data = resp.json().get("albums") or []
+                            for album_raw in albums_data:
+                                if album_raw:
+                                    fetched_albums.append(album_raw)
+                            # Null entries are albums Spotify has no data for -
+                            # count those as attempted too, or they'd be re-queued
+                            # every cycle forever.
+                            attempted_ids = list(target_ids)
+                            use_fallback = False
                         else:
-                            _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to the cookie client.", self.user)
+                            if flaskDebugEnabled():
+                                _dbmod.logger.warning(
+                                    "[Backfiller-%s] Spotify Web API returned status %d. Falling back to the cookie client.",
+                                    self.user, resp.status_code
+                                )
+                    elif hasWebApiCreds:
+                        _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to the cookie client.", self.user)
 
                     if use_fallback:
                         import Database.Spotify

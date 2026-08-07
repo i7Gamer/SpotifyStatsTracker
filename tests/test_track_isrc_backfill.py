@@ -139,9 +139,8 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         with patch.object(Database, "startMetadataBackfiller"):
             return self._makeDb({}, [])
 
-    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
-    def test_fetches_and_stores_isrcs(self, mock_get, mock_refresh):
+    def test_fetches_and_stores_isrcs(self, mock_get):
         db = self._db()
         conn = db.repo._conn()
         _insertTrack(conn, REAL_ID)
@@ -155,8 +154,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         ]}
         mock_get.return_value = response
 
-        db._backfillTrackIsrcs({"client_id": "c", "client_secret": "s", "refresh_token": "r"},
-                               MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertEqual(conn.execute("SELECT isrc FROM tracks WHERE id=?", (REAL_ID,)).fetchone()["isrc"],
                          "USRC12345678")
@@ -166,9 +164,8 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
             self.assertIsNotNone(
                 conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (trackId,)).fetchone()[0])
 
-    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
-    def test_batches_at_the_web_api_id_cap(self, mock_get, mock_refresh):
+    def test_batches_at_the_web_api_id_cap(self, mock_get):
         db = self._db()
         conn = db.repo._conn()
         for i in range(SPOTIFY_BULK_TRACK_LIMIT + 10):
@@ -179,17 +176,17 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         response.json.return_value = {"tracks": []}
         mock_get.return_value = response
 
-        db._backfillTrackIsrcs({"client_id": "c", "client_secret": "s", "refresh_token": "r"},
-                               MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
 
         requestedIds = mock_get.call_args[0][0].split("ids=")[1].split(",")
         self.assertEqual(len(requestedIds), SPOTIFY_BULK_TRACK_LIMIT)
 
     @patch("requests.get")
-    def test_without_web_api_credentials_it_does_nothing(self, mock_get):
-        """The cookie/pathfinder client does not expose ISRCs at all, so there
-        is no fallback to attempt - and nothing may be stamped as attempted,
-        or the ids would be skipped once credentials DO arrive."""
+    def test_without_an_access_token_it_does_nothing(self, mock_get):
+        """No token means either no Web-API credentials or a refresh that
+        failed. The cookie/pathfinder client does not expose ISRCs at all, so
+        there is no fallback to attempt - and nothing may be stamped as
+        attempted, or the ids would be skipped once credentials DO arrive."""
         db = self._db()
         conn = db.repo._conn()
         _insertTrack(conn, REAL_ID)
@@ -200,9 +197,8 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         self.assertIsNone(
             conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0])
 
-    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
-    def test_a_failed_response_stamps_nothing(self, mock_get, mock_refresh):
+    def test_a_failed_response_stamps_nothing(self, mock_get):
         """A 429/500 is not a definitive "no ISRC" - marking those attempted
         would lose the tracks for the whole retry window over a transient."""
         db = self._db()
@@ -213,8 +209,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         response.status_code = 429
         mock_get.return_value = response
 
-        db._backfillTrackIsrcs({"client_id": "c", "client_secret": "s", "refresh_token": "r"},
-                               MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertIsNone(
             conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0])
@@ -222,18 +217,34 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
     @patch("requests.get")
     def test_empty_queue_makes_no_request(self, mock_get):
         db = self._db()
-        db._backfillTrackIsrcs({"client_id": "c", "client_secret": "s", "refresh_token": "r"},
-                               MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
         mock_get.assert_not_called()
 
-    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
-    def test_a_set_stop_event_skips_the_fetch(self, mock_get, mock_refresh):
+    def test_a_set_stop_event_skips_the_fetch(self, mock_get):
         db = self._db()
         conn = db.repo._conn()
         _insertTrack(conn, REAL_ID)
 
-        db._backfillTrackIsrcs({"client_id": "c", "client_secret": "s", "refresh_token": "r"},
-                               MagicMock(is_set=MagicMock(return_value=True)))
+        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=True)))
 
         mock_get.assert_not_called()
+
+    @patch("requests.get")
+    def test_a_network_error_is_contained(self, mock_get):
+        """A raise here does not belong to this batch alone: the ISRC step runs
+        FIRST in the cycle (ahead of the album queue's early-out, deliberately),
+        so an escaping exception is caught by the loop's per-cycle handler and
+        takes the album and artist-link repair down with it for the whole
+        5-minute wait - over a DNS blip on an unrelated request.
+
+        Nothing is stamped either, for the same reason a 429 stamps nothing."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.side_effect = RuntimeError("connection reset")
+
+        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertIsNone(
+            conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0])

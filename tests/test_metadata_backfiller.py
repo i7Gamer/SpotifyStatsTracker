@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from conftest import DatabaseTestCase
 from Database.database import Database
+from test_track_isrc_backfill import _insertTrack
 
 
 class TestMetadataBackfiller(DatabaseTestCase):
@@ -532,6 +533,72 @@ class TestMetadataBackfiller(DatabaseTestCase):
                 if "Spotify Web API returned status" in args[0]
             ]
             self.assertEqual(len(warning_calls), 0)
+
+
+class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
+    """The cycle does two Web-API things - one ISRC batch and one album batch -
+    and each used to mint its own access token, so every 5-minute cycle spent
+    two round-trips on Spotify's token endpoint to say the same thing twice.
+    One refresh at the top of the cycle, handed to both."""
+
+    def _oneCycleDb(self):
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) "
+                         "VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        #< loop head, the ISRC step's shutdown guard, loop head again
+        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
+        db.backfiller_stop_event.wait.return_value = False
+        return db, conn
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
+    def test_one_refresh_per_cycle(self, mock_get, mock_refresh):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"albums": [], "tracks": []}
+        mock_get.return_value = response
+        db, _ = self._oneCycleDb()
+
+        db._metadataBackfillLoop()
+
+        self.assertEqual(mock_refresh.call_count, 1)
+        Database._active_backfills.clear()
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
+    def test_an_isrc_failure_does_not_cost_the_album_backfill_its_cycle(self, mock_get, mock_refresh):
+        """The ISRC step runs first on purpose - the album queue runs dry long
+        before the track queue does, so putting it after that early-out would
+        stop it in the steady state. That ordering makes an escaping exception
+        expensive: the loop's per-cycle handler catches it and the album work
+        never runs, for the whole 5-minute wait."""
+        db, conn = self._oneCycleDb()
+        _insertTrack(conn, "4cOdK2wGLETKBW3PvgPWqT")   #< a real-shaped id, so the ISRC queue is non-empty
+
+        albums = MagicMock()
+        albums.status_code = 200
+        albums.json.return_value = {"albums": [
+            {"id": "alb1", "name": "Album 1", "release_date": "2020-05-05",
+             "total_tracks": 10, "tracks": {"items": []}},
+        ]}
+
+        def byUrl(url, **kwargs):
+            if "/v1/tracks" in url:
+                raise RuntimeError("connection reset")
+            return albums
+        mock_get.side_effect = byUrl
+
+        db._metadataBackfillLoop()
+
+        self.assertEqual(conn.execute("SELECT total_tracks FROM albums WHERE id='alb1'").fetchone()[0], 10)
+        Database._active_backfills.clear()
 
 
 if __name__ == "__main__":
