@@ -16,6 +16,7 @@ it back apart under the same keys, so what every test below asserts about is
 still one region of the page. The transport itself is pinned by
 tests/test_compare_htmx.py.
 """
+import re
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -1661,6 +1662,99 @@ class TestCompareRoute(AppTestCase):
                         processor()
 
         self.assertEqual(mock_check.call_count, 1)
+
+    # --- Manage shares: placement and affordance ----------------------------
+
+    def _heroSection(self, client):
+        """The shell's hero, sliced out at its closing tag.
+
+        The hero is the FIRST <section> the page renders (compare.html opens
+        with it), so slicing from its open tag to the next </section> can't
+        swallow anything below it."""
+        body = client.get("/compare").data.decode("utf-8")
+        start = body.index('<section class="hero">')
+        return body[start:body.index("</section>", start)]
+
+    def test_manage_shares_sits_inside_the_hero(self):
+        """It used to be a stray paragraph between the hero and the filters.
+        Nothing else on this page lives in that gap, so it read as orphaned."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        self.assertIn('href="/profile/sharing"', self._heroSection(client))
+
+    def test_manage_shares_carries_the_shared_button_class(self):
+        """.button is where the page's hover fill and active press live (see
+        static/css/style.css) - the link opts into them by wearing the class
+        rather than by growing a second set of rules under its own name."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        hero = self._heroSection(client)
+
+        self.assertIn('class="button compare-manage-shares"', hero)
+
+    def test_manage_shares_is_not_inside_a_hero_paragraph(self):
+        """`.hero-content p a` restyles link color on both rest and hover at a
+        higher specificity than .button, so a <p> wrapper would silently undo
+        the button's own colors."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        hero = self._heroSection(client)
+        afterLastParagraph = hero[hero.rindex("</p>"):]
+
+        self.assertIn('class="button compare-manage-shares"', afterLastParagraph)
+
+
+class TestManageSharesButtonStyling(unittest.TestCase):
+    """The hover/press affordance the Manage shares link inherits from .button
+    (templates/compare.html). Asserted against the stylesheet because that is
+    where it is decided - the template only names the class."""
+
+    def setUp(self):
+        cssPath = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
+        with open(cssPath, encoding="utf-8") as handle:
+            self.css = handle.read()
+
+    def _block(self, selector):
+        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
+        self.assertIsNotNone(match, f"{selector} missing from style.css")
+        return match.group(1)
+
+    def test_button_hover_fills_with_the_accent(self):
+        block = self._block(".button:hover")
+
+        self.assertIn("background: var(--accent)", block)
+        self.assertIn("color: white", block)
+
+    def test_button_transitions_into_that_hover_state(self):
+        """Without the transition the fill snaps, which reads as a repaint
+        rather than as feedback."""
+        self.assertIn("transition:", self._block(".button"))
+
+    def test_manage_shares_takes_a_line_of_its_own(self):
+        """.button is inline-flex, and so is the taste-match badge right above
+        it once the <=700px rule drops that badge back into the flow - two
+        inline boxes with room to spare would share a line, baseline-aligned at
+        two very different text sizes. Block-level, but only as wide as its own
+        label."""
+        block = self._block(".compare-manage-shares")
+
+        self.assertIn("display: flex", block)
+        self.assertIn("width: fit-content", block)
+
+    def test_the_taste_match_badge_is_still_the_inline_box_that_forces_this(self):
+        """If it ever stops being inline-level the rule above is dead weight."""
+        self.assertIn("display: inline-flex", self._block(".taste-match"))
+
+    def test_manage_shares_only_positions_itself(self):
+        """Its own rule must not re-set anything .button decides - the two are
+        the same specificity, so whichever lands later would win by accident."""
+        block = self._block(".compare-manage-shares")
+
+        for property_ in ("color", "background", "border", "font-size", "padding"):
+            self.assertNotIn(property_ + ":", block)
 
 
 if __name__ == "__main__":

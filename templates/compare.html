@@ -31,20 +31,24 @@
     <h1>Compare with <span class="compare-user-theirs js-with-username">{{ withUsername | displayName }}</span></h1>
     <p>See how your listening stats stack up against someone who shares their data with you.</p>
     {% include '_compare_taste_match.html' %}
+    {# Adding or dropping a counterpart is what you reach for while looking at
+       this page, so it sits with the hero copy rather than orphaned in the gap
+       above the filters. A link rather than a panel: this page only exists once
+       you already have an accepted share, so it can't be the only way in - the
+       badges and compare_empty.html point at the same place.
+
+       .button is the whole styling: same resting outline, hover fill and press
+       as every other button on the site. Deliberately NOT inside a <p> - the
+       `.hero-content p a` rules outrank .button on both colors and would leave
+       an outlined button whose text ignores its own hover. #}
+    <a class="button compare-manage-shares"
+       href="{{ url_for('profileSharingPage') }}">Manage shares</a>
   </div>
 </section>
 
 {% if acceptedUsernames|length > 1 %}
 {% include '_compare_user_badges.html' %}
 {% endif %}
-
-{# Adding or dropping a counterpart is what you reach for while looking at this
-   page. A link rather than a panel: this page only exists once you already have
-   an accepted share, so it can't be the only way in - the badges and
-   compare_empty.html point at the same place. #}
-<p class="compare-manage-shares">
-  <a href="{{ url_for('profileSharingPage') }}">Manage shares</a>
-</p>
 
 {# The form's own inputs ARE the query string, serialized by htmx on every
    change, so the four hand-written updateCompare*Filter handlers that each
