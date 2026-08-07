@@ -1,4 +1,9 @@
-"""static/manifest.json's icons, checked against the files they point at.
+"""The app's install icons, checked against the files they point at.
+
+Mostly static/manifest.json, plus the one icon that cannot live there: iOS does
+not read a manifest's icons for Add to Home Screen and takes
+`<link rel="apple-touch-icon">` instead. Same job, same assets directory, so it
+is checked here rather than in a file of its own.
 
 A manifest is the one place in the app where an asset's dimensions are written
 down twice - once as a `sizes` string, once as the PNG's own header - and
@@ -19,12 +24,21 @@ These are file-level assertions on purpose: the manifest is served straight off
 disk by the static route, so there is no app behaviour in between to render.
 """
 import json
+import re
 import struct
 import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 _MANIFEST_PATH = _ROOT / "static" / "manifest.json"
+_TEMPLATES = _ROOT / "templates"
+
+#< both, like the <link rel="icon"> beside it: Add to Home Screen reads the page
+#  it is invoked from, and that can be the login page as easily as the dashboard
+_LAYOUTS = ("layout.html", "layout_public.html")
+
+#< iOS renders the home-screen icon at 180x180 on every current device
+_APPLE_TOUCH_ICON_PX = 180
 
 #< the manifest's src paths are relative to itself (it lives in static/)
 _MANIFEST_DIR = _MANIFEST_PATH.parent
@@ -40,6 +54,11 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 #  suite doesn't need an image library for it
 _PNG_DIMENSIONS_OFFSET = 16
 _PNG_DIMENSIONS_FORMAT = ">II"
+#< IHDR again: bit depth is byte 24, colour type 25. Bit 2 of the colour type is
+#  the alpha channel, so types 4 and 6 carry one; palette images (3) express
+#  transparency through a tRNS chunk instead.
+_PNG_COLOUR_TYPE_OFFSET = 25
+_PNG_ALPHA_COLOUR_TYPES = (4, 6)
 
 
 def _pngDimensions(path):
@@ -48,6 +67,13 @@ def _pngDimensions(path):
     assert data[:len(_PNG_SIGNATURE)] == _PNG_SIGNATURE, f"{path} is not a PNG"
     return struct.unpack(_PNG_DIMENSIONS_FORMAT,
                          data[_PNG_DIMENSIONS_OFFSET:_PNG_DIMENSIONS_OFFSET + 8])
+
+
+def _pngHasTransparency(path):
+    """Whether a PNG can carry any pixel that is not fully opaque."""
+    data = path.read_bytes()
+    return (data[_PNG_COLOUR_TYPE_OFFSET] in _PNG_ALPHA_COLOUR_TYPES
+            or b"tRNS" in data)
 
 
 class TestManifestIcons(unittest.TestCase):
@@ -105,6 +131,43 @@ class TestManifestIcons(unittest.TestCase):
         for the small size. A manifest that dropped it would leave the browser
         tab pulling an icon nothing in here describes."""
         self.assertIn("images/favicon.png", [icon["src"] for icon in self.icons])
+
+
+class TestAppleTouchIcon(unittest.TestCase):
+    """The manifest's icons do not reach iOS. Safari's Add to Home Screen reads
+    `<link rel="apple-touch-icon">` off the page it is invoked from and nothing
+    else, so without one it screenshots the page or scales the 64x64 favicon."""
+
+    def _declaredFilenames(self, layout):
+        markup = (_TEMPLATES / layout).read_text(encoding="utf-8")
+        return re.findall(
+            r"""<link[^>]*rel=["']apple-touch-icon["'][^>]*filename=['"]([^'"]+)['"]""",
+            markup)
+
+    def test_both_layouts_declare_one(self):
+        for layout in _LAYOUTS:
+            with self.subTest(layout=layout):
+                self.assertEqual(len(self._declaredFilenames(layout)), 1)
+
+    def test_both_layouts_name_the_same_file_and_it_exists(self):
+        declared = {name for layout in _LAYOUTS for name in self._declaredFilenames(layout)}
+
+        self.assertEqual(len(declared), 1, f"the layouts disagree: {declared}")
+        self.assertTrue((_ROOT / "static" / declared.pop()).is_file())
+
+    def test_it_is_the_size_ios_renders(self):
+        path = _ROOT / "static" / self._declaredFilenames(_LAYOUTS[0])[0]
+
+        self.assertEqual(_pngDimensions(path), (_APPLE_TOUCH_ICON_PX, _APPLE_TOUCH_ICON_PX))
+
+    def test_it_is_opaque(self):
+        """iOS composites an apple-touch-icon onto black and offers no say in
+        it, so the flattening has to be ours. The artwork is a circular record
+        on a transparent square - left with its alpha, the corners become black
+        against a black record and the icon loses its edge."""
+        path = _ROOT / "static" / self._declaredFilenames(_LAYOUTS[0])[0]
+
+        self.assertFalse(_pngHasTransparency(path))
 
 
 if __name__ == "__main__":

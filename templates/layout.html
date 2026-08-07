@@ -29,6 +29,12 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+    {#- iOS never reads the manifest's icons. Safari's Add to Home Screen takes
+        this link and nothing else, so without it the app lands on a home screen
+        as a screenshot of the page or a blurred-up 64x64 favicon. Opaque and
+        pre-flattened onto the manifest's background_color, because iOS
+        composites an icon's transparency onto black with no say in it. -#}
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
