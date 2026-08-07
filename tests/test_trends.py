@@ -408,6 +408,27 @@ class TestFreshFindFallback(unittest.TestCase):
         self.assertIn("first heard 5 days ago", trends["freshFind"]["trend_subtitle"])
         self.assertIn(f"{self.minPlays + 1} plays", trends["freshFind"]["trend_subtitle"])
 
+    def test_a_find_from_today_says_today(self):
+        """The two cards either side of this one floor their day count at 1,
+        which is free there: both require a gap of 30+ days, so zero is
+        unreachable. This card's window is 14 days and its bar is two plays, so
+        a track found this morning is the ORDINARY case - and the same floor
+        made it claim to have been first heard yesterday."""
+        self._seedObsession()
+        self._seedNewTrack("new_track", firstPlayedDaysAgo=0, plays=self.minPlays + 1)
+
+        trends = self.db.getDashboardTrends(now_ts=self.now_ts)
+
+        self.assertIn("first heard today", trends["freshFind"]["trend_subtitle"])
+
+    def test_one_day_ago_is_singular(self):
+        self._seedObsession()
+        self._seedNewTrack("new_track", firstPlayedDaysAgo=1, plays=self.minPlays + 1)
+
+        trends = self.db.getDashboardTrends(now_ts=self.now_ts)
+
+        self.assertIn("first heard 1 day ago", trends["freshFind"]["trend_subtitle"])
+
 
 class TestForgottenFavoriteFallback(unittest.TestCase):
     """The primary query needs TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS full plays;

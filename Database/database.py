@@ -1495,9 +1495,19 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             if song:
                 cnt = item["play_count"]
                 first_played = item["first_played_at"]
-                days_ago = max(1, int((now_ts - first_played) // SECONDS_PER_DAY)) if first_played else 0
+                # Floored at 0, not at 1 like the two cards either side. Their
+                # floor is unreachable - both require a 30+ day gap - and this
+                # one's window is 14 days against a two-play bar, so "found it
+                # this morning" is the ordinary case rather than the edge. With
+                # their floor it read "first heard 1 day ago" for a track whose
+                # first play was four hours old. (max() still guards the other
+                # direction: a clock correction can put first_played ahead of
+                # now_ts, and "-1 days ago" is worse than "today".)
+                days_ago = max(0, int((now_ts - first_played) // SECONDS_PER_DAY)) if first_played else 0
+                heard = ("today" if days_ago == 0
+                         else f"{days_ago} day{'s' if days_ago != 1 else ''} ago")
                 song["trend_subtitle"] = (f"{cnt} play{'s' if cnt != 1 else ''} · "
-                                          f"first heard {days_ago} day{'s' if days_ago != 1 else ''} ago")
+                                          f"first heard {heard}")
                 result["freshFind"] = song
 
         if raw.get("forgotten"):
