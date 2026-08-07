@@ -1,0 +1,36 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The "Full plays only" filter control, shared by the Top Songs/Artists/Albums
+   filter card (_page_card.html) and /history (history.html). One partial rather
+   than two copies, because the invariant below is the whole reason this control
+   is three elements instead of one, and a divergence between copies would be
+   invisible until someone unticked the box.
+
+   Both pages read it as ?fullOnly=1|0, and both mean the same thing by it: the
+   COMPLETION test (Database/queries/_base.py's FULL_PLAY_PREDICATE), not the
+   skip classification. /history additionally drops its skip filter when this is
+   off - see historyPage - because a skip is not a play that finished.
+
+   Rendered only where the route supplies the flag; pages that share this card
+   without the filter leave it undefined. #}
+{% if fullPlaysOnly is defined %}
+{# The checkbox carries no name and is NOT serialized. An unchecked box is
+   omitted from a form submission entirely, and to these routes an ABSENT
+   fullOnly means the DEFAULT, which is on - so unchecking would have read as
+   checking. The hidden field below carries the explicit "1"/"0" the route
+   reads, and updateFullPlaysFilter keeps it in step.
+
+   That handler lives in static/js/htmx-filters.js, which is the only script
+   every page rendering this partial loads. Putting it in a page module would
+   still satisfy tests/test_inline_handler_targets.py - it resolves names
+   against every file in static/js, regardless of which page loads which - and
+   fail silently in the browser on the pages that do not load that module. #}
+<div class="filter-group filter-checkbox">
+    <input type="hidden" name="fullOnly" id="fullOnlyValue" value="{{ '1' if fullPlaysOnly else '0' }}">
+    <label for="fullPlaysOnly">
+        <input type="checkbox" id="fullPlaysOnly" {% if fullPlaysOnly %}checked{% endif %} onchange="updateFullPlaysFilter()">
+        Full plays only
+    </label>
+</div>
+{% endif %}

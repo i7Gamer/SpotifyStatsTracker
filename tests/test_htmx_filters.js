@@ -15,6 +15,7 @@ const {
   pruneEmptyParams,
   isNativeModifierClick,
   hidesTrendBuckets,
+  syncFullPlaysFilter,
   failureUi,
   onSwapFailure,
   RANGE_OK,
@@ -130,6 +131,42 @@ run('the object is mutated in place, as htmx requires', () => {
 run('an already-clean object is left alone', () => {
   const result = pruneEmptyParams({ interval: 'week' });
   assert.deepStrictEqual(result, { interval: 'week' });
+});
+
+// --- syncFullPlaysFilter -----------------------------------------------------
+// The "Full plays only" checkbox cannot be a plain form field: an unchecked box
+// is not serialized at all, and an ABSENT fullOnly means the DEFAULT, which is
+// ON. It therefore drives a hidden field carrying the explicit "1"/"0" the
+// routes read - get that backwards and unticking the box turns the filter on.
+//
+// These two assertions moved here from tests/test_top_list_page.js with the
+// code. /history renders the same partial now
+// (templates/_full_plays_toggle.html), and this file is the only script all
+// four pages that render it actually load. A copy left in top-list.js would
+// still satisfy tests/test_inline_handler_targets.py - it scans every file in
+// static/js regardless of which page loads which - and fail silently in the
+// browser on /history.
+
+function installCheckbox(checked, hiddenValue) {
+  const elements = { fullPlaysOnly: { checked }, fullOnlyValue: { value: hiddenValue } };
+  global.document = { getElementById(id) { return elements[id] || null; } };
+  return elements.fullOnlyValue;
+}
+
+run('ticking "full plays only" writes the explicit 1 the route reads', () => {
+  const hidden = installCheckbox(true, '0');
+
+  syncFullPlaysFilter();
+
+  assert.strictEqual(hidden.value, '1');
+});
+
+run('unticking it writes an explicit 0, because absent would mean ON', () => {
+  const hidden = installCheckbox(false, '1');
+
+  syncFullPlaysFilter();
+
+  assert.strictEqual(hidden.value, '0', 'an unchecked box must not read as the default');
 });
 
 // --- isNativeModifierClick ---------------------------------------------------

@@ -92,20 +92,9 @@
 </div>
 {% endif %}
 
-{% if fullPlaysOnly is defined %}
-{# The checkbox carries no name and is NOT serialized. An unchecked box is
-   omitted from a form submission entirely, and to this route an ABSENT fullOnly
-   means the DEFAULT, which is on (see _topListFilters) - so unchecking would
-   have read as checking. The hidden field below carries the explicit "1"/"0"
-   the route reads, and updateFullPlaysFilter keeps it in step. #}
-<div class="filter-group filter-checkbox">
-    <input type="hidden" name="fullOnly" id="fullOnlyValue" value="{{ '1' if fullPlaysOnly else '0' }}">
-    <label for="fullPlaysOnly">
-        <input type="checkbox" id="fullPlaysOnly" {% if fullPlaysOnly %}checked{% endif %} onchange="updateFullPlaysFilter()">
-        Full plays only
-    </label>
-</div>
-{% endif %}
+{# Shared with /history, which offers the same filter under the same param -
+   see the partial for why the checkbox needs a hidden field beside it. #}
+{% include '_full_plays_toggle.html' %}
 
 {# These pages render a SHELL on a plain GET and fetch the list in a second
    request, so submitting this form without JS reloads to a permanent

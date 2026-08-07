@@ -129,6 +129,20 @@ function syncCustomRange(containerId) {
   showRangeError(rangeProblemFromDom());
 }
 
+// --- the shared "Full plays only" checkbox -----------------------------------
+// It cannot be a plain form field: an unchecked checkbox is not serialized at
+// all, and an ABSENT fullOnly means the DEFAULT, which is ON - so unticking the
+// box would have read as ticking it. The checkbox therefore drives a hidden
+// field carrying the explicit "1"/"0" the routes read.
+//
+// Unguarded ids like the control set above, and for the same reason: they are
+// one unit, rendered together by templates/_full_plays_toggle.html or not at
+// all.
+function syncFullPlaysFilter() {
+  document.getElementById('fullOnlyValue').value =
+    document.getElementById('fullPlaysOnly').checked ? '1' : '0';
+}
+
 // Which failure UI a swap target wants, and where it goes.
 //
 // Every migrated page ended up with the same eight-line block: two listeners,
@@ -201,6 +215,7 @@ var HtmxFilters = {
   rangeProblemFromDom: rangeProblemFromDom,
   showRangeError: showRangeError,
   syncCustomRange: syncCustomRange,
+  syncFullPlaysFilter: syncFullPlaysFilter,
   failureUi: failureUi,
   onSwapFailure: onSwapFailure,
   RANGE_OK: RANGE_OK,
@@ -211,6 +226,14 @@ var HtmxFilters = {
 
 if (typeof window !== 'undefined') {
   window.HtmxFilters = HtmxFilters;
+  // The one inline-handler target exported straight from here rather than from
+  // a page module, because the markup that calls it is a shared PARTIAL
+  // (templates/_full_plays_toggle.html) and this file is the only script every
+  // page that renders it loads. A per-page `window.updateFullPlaysFilter =`
+  // wrapper would be a step each new caller has to remember, and forgetting it
+  // fails silently: tests/test_inline_handler_targets.py resolves the name
+  // against every file in static/js, so it cannot see which page loads which.
+  window.updateFullPlaysFilter = syncFullPlaysFilter;
 }
 
 // Hand shift/alt-clicks on a boosted link back to the browser. Installed here,

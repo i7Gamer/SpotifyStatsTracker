@@ -702,19 +702,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def getEntriesCount(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                          trackId: str | None = None, artistId: str | None = None,
                          albumId: str | None = None, includeSkips: bool = False,
-                         trackIds: list[str] | None = None) -> int:
+                         trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> int:
         """Return total number of entries in the database, optionally scoped
         to [startDate, endDate) - see getEntriesFromNew's identical params."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         return self.repo.getPlaysCount(self.user, startTs=startTs, endTs=endTs,
                                         trackId=trackId, artistId=artistId, albumId=albumId,
-                                        includeSkips=includeSkips, trackIds=trackIds)
+                                        includeSkips=includeSkips, trackIds=trackIds,
+                                        fullPlaysOnly=fullPlaysOnly)
 
     def getEntriesFromNew(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
                            albumId: str | None = None, includeSkips: bool = False,
-                           trackIds: list[str] | None = None) -> list:
+                           trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list:
         """ Return the latest `count` entries from history, sorted from newest to oldest. If count is None, return all entries.
         startDate/endDate optionally scope this to a half-open [startDate, endDate) range - used by the Dashboard's
         chart click-through (see app.py's dashboard()), not by its default unscoped view.
@@ -722,25 +723,32 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         detail pages' play-history lists, same filters as getListeningTimeSeries.
         `trackIds` narrows to an explicit set of track ids - the /history page's
         tag filter (see routes/charts.py's historyPage), mirrors getSongsPage's
-        identical param."""
+        identical param.
+        `fullPlaysOnly` keeps only plays that reached the admin's completion
+        percent - the /history page's "Full plays only" checkbox. It is a
+        COMPLETION test, not a skip test: see Repository.getPlaysCount."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.getPlaysNewestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs,
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
-                                                 includeSkips=includeSkips, trackIds=trackIds)
+                                                 includeSkips=includeSkips, trackIds=trackIds,
+                                                 fullPlaysOnly=fullPlaysOnly)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
                            albumId: str | None = None, includeSkips: bool = False,
-                           afterTs: float | None = None, trackIds: list[str] | None = None) -> list:
+                           afterTs: float | None = None, trackIds: list[str] | None = None,
+                           fullPlaysOnly: bool = False) -> list:
         """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries.
         startDate/endDate and trackId/artistId/albumId: see getEntriesFromNew's identical params.
-        afterTs: see Repository.getPlaysOldestFirst. trackIds: see getEntriesFromNew's identical param."""
+        afterTs: see Repository.getPlaysOldestFirst. trackIds/fullPlaysOnly: see
+        getEntriesFromNew's identical params."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs,
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
-                                                 includeSkips=includeSkips, afterTs=afterTs, trackIds=trackIds)
+                                                 includeSkips=includeSkips, afterTs=afterTs, trackIds=trackIds,
+                                                 fullPlaysOnly=fullPlaysOnly)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
@@ -753,24 +761,31 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0,
                        startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                       oldestFirst: bool = False, trackIds: list[str] | None = None) -> list:
+                       oldestFirst: bool = False, trackIds: list[str] | None = None,
+                       includeSkips: bool = False, fullPlaysOnly: bool = False) -> list:
         """Entries (newest first, or oldest first with `oldestFirst`) whose
         track/artist/album/playlist matches `query`, paginated in SQL
         (Repository.searchPlays) rather than filtering the whole history in
         Python. startDate/endDate: see getEntriesFromNew's identical param.
-        trackIds: see getEntriesFromNew's identical param."""
+        trackIds/includeSkips/fullPlaysOnly: see getEntriesFromNew's identical
+        params - the search box has to filter like the list beside it."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.searchPlays(self.user, query, limit=count, offset=startIndex, startTs=startTs, endTs=endTs,
-                                         oldestFirst=oldestFirst, trackIds=trackIds)
+                                         oldestFirst=oldestFirst, trackIds=trackIds,
+                                         includeSkips=includeSkips, fullPlaysOnly=fullPlaysOnly)
         return self._paginateEntries(entries)
 
     def searchEntriesCount(self, query: str, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
-                            trackIds: list[str] | None = None) -> int:
+                            trackIds: list[str] | None = None,
+                            includeSkips: bool = False, fullPlaysOnly: bool = False) -> int:
         """The paging counterpart to searchEntries() - total matching entries,
-        for computing total page count without fetching every match. trackIds:
-        see getEntriesFromNew's identical param."""
+        for computing total page count without fetching every match. trackIds/
+        includeSkips/fullPlaysOnly: see getEntriesFromNew's identical params,
+        and they must match what searchEntries() was given or the pager
+        disagrees with the list."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
-        return self.repo.searchPlaysCount(self.user, query, startTs=startTs, endTs=endTs, trackIds=trackIds)
+        return self.repo.searchPlaysCount(self.user, query, startTs=startTs, endTs=endTs, trackIds=trackIds,
+                                           includeSkips=includeSkips, fullPlaysOnly=fullPlaysOnly)
 
     def writeProgress(self, status: str, current: int = 0, total: int = 0, message: str = "", error: bool = False) -> None:
         self.repo.writeProgress(self.user, status, current, total, message, error)

@@ -113,7 +113,8 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
         self.assertIn("Page 1 of 3", resultsHtml)
 
     def test_without_search_requests_correct_offset_for_page(self):
@@ -122,7 +123,8 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         resp, resultsHtml = self._getHistoryList(dash, db, query="?page=2")
 
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
         self.assertIn("Page 2 of 3", resultsHtml)
 
     def test_without_search_clamps_page_beyond_range(self):
@@ -131,7 +133,8 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         resp, resultsHtml = self._getHistoryList(dash, db, query="?page=99")
 
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
         self.assertIn("Page 3 of 3", resultsHtml)
 
     def test_a_page_number_too_long_to_parse_is_junk_not_a_crash(self):
@@ -162,7 +165,8 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
         self.assertIn("Page 1 of 1", resultsHtml)
 
     def test_with_search_paginates_and_matches_in_sql(self):
@@ -176,9 +180,11 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, _ = self._getHistoryList(dash, db, query="?q=foo")
 
         self.assertEqual(resp.status_code, 200)
-        db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None, trackIds=None)
+        db.searchEntriesCount.assert_called_once_with("foo", startDate=None, endDate=None, trackIds=None,
+                                                      includeSkips=False, fullPlaysOnly=True)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None,
-                                                 oldestFirst=False, trackIds=None)
+                                                 oldestFirst=False, trackIds=None,
+                                                 includeSkips=False, fullPlaysOnly=True)
         db.getEntriesFromNew.assert_not_called()
         db.getEntriesCount.assert_not_called()
 
@@ -191,7 +197,8 @@ class TestHistoryPagination(_ListRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         db.searchEntries.assert_called_once_with("foo", count=appModule.PAGE_SIZE, startIndex=2 * appModule.PAGE_SIZE, startDate=None, endDate=None,
-                                                 oldestFirst=False, trackIds=None)
+                                                 oldestFirst=False, trackIds=None,
+                                                 includeSkips=False, fullPlaysOnly=True)
         self.assertIn("Page 3 of 3", resultsHtml)
 
     def test_sort_oldest_fetches_entries_from_old(self):
@@ -201,7 +208,8 @@ class TestHistoryPagination(_ListRouteTestBase):
         resp, _ = self._getHistoryList(dash, db, query="?sort=oldest")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromOld.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromOld.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
         db.getEntriesFromNew.assert_not_called()
 
     def test_sort_junk_falls_back_to_newest(self):
@@ -354,7 +362,8 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         resp, _ = self._getHistoryList(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
 
     def test_custom_without_valid_dates_falls_back_and_does_not_scope_the_list(self):
         """interval=custom with no/invalid startDate+endDate falls back to
@@ -365,7 +374,89 @@ class TestHistoryCustomRangeListScoping(_ListRouteTestBase):
         resp, _ = self._getHistoryList(dash, db, query="?interval=custom")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
+
+
+class TestHistoryFullPlaysWiring(_ListRouteTestBase):
+    """?fullOnly reaches every one of the four queries /history can make, in
+    both states. What the filter SELECTS is in tests/test_history_full_plays.py
+    against a real repository; this is the wiring, which is where a path gets
+    forgotten - the search pair and the non-search pair are entirely separate
+    call sites.
+
+    Two booleans, one checkbox: `fullPlaysOnly` is the completion test and
+    `includeSkips` is the skip filter, and the route is the only place that
+    couples them. They stay separate below the route because the song-detail
+    Show Skips toggle drives includeSkips on its own."""
+
+    def _historyCallKwargs(self, query=""):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+        db.searchEntriesCount.return_value = 5
+
+        self._getHistoryList(dash, db, query=query)
+        return db
+
+    def _historyListHtml(self, query=""):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)   #< 3 pages, so there are links to inspect
+
+        _, resultsHtml = self._getHistoryList(dash, db, query=query)
+        return resultsHtml
+
+    def assertFilterState(self, mock, *, includeSkips, fullPlaysOnly):
+        kwargs = mock.call_args.kwargs
+        self.assertEqual(kwargs.get("includeSkips"), includeSkips, kwargs)
+        self.assertEqual(kwargs.get("fullPlaysOnly"), fullPlaysOnly, kwargs)
+
+    def test_the_default_asks_for_full_plays_and_no_skips(self):
+        db = self._historyCallKwargs()
+
+        self.assertFilterState(db.getEntriesCount, includeSkips=False, fullPlaysOnly=True)
+        self.assertFilterState(db.getEntriesFromNew, includeSkips=False, fullPlaysOnly=True)
+
+    def test_the_off_state_drops_both_clauses(self):
+        """Unchecking makes /history the raw log: no completion test AND no
+        skip filter, so a play that was hidden either way becomes visible."""
+        db = self._historyCallKwargs("?fullOnly=0")
+
+        self.assertFilterState(db.getEntriesCount, includeSkips=True, fullPlaysOnly=False)
+        self.assertFilterState(db.getEntriesFromNew, includeSkips=True, fullPlaysOnly=False)
+
+    def test_the_oldest_first_query_gets_it_too(self):
+        db = self._historyCallKwargs("?sort=oldest&fullOnly=0")
+
+        self.assertFilterState(db.getEntriesFromOld, includeSkips=True, fullPlaysOnly=False)
+
+    def test_the_search_path_gets_it_in_both_states(self):
+        onByDefault = self._historyCallKwargs("?q=foo")
+        self.assertFilterState(onByDefault.searchEntriesCount, includeSkips=False, fullPlaysOnly=True)
+        self.assertFilterState(onByDefault.searchEntries, includeSkips=False, fullPlaysOnly=True)
+
+        optedOut = self._historyCallKwargs("?q=foo&fullOnly=0")
+        self.assertFilterState(optedOut.searchEntriesCount, includeSkips=True, fullPlaysOnly=False)
+        self.assertFilterState(optedOut.searchEntries, includeSkips=True, fullPlaysOnly=False)
+
+    def test_only_an_explicit_zero_opts_out(self):
+        """A tri-state where absence means ON: anything unrecognized has to
+        read as the default, not as the opt-out."""
+        for query in ("?fullOnly=bogus", "?fullOnly=", "?fullOnly=false", "?fullOnly=00"):
+            with self.subTest(query=query):
+                db = self._historyCallKwargs(query)
+
+                self.assertFilterState(db.getEntriesFromNew, includeSkips=False, fullPlaysOnly=True)
+
+    def test_pagination_links_carry_the_off_state(self):
+        """Page 2 has to keep a filter the user can see is off. _buildPageUrl
+        drops only None and "", so the string "0" survives - but only if the
+        route hands it over at all."""
+        self.assertIn("fullOnly=0", self._historyListHtml("?fullOnly=0"))
+
+    def test_junk_never_reaches_the_pagination_links(self):
+        """The links are built from validated values, like every other filter on
+        this page - see historyPage's note on coercing fullOnly."""
+        self.assertNotIn("bogus", self._historyListHtml("?fullOnly=bogus"))
 
 
 class TestTopSongsPagination(_ListRouteTestBase):
@@ -573,7 +664,8 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp, resultsHtml = self._getHistoryList(dash, db, query="?page=abc")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
         self.assertIn("Page 1 of 3", resultsHtml)
 
     def test_dashboard_clamps_negative_page(self):
@@ -583,7 +675,8 @@ class TestPageParamParsing(_ListRouteTestBase):
         resp, _ = self._getHistoryList(dash, db, query="?page=-5")
 
         self.assertEqual(resp.status_code, 200)
-        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None)
+        db.getEntriesFromNew.assert_called_once_with(count=appModule.PAGE_SIZE, startIndex=0, startDate=None, endDate=None, trackIds=None,
+                                                     includeSkips=False, fullPlaysOnly=True)
 
     def test_top_songs_survives_non_numeric_page(self):
         dash = self._makeApp()

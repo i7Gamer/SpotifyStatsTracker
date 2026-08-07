@@ -28,6 +28,7 @@ here and in the sibling files, and only half checked all three things.
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -36,6 +37,8 @@ from tests._app_factory import AppTestCase
 
 #< what htmx puts on every request it makes
 HX_HEADERS = {"HX-Request": "true"}
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def makeTrack(trackId, name):
@@ -88,6 +91,10 @@ class HistoryHtmxTestCase(AppTestCase):
         with self.client.session_transaction() as sess:
             sess["email"] = self.email
             sess["username"] = self.username
+
+    def _loggedInShell(self):
+        self._login()
+        return self.client.get("/history").get_data(as_text=True)
 
 
 class TestFragmentBranch(HistoryHtmxTestCase):
@@ -235,8 +242,51 @@ class TestShell(HistoryHtmxTestCase):
 
         self.assertNotIn("startDate=2026-01-01", body)
 
-    def _loggedInShell(self):
+
+class TestFullPlaysOnlyToggle(HistoryHtmxTestCase):
+    """The "Full plays only" checkbox, which cannot be a plain form field -
+    mirrors tests/test_top_lists_htmx.py's class of the same name, because both
+    pages now render the same partial (templates/_full_plays_toggle.html).
+
+    What the filter actually SELECTS is in tests/test_history_full_plays.py;
+    these are the markup invariants that stop it being "simplified" back."""
+
+    def test_the_checkbox_is_backed_by_an_explicit_hidden_field(self):
+        body = self._loggedInShell()
+
+        self.assertIn('id="fullOnlyValue"', body)
+        self.assertIn('name="fullOnly"', body)
+
+    def test_the_checkbox_itself_is_not_submitted(self):
+        """If it carried name="fullOnly" it would submit alongside the hidden
+        field and the route would read whichever came first."""
+        body = self._loggedInShell()
+        checkbox = body[body.index('id="fullPlaysOnly"') - 60:body.index('id="fullPlaysOnly"') + 60]
+
+        self.assertNotIn("name=", checkbox)
+
+    def test_the_hidden_field_starts_matching_the_active_filter(self):
         self._login()
-        return self.client.get("/history").get_data(as_text=True)
+
+        self.assertIn('id="fullOnlyValue" value="1"',
+                      self.client.get("/history").get_data(as_text=True))
+        self.assertIn('id="fullOnlyValue" value="0"',
+                      self.client.get("/history?fullOnly=0").get_data(as_text=True))
+
+    def test_the_handler_it_calls_ships_with_this_page(self):
+        """tests/test_inline_handler_targets.py resolves inline handlers against
+        EVERY file in static/js, so a handler living only in top-list.js - which
+        /history does not load - passes that scan and fails silently in the
+        browser. This page loads htmx-filters.js, so that is where it has to be."""
+        body = self._loggedInShell()
+        self.assertIn("updateFullPlaysFilter()", body)
+
+        source = (REPO_ROOT / "static" / "js" / "htmx-filters.js").read_text(encoding="utf-8")
+        self.assertIn("window.updateFullPlaysFilter", source)
+
+    def test_the_toggle_does_not_add_a_second_load_indicator(self):
+        """Guards the exact count test_every_swap_dims_the_list_while_it_loads
+        asserts - the new markup must not carry hx-indicator of its own."""
+        self.assertEqual(self._loggedInShell().count('hx-indicator="#historyResults"'), 2)
 
 

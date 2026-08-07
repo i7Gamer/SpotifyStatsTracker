@@ -561,6 +561,101 @@ class TestPlaysHistory(RepositoryTestCase):
         self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1", includeSkips=False), 1)
         self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1", includeSkips=True), 2)
 
+    # ---- fullPlaysOnly: the /history and Top pages' "Full plays only" filter,
+    # which is a COMPLETION test (see _base.py's FULL_PLAY_PREDICATE) and
+    # deliberately independent of includeSkips above. The two travel together
+    # from one checkbox on /history, but only the route couples them.
+
+    def test_full_plays_only_drops_a_partial_listen(self):
+        """t1 is 200000ms; 5000ms of it is nobody's idea of a full play."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 200000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+
+        entries = self.repo.getPlaysNewestFirst("alice", trackId="t1", fullPlaysOnly=True)
+
+        self.assertEqual([e["playedAt"] for e in entries], [1000.0])
+        self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1", fullPlaysOnly=True), 1)
+        self.assertEqual(self.repo.getPlaysCount("alice", trackId="t1"), 2)
+
+    def test_full_plays_only_keeps_a_track_whose_duration_is_unknown(self):
+        """The filter cannot judge a duration_ms of 0, and dropping it would
+        silently hide every play of a track whose metadata never arrived."""
+        blank = makeTrack(trackId="t9")
+        blank["duration"] = 0
+        self.repo.upsertTrack(blank)
+        self.repo.insertPlay("alice", "t9", 1000.0, 5000)
+
+        entries = self.repo.getPlaysNewestFirst("alice", trackId="t9", fullPlaysOnly=True)
+
+        self.assertEqual([e["playedAt"] for e in entries], [1000.0])
+
+    def test_full_plays_only_and_include_skips_stay_independent(self):
+        """One checkbox drives both on /history, but they are separate
+        parameters here - a "simplification" that merges them would break the
+        song-detail Show Skips toggle, which drives includeSkips alone."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 200000, is_skip=0)   #< full
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000, is_skip=0)     #< partial
+        self.repo.insertPlay("alice", "t1", 3000.0, 1000, is_skip=1)     #< skip
+
+        bothOff = self.repo.getPlaysCount("alice", trackId="t1", includeSkips=True)
+        skipsOnly = self.repo.getPlaysCount("alice", trackId="t1", includeSkips=True,
+                                            fullPlaysOnly=True)
+
+        self.assertEqual(bothOff, 3)
+        #< the skip is short, so the completion test drops it even though
+        #  includeSkips let it past the is_skip filter
+        self.assertEqual(skipsOnly, 1)
+
+    def test_full_plays_only_binds_every_clause_in_order(self):
+        """_fullPlaysClause APPENDS a bound parameter, unlike the skip clause it
+        sits beside, so it has to be built in the position its `?` occupies.
+        Every other bind-carrying clause is set here at once: with no range or
+        afterTs, a scrambled order compares numbers to the wrong things and
+        still returns the right rows."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 200000)   #< before startTs
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)     #< partial, and before afterTs
+        self.repo.insertPlay("alice", "t2", 3000.0, 200000)
+        self.repo.insertPlay("alice", "t1", 4000.0, 200000)
+        self.repo.insertPlay("alice", "t1", 5000.0, 200000)   #< past endTs
+
+        entries = self.repo.getPlaysOldestFirst(
+            "alice", startTs=1500.0, endTs=4500.0, afterTs=2500.0,
+            trackIds=["t1", "t2"], fullPlaysOnly=True)
+
+        self.assertEqual([(e["id"], e["playedAt"]) for e in entries],
+                         [("t2", 3000.0), ("t1", 4000.0)])
+
+    def test_search_plays_can_include_skips(self):
+        """searchPlays hardcoded `AND p.is_skip=0` before /history grew an
+        opt-out, so this is the parameter that did not exist at all."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 200000, is_skip=0)
+        self.repo.insertPlay("alice", "t1", 2000.0, 1000, is_skip=1)
+
+        withoutSkips = self.repo.searchPlays("alice", "Song One")
+        withSkips = self.repo.searchPlays("alice", "Song One", includeSkips=True)
+
+        self.assertEqual([e["playedAt"] for e in withoutSkips], [1000.0])
+        self.assertEqual([e["playedAt"] for e in withSkips], [2000.0, 1000.0])
+        self.assertEqual(self.repo.searchPlaysCount("alice", "Song One", includeSkips=True), 2)
+
+    def test_search_plays_reports_whether_a_row_is_a_skip(self):
+        """The SELECT has to carry is_skip or _playRowToEntry defaults it to
+        False - harmless while skips were always filtered out, a lie now that
+        they can be listed."""
+        self.repo.insertPlay("alice", "t1", 2000.0, 1000, is_skip=1)
+
+        entries = self.repo.searchPlays("alice", "Song One", includeSkips=True)
+
+        self.assertTrue(entries[0]["isSkip"])
+
+    def test_search_plays_full_plays_only_drops_a_partial_listen(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 200000)
+        self.repo.insertPlay("alice", "t1", 2000.0, 5000)
+
+        entries = self.repo.searchPlays("alice", "Song One", fullPlaysOnly=True)
+
+        self.assertEqual([e["playedAt"] for e in entries], [1000.0])
+        self.assertEqual(self.repo.searchPlaysCount("alice", "Song One", fullPlaysOnly=True), 1)
 
     def test_count_filtered_by_artist_id(self):
         self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb2", artistId="art2"))

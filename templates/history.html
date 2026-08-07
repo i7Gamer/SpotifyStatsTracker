@@ -119,6 +119,13 @@
         </div>
         {% endif %}
 
+        {# Shared with the Top pages' filter card (_page_card.html) - same
+           control, same ?fullOnly=1|0, same meaning. No hx-trigger change is
+           needed for it: this form already triggers on bare `change`, and the
+           inline onchange fires at the target before htmx's listener sees the
+           event bubble, so the hidden field is right by serialization time. #}
+        {% include '_full_plays_toggle.html' %}
+
         {# This page renders a SHELL on a plain GET and fetches its body in a
            second request, so submitting this form reloaded to a permanent
            "Loading..." - the Apply button that used to sit here could not work

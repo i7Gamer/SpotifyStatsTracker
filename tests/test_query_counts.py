@@ -364,6 +364,71 @@ class OnThisDayQueryPlanTestCase(DatabaseTestCase):
         self.assertEqual(result, [])
 
 
+class HistoryFullPlaysQueryPlanTestCase(DatabaseTestCase):
+    """/history's "Full plays only" filter (on by DEFAULT) adds a tracks join to
+    a count that was a pure index scan, and that count is the one O(N) query the
+    page makes - the list itself is bounded by OFFSET+50.
+
+    The join is accepted (the completion predicate needs duration_ms per play
+    row, so every alternative form pays the same per-row seek, and an is_skip
+    index was measured and rejected twice - see Database/db.py). What is NOT
+    acceptable is the planner making `tracks` the OUTER loop: that drops
+    idx_plays_user_time, and with it the ability to use played_at as an index
+    bound, so a "Last Week" count starts walking the whole catalog. It flips
+    that way on a small library once ANALYZE has run - this app never runs it,
+    but Database/db.py already documents that per-user data distribution changes
+    which index SQLite picks, so the shape is pinned rather than assumed."""
+
+    def _db(self):
+        tracks = {"t1": normalizeTrackForTest({"id": "t1", "name": "Song", "artists": []})}
+        entries = [{"id": "t1", "playedAt": _ts(2025, month, 1), "timePlayed": 60000}
+                   for month in range(1, 13)]
+        return self._makeDb(tracks, entries)
+
+    def _countPlan(self, db, **kwargs):
+        """The plan for the statement getPlaysCount ACTUALLY issues, rather than
+        a copy of it here that would drift the first time the query changes.
+        The trace callback hands back the statement with its parameters already
+        expanded, so it re-explains without them."""
+        conn = db.repo._conn()
+        with _QueryCounter(conn) as counter:
+            db.repo.getPlaysCount(db.user, **kwargs)
+        countSql = [sql for sql in counter.statements if "COUNT(*)" in sql]
+        self.assertEqual(len(countSql), 1, counter.statements)
+        return " ".join(row["detail"] for row in
+                        conn.execute("EXPLAIN QUERY PLAN " + countSql[0]).fetchall())
+
+    def test_the_ranged_count_still_rides_the_play_time_index(self):
+        plan = self._countPlan(self._db(), startTs=_ts(2025, 3, 1), endTs=_ts(2025, 6, 1),
+                               fullPlaysOnly=True)
+
+        self.assertIn("idx_plays_user_time", plan)
+
+    def test_the_catalog_is_never_the_outer_loop(self):
+        """A SCAN of ft means every track in the library is walked and the
+        played_at range stops being a seek - the regression this class exists
+        for."""
+        plan = self._countPlan(self._db(), startTs=_ts(2025, 3, 1), endTs=_ts(2025, 6, 1),
+                               fullPlaysOnly=True)
+
+        self.assertNotIn("SCAN ft", plan)
+
+    def test_the_all_time_count_still_rides_the_play_time_index(self):
+        """The default /history view is unscoped, so this is the plan most page
+        loads actually get."""
+        plan = self._countPlan(self._db(), fullPlaysOnly=True)
+
+        self.assertIn("idx_plays_user_time", plan)
+        self.assertNotIn("SCAN ft", plan)
+
+    def test_the_filter_off_leaves_the_plays_scan_alone(self):
+        """_tracksJoin is emitted only when a duration filter is active, so the
+        queries that never needed the catalog keep not touching it."""
+        plan = self._countPlan(self._db(), fullPlaysOnly=False)
+
+        self.assertNotIn("tracks", plan)
+
+
 class PerRequestMemoizationTestCase(AppTestCase):
     """Context processors re-run on every render, and one request can render a
     dozen templates - an un-memoized "cheap settings read" is really one

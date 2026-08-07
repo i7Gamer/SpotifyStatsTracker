@@ -690,6 +690,19 @@ def register(app, dashboard):
         tag = request.args.get("tag", "") if tagsOn else ""
         userTags = db.repo.getUserTags(username) if tagsOn else []
 
+        # "Full plays only", the same control and the same ?fullOnly=1|0 the Top
+        # pages carry (see _topListFilters) - a COMPLETION test, not a skip test.
+        # A tri-state where ABSENT means the default, which is on, so only an
+        # explicit "0" opts out.
+        #
+        # Coerced rather than echoed back raw: this page builds its URLs from
+        # validated values, and ?fullOnly=bogus reaching listUrl and every page
+        # link would assert junk in the one place a reader would trust (the same
+        # rule test_the_first_load_url_holds_no_unvalidated_input pins for
+        # ?interval=). _topListFilters still echoes its raw value.
+        fullOnly = "0" if request.args.get("fullOnly") == "0" else "1"
+        fullPlaysOnly = fullOnly != "0"
+
         # Lightweight shell, same two-phase load as /compare, /charts, /genres:
         # the initial GET renders just the filter controls + an empty results
         # placeholder, and the list (plus pagination strip) arrives in a second
@@ -723,6 +736,12 @@ def register(app, dashboard):
                 "endDate": customEnd if interval == "custom" else "",
                 "sort": sortOrder if sortOrder == "oldest" else "",
                 "tag": tag,
+                #< unconditional, unlike the filters above: BOTH "1" and "0" are
+                #  non-empty strings so the `if v` below keeps them, and that is
+                #  required rather than incidental - an absent fullOnly means the
+                #  default, so omitting it here would make the first load
+                #  disagree with a checkbox the user can see is off
+                "fullOnly": fullOnly,
                 #< a junk or out-of-range page is clamped by _calculatePagination
                 #  on the list request; this only keeps a shared ?page=3 working,
                 #  so anything that isn't a page number is simply left out
@@ -738,6 +757,7 @@ def register(app, dashboard):
                 sort=sortOrder,
                 tag=tag,
                 user_tags=userTags,
+                fullPlaysOnly=fullPlaysOnly,
                 listUrl=url_for("history", **{k: v for k, v in listArgs.items() if v}),
             )
 
@@ -755,24 +775,34 @@ def register(app, dashboard):
         # (getTaggedTrackIds also matches a track via its tagged album/artist).
         trackIds = db.repo.getTaggedTrackIds(username, [tag]) if tag else None
 
+        # One checkbox, two filters, coupled HERE and nowhere below: ticking it
+        # asks for plays that finished, and a skip is not one of those, so the
+        # off state has to drop the skip filter too or /history would still be
+        # hiding rows with every box unticked. They stay separate parameters in
+        # the layers below because the song detail page's Show Skips toggle
+        # drives includeSkips on its own - merging them there would break it.
+        listFilters = {"includeSkips": not fullPlaysOnly, "fullPlaysOnly": fullPlaysOnly}
+
         if searchQuery:
             # Matching and pagination both happen in SQL (Repository.searchPlays)
             # instead of fetching every play ever recorded and filtering in Python.
             totalCount = db.searchEntriesCount(searchQuery, startDate=listStartDate, endDate=listEndDate,
-                                               trackIds=trackIds)
+                                               trackIds=trackIds, **listFilters)
             page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
             tracks = db.searchEntries(searchQuery, count=PAGE_SIZE, startIndex=startIndex,
                                       startDate=listStartDate, endDate=listEndDate,
-                                      oldestFirst=oldestFirst, trackIds=trackIds)
+                                      oldestFirst=oldestFirst, trackIds=trackIds, **listFilters)
         else:
             # Only materialize the page being shown - joining full track
             # metadata onto every entry ever recorded on every request gets
             # slow once the history grows large.
-            totalCount = db.getEntriesCount(startDate=listStartDate, endDate=listEndDate, trackIds=trackIds)
+            totalCount = db.getEntriesCount(startDate=listStartDate, endDate=listEndDate, trackIds=trackIds,
+                                            **listFilters)
             page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
             fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
             tracks = fetchEntries(count=PAGE_SIZE, startIndex=startIndex,
-                                  startDate=listStartDate, endDate=listEndDate, trackIds=trackIds)
+                                  startDate=listStartDate, endDate=listEndDate, trackIds=trackIds,
+                                  **listFilters)
         tracks = dashboard._embedSongsTextElements(tracks)
         tracks = dashboard._attachGenres(db, tracks, "track")
 
@@ -787,6 +817,10 @@ def register(app, dashboard):
             endDate=customEnd,
             sort=sortOrder if oldestFirst else None,
             tag=tag,
+            #< _buildPageUrl drops only None and "", so the string "0" rides into
+            #  every page link - which it must, or page 2 silently re-enables the
+            #  filter the user turned off
+            fullOnly=fullOnly,
         )
 
         creds = db.getUserSpotifyCredentials() or {}

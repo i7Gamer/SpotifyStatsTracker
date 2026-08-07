@@ -3,18 +3,19 @@
 //
 // Everything htmx could express declaratively was deleted from this file; what
 // is left is the handful of things it could NOT, which is exactly the part with
-// no coverage. Three of them are load-bearing:
+// no coverage. Two of them are load-bearing:
 //
-//   * updateFullPlaysFilter drives a HIDDEN field, because an unchecked
-//     checkbox is not serialized at all and an ABSENT fullOnly means ON to this
-//     route (see _topListFilters). Get it backwards and unticking the box turns
-//     the filter on.
 //   * the jump-to-page handler REPLACES the history entry, never pushes. A push
 //     would make Back walk through page numbers instead of leaving the page.
 //   * the htmx:configRequest veto is scoped to the FORM. A boosted pagination
 //     link carries its whole query in its href and has to keep working while
 //     the Time Period select sits on a half-typed custom range - the very state
 //     that blocks a form request.
+//
+// The "Full plays only" hidden field used to be a third; it moved to
+// static/js/htmx-filters.js (and tests/test_htmx_filters.js with it) when
+// /history started rendering the same partial, because this file is loaded by
+// the Top pages only.
 //
 // The stub is hand-rolled (no jsdom). Note HtmxFilters.RANGE_OK is null, not a
 // string: the veto below turns on `problem !== RANGE_OK`, so a stub returning
@@ -25,10 +26,6 @@ const path = require('path');
 const SCRIPT = path.join(__dirname, '..', 'static', 'js', 'top-list.js');
 const RANGE_OK = null;
 const RANGE_INVERTED = 'inverted';
-
-function makeField(value) {
-  return { value: value === undefined ? '' : value, checked: false, textContent: '' };
-}
 
 function loadTopList(options) {
   options = options || {};
@@ -77,30 +74,6 @@ function configRequest(page, elementId, parameters) {
 
 const results = [];
 function run(name, fn) { results.push({ name, fn }); }
-
-// ------------------------------------------------- the full-plays hidden field
-
-run('ticking "full plays only" writes the explicit 1 the route reads', () => {
-  const checkbox = makeField();
-  const hidden = makeField('0');
-  checkbox.checked = true;
-  const page = loadTopList({ elements: { fullPlaysOnly: checkbox, fullOnlyValue: hidden } });
-
-  page.window.updateFullPlaysFilter();
-
-  assert.strictEqual(hidden.value, '1');
-});
-
-run('unticking it writes an explicit 0, because absent would mean ON', () => {
-  const checkbox = makeField();
-  const hidden = makeField('1');
-  checkbox.checked = false;
-  const page = loadTopList({ elements: { fullPlaysOnly: checkbox, fullOnlyValue: hidden } });
-
-  page.window.updateFullPlaysFilter();
-
-  assert.strictEqual(hidden.value, '0', 'an unchecked box must not read as the default');
-});
 
 // ------------------------------------------------------------ jump to page
 

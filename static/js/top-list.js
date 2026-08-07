@@ -12,9 +12,10 @@
  * does this filter set vs delete" helpers went with it - the filter card now IS
  * the parameter list, serialized by htmx.
  *
- * What could not move is below, and it is the same short list as /history plus
- * one: two controls need a hidden field kept in step with them, because neither
- * a checkbox nor a shown/hidden date pair serializes the way the route reads it.
+ * What could not move is below, and it is now the same short list as /history:
+ * the jump-to-page hook and the request veto. The "Full plays only" hidden
+ * field used to make it one longer, and moved to static/js/htmx-filters.js when
+ * /history started rendering the same partial.
  *
  * Note there is no `hx-on:` or event-filter shortcut available here: the CSP
  * withholds 'unsafe-eval' from these pages (see templates/_page_card.html). */
@@ -25,8 +26,6 @@ var TOP_LIST_FORM_ID = 'topListFilters';
 var TOP_LIST_RESULTS_ID = 'topListResults';
 
 if (typeof document !== 'undefined') {
-  var byId = function (id) { return document.getElementById(id); };
-
   // Called from the Time Period select's onchange. Runs before htmx's listener
   // (an inline on*= handler fires at the target; htmx's is on the form and fires
   // as the event bubbles), so the disabled flags are already right by the time
@@ -37,14 +36,9 @@ if (typeof document !== 'undefined') {
   // URL - after switching back to a named interval.
   window.updateIntervalFilter = function () { HtmxFilters.syncCustomRange('customDates'); };
 
-  // "Full plays only" cannot be a plain form field. An unchecked checkbox is not
-  // serialized at all, and to this route an ABSENT fullOnly means the default,
-  // which is ON (see _topListFilters) - so unchecking it would have read as
-  // checking it. The checkbox therefore drives a hidden field carrying the
-  // explicit "1"/"0" the route expects, and htmx submits that.
-  window.updateFullPlaysFilter = function () {
-    byId('fullOnlyValue').value = byId('fullPlaysOnly').checked ? '1' : '0';
-  };
+  //< "Full plays only" moved to static/js/htmx-filters.js, which exports
+  //  window.updateFullPlaysFilter itself: /history renders the same partial now
+  //  (templates/_full_plays_toggle.html) and does not load this file
 
   // _pagination.html's jump-to-page input calls the shared
   // handleJumpToPageKeydown (static/js/layout-chrome.js), which defers to this
