@@ -2,10 +2,14 @@
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
 {# The play log's swap target, shared by all three detail bodies. The partial it
-   wraps differs (the song page's compact timeline vs the artist/album pages'
-   full history cards), so the caller sets `historyPartial` before including
-   this; everything around it has to stay identical, which is why it lives here
-   rather than being repeated three times.
+   wraps differs (the song page's compact timeline, the artist/album pages' full
+   history cards, and that timeline again for an album played from a single
+   track), so `historyPartial` names it; everything around it has to stay
+   identical, which is why it lives here rather than being repeated three times.
+
+   The route supplies that name, not the body template - which of the three
+   applies depends on the data, and the route is where that is already known.
+   See _detailHistoryContext.
 
    These attributes are inherited by whatever is swapped in, which is how the
    sort toggle and the pagination strip get their behaviour without

@@ -81,7 +81,7 @@
 </div>
 
 <div data-category="history" class="{{ 'visible' if view == 'history' else '' }}">
-  {% set historyPartial = '_detail_history_results.html' %}
+  {#- historyPartial comes from the route (see _detailHistoryContext) -#}
   {% include '_detail_history_container.html' %}
 </div>
 

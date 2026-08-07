@@ -69,7 +69,8 @@
   </div>
 </section>
 
-{% set historyPartial = '_play_log.html' %}
+{#- historyPartial comes from the route (see _detailHistoryContext); this page
+    is one track's log by construction, so it is always the timeline -#}
 {% include '_detail_history_container.html' %}
 
 {% include '_detail_chart_data.html' %}

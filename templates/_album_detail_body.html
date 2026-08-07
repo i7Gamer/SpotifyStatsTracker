@@ -79,7 +79,9 @@
 </div>
 
 <div data-category="history" class="{{ 'visible' if view == 'history' else '' }}">
-  {% set historyPartial = '_detail_history_results.html' %}
+  {#- historyPartial comes from the route (see _detailHistoryContext): this tab
+      renders cards normally, but the timeline when the album has only ever had
+      one track played from it -#}
   {% include '_detail_history_container.html' %}
 </div>
 

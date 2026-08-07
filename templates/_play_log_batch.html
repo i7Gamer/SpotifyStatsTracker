@@ -16,45 +16,10 @@
    button inherits hx-sync="#detailHistoryResults:replace" from the container
    (see _detail_history_container.html), so a sort/page change aborts a batch
    mid-request instead of letting stale rows append into a fresh list. #}
-{% for play in plays %}
-  {% if play.monthYearHeader %}
-    <div class="timeline-date-header">
-      <span>{{ play.monthYearHeader }}</span>
-    </div>
-  {% endif %}
-
-  {% if play.timePassedText %}
-    <div class="timeline-gap-connector">
-      <span class="timeline-gap-badge">{{ play.timePassedText }}</span>
-    </div>
-  {% endif %}
-
-  <article class="timeline-item play-type-{{ play.playType or 'full' }}">
-    <div class="timeline-node" title="{{ play.playTypeLabel or 'Full Play' }}">
-      {% if play.playType == 'skip' %}
-        <span class="node-icon">⏭</span>
-      {% elif play.playType == 'partial' %}
-        <span class="node-icon">◔</span>
-      {% else %}
-        <span class="node-icon">✓</span>
-      {% endif %}
-    </div>
-    <div class="timeline-content">
-      <div class="timeline-content-header">
-        <span class="timeline-time">{{ play.get('playedAtText') }}</span>
-        <span class="play-type-badge badge-{{ play.playType or 'full' }}">{{ play.playTypeLabel or 'Full Play' }}</span>
-      </div>
-      <div class="timeline-attributes">
-        {% if play.get('timePlayedText') %}
-          <span class="track-label">Time Played: {{ play.get('timePlayedText') }}</span>
-        {% endif %}
-        {% if play.get('contextName') %}
-          <span class="track-label">From {{ play.get('contextName') }}</span>
-        {% endif %}
-      </div>
-    </div>
-  </article>
-{% endfor %}
+{# The rows themselves live in _play_log_rows.html, shared with the album
+   History tab's timeline (see _detail_history_timeline.html) - that page frames
+   the same rows with a pagination strip instead of the control below. #}
+{% include '_play_log_rows.html' %}
 
 {% if hasMore %}
   {# htmx-fade-target + hx-indicator: the button dims for exactly the life of

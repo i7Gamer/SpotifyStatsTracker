@@ -1,0 +1,54 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The album detail page's History tab when only ONE track has ever been played
+   from the album.
+
+   _detail_history_results.html renders full cards here, and its reason is that
+   consecutive plays on an artist/album page are normally different songs, so
+   every row has to say which. With one song that reasoning inverts: each card
+   would repeat the same title, artist and cover, and what actually differs
+   between rows - when, and how much of it played - is exactly what the timeline
+   shows. The route picks between the two; see _detailHistoryContext.
+
+   The rows are the song detail page's, shared verbatim (_play_log_rows.html).
+   The FRAME is not, and deliberately:
+
+   - a numbered pagination strip, not that page's "Show more" control. This page
+     pages its history rather than growing it, and the control belongs to the
+     song page's offset/limit contract.
+   - no Show Skips toggle. This list is fetched without skips at all (see
+     _detailHistoryContext's non-song branch), so a toggle would offer a state
+     it cannot reach.
+
+   Expects: plays (through _enrichSongTimelineEntries), itemName, sortOldest,
+   sortToggleUrl, plus everything _pagination.html needs. #}
+{# hx-boost on the header rather than on the container: it holds the sort
+   toggle, and boosting the container would also capture every link inside the
+   rows below. Same rule, and same reason, as _detail_history_results.html. #}
+<div class="play-log-header detail-tabs-heading" hx-boost="true">
+  <h2>History with {{ itemName }}</h2>
+  <a class="button sort-toggle" href="{{ sortToggleUrl }}"
+     aria-label="Sorted {{ 'oldest' if sortOldest else 'newest' }} first - click to sort {{ 'newest' if sortOldest else 'oldest' }} first">Date {{ '↑' if sortOldest else '↓' }}</a>
+</div>
+
+{# No id on the items list, unlike the song page's #timelineItems: that id is
+   the append target its "Show more" swaps into, and there is nothing here to
+   fill it. #}
+<div class="timeline-container">
+  <div class="timeline-stem"></div>
+  <div class="timeline-items">
+    {% if plays %}
+      {% include '_play_log_rows.html' %}
+    {% else %}
+      <p class="loading">No plays recorded yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+{# Same scoping rule as the header: the Prev/Next and page-number links become
+   in-place swaps, and _pagination.html - shared with pages that are not on
+   htmx - needs no changes. #}
+<div hx-boost="true">
+  {% include '_pagination.html' %}
+</div>

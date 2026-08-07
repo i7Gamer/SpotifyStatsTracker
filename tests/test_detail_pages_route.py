@@ -1487,6 +1487,167 @@ class TestAlbumDetailRoute(_DetailRouteTestBase):
         db.getListeningTimeSeries.assert_not_called()
 
 
+class TestAlbumHistoryTimeline(_DetailRouteTestBase):
+    """An album you have only ever played ONE track from gets the song page's
+    timeline instead of full history cards.
+
+    The cards exist because consecutive plays on an artist/album page are
+    normally different songs, so each row has to say which - see the comment in
+    _detail_history_results.html. When there is only one song that reasoning
+    inverts: every card repeats the same title, artist and cover, and the thing
+    that actually differs between rows (when, and how much of it played) is what
+    the timeline is built to show.
+
+    uniqueSongCount is the album's own aggregate, already on the page, and it
+    counts distinct NON-SKIP tracks - which is exactly what this list holds, so
+    the two cannot disagree about how many songs are in it."""
+
+    def _album(self, uniqueSongCount):
+        return {"id": "alb1", "name": "Album One", "url": "http://example.com/alb1", "imageId": "alb1",
+                "imageUrl": "", "totalTracks": 12, "releaseDate": 0, "artists": [],
+                "plays": 5, "totalTimeListened": 50000,
+                "uniqueSongCount": uniqueSongCount, "firstListenedAt": 100}
+
+    def _plays(self, *specs):
+        """(playedAt, timePlayed) pairs, all of the same track."""
+        return [{"id": "t1", "name": "The Only Song", "artists": [], "duration": 200000,
+                 "playedAt": playedAt, "timePlayed": timePlayed, "isSkip": False}
+                for playedAt, timePlayed in specs]
+
+    def _db(self, uniqueSongCount, plays):
+        db = MagicMock()
+        db.getAlbum.return_value = self._album(uniqueSongCount)
+        db.getAlbumBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getEntriesCount.return_value = len(plays)
+        db.getEntriesFromNew.return_value = plays
+        return db
+
+    def _body(self, uniqueSongCount, plays, query="?view=history"):
+        """The History TAB only. The page's hero is itself a .track-card, so a
+        whole-page assertion about cards would always pass."""
+        dash = self._makeApp()
+        db = self._db(uniqueSongCount, plays)
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._getPath(dash, db, f"/album/alb1{query}").get_data(as_text=True)
+        return self._historyTab(body)
+
+    @staticmethod
+    def _historyTab(body):
+        start = body.index('data-category="history"')
+        return body[start:body.index('id="detailChartData"', start)]
+
+    def test_one_played_track_gets_the_timeline(self):
+        body = self._body(1, self._plays((1784560000, 190000), (1784540000, 190000)))
+
+        self.assertIn('class="timeline-container"', body)
+        self.assertIn("timeline-item", body)
+        self.assertNotIn('class="track-card', body)
+
+    def test_two_played_tracks_keep_the_cards(self):
+        """The normal album page is untouched."""
+        body = self._body(2, self._plays((1784560000, 190000), (1784540000, 190000)))
+
+        self.assertIn('class="track-card', body)
+        self.assertNotIn('class="timeline-container"', body)
+
+    def test_the_timeline_still_says_which_album_it_is(self):
+        body = self._body(1, self._plays((1784560000, 190000)))
+
+        self.assertIn("History with Album One", body)
+
+    def test_the_timeline_keeps_the_sort_toggle(self):
+        """Swapping the row rendering must not cost the tab its controls."""
+        body = self._body(1, self._plays((1784560000, 190000)))
+
+        self.assertIn("sort-toggle", body)
+        self.assertIn("Date ↓", body)
+
+    def test_the_timeline_keeps_numbered_pagination(self):
+        """This page pages its history; it does NOT grow it. The song page's
+        "Show more" batching belongs to that page's offset/limit contract, and
+        borrowing the timeline must not drag it along."""
+        from app import PAGE_SIZE
+        dash = self._makeApp()
+        db = self._db(1, self._plays((1784560000, 190000)))
+        db.getEntriesCount.return_value = PAGE_SIZE * 2 + 5
+
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._historyTab(
+                self._getPath(dash, db, "/album/alb1?view=history").get_data(as_text=True))
+
+        self.assertIn('class="pagination"', body)
+        self.assertIn("page=2", body)
+        self.assertNotIn("Show More Plays", body)
+
+    def test_the_timeline_labels_each_play(self):
+        """The same playType vocabulary the song page's timeline uses - it is
+        the same template, and _enrichSongTimelineEntries is what fills it."""
+        body = self._body(1, self._plays((1784560000, 190000), (1784540000, 20000)))
+
+        self.assertIn("play-type-full", body)
+        self.assertIn("play-type-partial", body)
+        self.assertIn("Partial • 10%", body)
+
+    def test_the_timeline_carries_its_month_headers_and_gaps(self):
+        """The two things the timeline adds over a bare list, and the reason
+        _enrichSongTimelineEntries is the right enricher here rather than
+        _attachPlayTypes."""
+        threeHours = 10800
+        body = self._body(1, self._plays((1784560000, 190000), (1784560000 - threeHours, 190000)))
+
+        self.assertIn("timeline-date-header", body)
+        self.assertIn("timeline-gap-badge", body)
+        self.assertIn("3 hours later", body)
+
+    def test_the_htmx_list_swap_returns_the_timeline_too(self):
+        """The sort/page controls re-swap only the list, so that response has to
+        agree with the one the full body rendered - otherwise changing the sort
+        turns the timeline back into cards."""
+        dash = self._makeApp()
+        db = self._db(1, self._plays((1784560000, 190000)))
+
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            resp = self._getRaw(dash, db, "/album/alb1", headers=HX_LIST_HEADERS)
+
+        body = resp.get_data(as_text=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('class="timeline-container"', body)
+        self.assertNotIn('class="track-card', body)
+
+    def test_an_album_with_no_plays_at_all_does_not_crash(self):
+        """uniqueSongCount comes from the album's aggregate, which falls back to
+        a skip-ranked lookup for a skip-only album - so it can report 1 while
+        this list, which excludes skips, is empty."""
+        body = self._body(1, [])
+
+        self.assertIn("No plays recorded yet", body)
+
+    def test_the_artist_page_is_not_affected(self):
+        """Deliberately album-only for now: an album is a fixed, small track set
+        where "only ever played track 3" is an ordinary state, and it is the
+        case that was asked for. The mechanism takes one flag, so artists can
+        join later."""
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = {"id": "a1", "name": "Artist A", "url": "u", "imageId": "a1",
+                                     "imageUrl": "", "plays": 5, "totalTimeListened": 50000,
+                                     "uniqueSongCount": 1, "firstListenedAt": 100}
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getEntriesCount.return_value = 1
+        db.getEntriesFromNew.return_value = self._plays((1784560000, 190000))
+
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._historyTab(
+                self._getPath(dash, db, "/artist/a1?view=history").get_data(as_text=True))
+
+        self.assertIn('class="track-card', body)
+        self.assertNotIn('class="timeline-container"', body)
+
+
 class TestDetailPageDeferredBody(_DetailRouteTestBase):
     """The two-phase split itself: the plain GET is a shell and everything
     below the toolbar arrives in a second request htmx makes on first paint

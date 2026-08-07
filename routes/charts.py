@@ -1181,13 +1181,24 @@ def register(app, dashboard):
 
     def _detailHistoryContext(db, endpoint, linkArgs, groupByParam="",
                                trackId=None, artistId=None, albumId=None,
-                               trackDurationMs=None):
+                               trackDurationMs=None, singleTrackTimeline=False):
         """The detail pages' play-history list context: one sorted+paginated
         page of the item's individual plays, the Date-sort toggle URL, and
         _pagination.html's context. `linkArgs` are the endpoint kwargs every
         list URL must carry (the item id, plus view=history for the artist/
         album tabs); groupBy rides along in every URL so list navigation
-        never resets the Trend-buckets chart selection."""
+        never resets the Trend-buckets chart selection.
+
+        Also returns `historyPartial`, the template that renders the list.
+        Which one it is depends on the data, not on the page - an album played
+        from a single track wants the timeline the song page uses - so it is
+        decided here, where the shape of the context is decided, rather than
+        being hardcoded per body template as it used to be.
+
+        `singleTrackTimeline` asks for that swap: every play in this list is
+        the same track, so cards would repeat one title, artist and cover down
+        the page. It only affects the artist/album branch; the song page is a
+        single track's log by construction and already renders the timeline."""
         sortOrder = dashboard._getHistorySortParam()
         oldestFirst = sortOrder == "oldest"
         isSongDetail = trackId is not None and artistId is None and albumId is None
@@ -1240,6 +1251,7 @@ def register(app, dashboard):
 
             return {
                 "plays": plays,
+                "historyPartial": "_play_log.html",
                 "totalCount": totalCount,
                 "offset": offset,
                 "hasMore": hasMore,
@@ -1260,16 +1272,25 @@ def register(app, dashboard):
         plays = fetchEntries(count=PAGE_SIZE, startIndex=startIndex,
                              trackId=trackId, artistId=artistId, albumId=albumId)
         plays = dashboard._embedSongsTextElements(plays)
-        #< the artist/album History tab renders the same card /history does
-        #  (_detail_history_results.html -> _track_card.html, section='history'),
-        #  and shows partial plays for the same reason: this list is not filtered
-        #  by completion. Without this the two surfaces would label the same row
-        #  differently. The song page's log is the timeline instead, which labels
-        #  every play already - see _enrichSongTimelineEntries above.
-        plays = dashboard._attachPlayTypes(plays)
+        if singleTrackTimeline:
+            # The timeline needs more than a play-type label: its rows are
+            # grouped by month and separated by the gap since the previous
+            # play, and _enrichSongTimelineEntries is what attaches all three.
+            # No trackDurationMs to pass - every row here carries its own
+            # `duration` from the catalog, which that function prefers anyway.
+            plays = dashboard._enrichSongTimelineEntries(plays)
+        else:
+            #< the artist/album History tab renders the same card /history does
+            #  (_detail_history_results.html -> _track_card.html,
+            #  section='history'), and shows partial plays for the same reason:
+            #  this list is not filtered by completion. Without this the two
+            #  surfaces would label the same row differently.
+            plays = dashboard._attachPlayTypes(plays)
         sharedArgs = dict(linkArgs, groupBy=groupByParam, sort=sortOrder if oldestFirst else None)
         return {
             "plays": plays,
+            "historyPartial": ("_detail_history_timeline.html" if singleTrackTimeline
+                               else "_detail_history_results.html"),
             "startIndex": startIndex,
             "sortOldest": oldestFirst,
             "isSongDetail": False,
@@ -1473,15 +1494,35 @@ def register(app, dashboard):
                 **{kind: entity},
             )
 
+        # An album you have only ever played ONE track from gets the song page's
+        # timeline instead of full history cards: the cards exist to say WHICH
+        # song each row was, and with one song they say it over and over while
+        # burying what differs (when, and how much of it played).
+        #
+        # uniqueSongCount is the entity's own aggregate, already fetched above,
+        # and it counts distinct non-skip tracks - exactly what this list holds,
+        # since it is fetched without skips - so the two cannot disagree about
+        # how many songs are in it.
+        #
+        # Albums only for now. An album is a fixed, small track set where "only
+        # ever played track 3" is an ordinary state; whether an artist page
+        # wants the same treatment is a separate question, and answering it yes
+        # later means dropping the kind check.
+        singleTrackTimeline = kind == "album" and entity.get("uniqueSongCount") == 1
+
         listCtx = _detailHistoryContext(db, f"{kind}DetailPage", {urlIdKwarg: entityId, "view": "history"},
-                                        groupByParam=groupByParam, **spanKwargs)
+                                        groupByParam=groupByParam,
+                                        singleTrackTimeline=singleTrackTimeline, **spanKwargs)
         listCtx["plays"] = dashboard._attachGenres(db, listCtx["plays"], "track")
         # The sort toggle / pagination links re-swap just the play log. These
         # pages page their history rather than growing it, so there is no
         # DETAIL_MORE_TARGET branch here - only songDetailPage has a "Show more".
+        #
+        # Renders whichever partial the context chose, so a sort or page change
+        # cannot turn a timeline back into cards.
         if swapTarget == DETAIL_HISTORY_TARGET:
             return render_template(
-                "_detail_history_results.html", username=username,
+                listCtx["historyPartial"], username=username,
                 itemName=entity.get("name", ""), **listCtx)
 
         groupBy = dashboard._resolveGroupBy(

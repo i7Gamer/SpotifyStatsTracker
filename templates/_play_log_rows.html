@@ -1,0 +1,56 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The timeline's rows, and nothing around them. Two surfaces render the same
+   list of plays and frame it differently, which is why this is its own file:
+
+     _play_log_batch.html          the song detail page - rows plus the
+                                   "Show more" control, because there a batch
+                                   is also a response in its own right
+     _detail_history_timeline.html an album played from only one track - rows
+                                   plus a numbered pagination strip, because
+                                   that page pages its history instead
+
+   Expects each play to have been through _enrichSongTimelineEntries:
+   playType/playTypeLabel, monthYearHeader and timePassedText all come from
+   there, and a row rendered without it silently loses its labels rather than
+   failing. #}
+{% for play in plays %}
+  {% if play.monthYearHeader %}
+    <div class="timeline-date-header">
+      <span>{{ play.monthYearHeader }}</span>
+    </div>
+  {% endif %}
+
+  {% if play.timePassedText %}
+    <div class="timeline-gap-connector">
+      <span class="timeline-gap-badge">{{ play.timePassedText }}</span>
+    </div>
+  {% endif %}
+
+  <article class="timeline-item play-type-{{ play.playType or 'full' }}">
+    <div class="timeline-node" title="{{ play.playTypeLabel or 'Full Play' }}">
+      {% if play.playType == 'skip' %}
+        <span class="node-icon">⏭</span>
+      {% elif play.playType == 'partial' %}
+        <span class="node-icon">◔</span>
+      {% else %}
+        <span class="node-icon">✓</span>
+      {% endif %}
+    </div>
+    <div class="timeline-content">
+      <div class="timeline-content-header">
+        <span class="timeline-time">{{ play.get('playedAtText') }}</span>
+        <span class="play-type-badge badge-{{ play.playType or 'full' }}">{{ play.playTypeLabel or 'Full Play' }}</span>
+      </div>
+      <div class="timeline-attributes">
+        {% if play.get('timePlayedText') %}
+          <span class="track-label">Time Played: {{ play.get('timePlayedText') }}</span>
+        {% endif %}
+        {% if play.get('contextName') %}
+          <span class="track-label">From {{ play.get('contextName') }}</span>
+        {% endif %}
+      </div>
+    </div>
+  </article>
+{% endfor %}
