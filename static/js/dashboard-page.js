@@ -128,11 +128,11 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   var card = document.getElementById('nowPlayingCard');
   var panel = document.getElementById('nowPlayingPanel');
   // Friends' current tracks ride along on this same poll (see
-  // routes/system.py) so the strip costs no extra requests. Looked up here,
-  // beside the now-playing elements, because the guard below has to know
-  // about BOTH: the two halves are independently absent (the strip isn't
-  // rendered without shares or with the admin switch off), so neither may
-  // gate the other's polling.
+  // routes/system.py) so the block costs no extra requests. It sits in the
+  // same card as the user's own now-playing, but is looked up separately
+  // because the guard below has to know about BOTH: the two halves are
+  // independently absent (the friends block isn't rendered without shares or
+  // with the admin switch off), so neither may gate the other's polling.
   var friendsRow = document.getElementById('friendsListening');
   var friendsChips = document.getElementById('friendsListeningChips');
   var friendsMore = document.getElementById('friendsListeningMore');
@@ -234,9 +234,14 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     friends = friends || [];
     if (!friends.length) {
       friendsRow.style.display = 'none';
+      if (panel) panel.classList.remove('has-friends');
       renderedFriends = null;
       return;
     }
+    //< the panel draws the divider above the streak off this mark, so it goes
+    //  BEFORE the unchanged-poll early return below: a poll that brings no news
+    //  still has to leave the panel marked
+    if (panel) panel.classList.add('has-friends');
     var signature = friendsStripSignature(friends, moreCount);
     if (signature === renderedFriends) return;
     renderedFriends = signature;

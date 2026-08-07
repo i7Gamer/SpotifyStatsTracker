@@ -10,27 +10,50 @@
     <div class="dashboard-summary dashboard-summary-live">
       <div class="dashboard-summary-cards">
       <div class="summary-card now-playing-card" id="nowPlayingPanel">
-        {# The now-playing sub-panel toggles with playback; the listening streak
-           sits below it in the same panel and is always shown. #}
+        {# Three blocks stack in this one card: what YOU are playing, what the
+           people you share with are playing, and the listening streak. The
+           first two toggle with playback (the poll reveals them and marks the
+           panel, which is what draws the divider above whatever follows); the
+           streak is always shown. #}
         <div id="nowPlayingCard" class="now-playing-inner" style="display: none;">
-          <h2>Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
-          <div class="now-playing-body">
-            {# Text on the left below the heading, cover art in the top-right. #}
-            <div class="now-playing-meta">
-              <a id="nowPlayingName" class="now-playing-name" href="#"></a>
-              <div id="nowPlayingArtists" class="now-playing-artists"></div>
-              <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
-            </div>
-            {# No src attribute until the now-playing JS assigns one: src=""
-               fails at parse time, firing (and burning) the one-shot onerror
-               fallback before there was ever a real cover URL to fall back
-               from. #}
-            <a id="nowPlayingCoverLink" class="now-playing-cover-link" aria-label="Open the current track">
-              <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
-                   onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
-            </a>
+          {# Heading, text and cover are grid siblings rather than a heading
+             above a text+cover row: from full-nav widths up the heading moves
+             INTO the row beside the cover, which it can only do as a sibling of
+             it. See .now-playing-inner in style.css for the area swap. #}
+          <h2 class="now-playing-heading">Now playing <span id="nowPlayingState" class="now-playing-state">Playing</span></h2>
+          <div class="now-playing-meta">
+            <a id="nowPlayingName" class="now-playing-name" href="#"></a>
+            <div id="nowPlayingArtists" class="now-playing-artists"></div>
+            <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
           </div>
+          {# No src attribute until the now-playing JS assigns one: src=""
+             fails at parse time, firing (and burning) the one-shot onerror
+             fallback before there was ever a real cover URL to fall back
+             from. #}
+          <a id="nowPlayingCoverLink" class="now-playing-cover-link" aria-label="Open the current track">
+            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
+                 onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+          </a>
         </div>
+
+        {# What the people you share with are playing right now. Rendered empty
+           and revealed by the same poll as the block above, and collapsed
+           entirely whenever nobody is playing - with a handful of shares that
+           is the common case, and a permanent "nobody is listening" line isn't
+           worth the vertical space.
+           Deliberately NOT .summary-card: those are flex: 1 1 0, so a chip
+           built from one would stretch across the whole card holding a
+           fraction of its content. Fixed-width chips wrap instead. #}
+        {# hasAcceptedShares comes from _injectShareStatus - a viewer with no
+           shares gets no markup at all rather than a permanently hidden row. #}
+        {% if friends_now_playing_enabled and hasAcceptedShares %}
+        <div class="friends-listening" id="friendsListening" style="display: none;">
+          <h2>Friends listening</h2>
+          <div class="friends-listening-chips" id="friendsListeningChips"></div>
+          <span class="friends-listening-more" id="friendsListeningMore" style="display: none;"></span>
+        </div>
+        {% endif %}
+
         <div class="streak-block">
           <h2>Listening streak</h2>
           <div class="streak-line">
@@ -80,24 +103,6 @@
       </div>
       {% endif %}
       </div>{# .dashboard-summary-cards #}
-
-      {# What the people you share with are playing right now. Rendered empty
-         and revealed by the now-playing poll (same pattern as the Now Playing
-         sub-panel above), and collapsed entirely whenever nobody is playing -
-         with a handful of shares that is the common case, and a permanent
-         "nobody is listening" line isn't worth the vertical space.
-         Deliberately NOT .summary-card: those are flex: 1 1 0, so two friends
-         would stretch to ~590px each - wider than your own card, holding less.
-         Fixed-width chips wrap instead. #}
-      {# hasAcceptedShares comes from _injectShareStatus - a viewer with no
-         shares gets no markup at all rather than a permanently hidden row. #}
-      {% if friends_now_playing_enabled and hasAcceptedShares %}
-      <div class="friends-listening" id="friendsListening" style="display: none;">
-        <span class="friends-listening-label">Friends listening</span>
-        <div class="friends-listening-chips" id="friendsListeningChips"></div>
-        <span class="friends-listening-more" id="friendsListeningMore" style="display: none;"></span>
-      </div>
-      {% endif %}
 
       {# Listening trends row: Obsession, Rediscovery, Forgotten Favorite.
          Deferred the same way the Discover card above is - see its comment for

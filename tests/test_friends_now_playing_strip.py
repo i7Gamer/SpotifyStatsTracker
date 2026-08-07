@@ -1,10 +1,12 @@
 """The dashboard markup for the friends-listening strip.
 
-The strip lives between the live cards row and the trends row, and is populated
-by the existing now-playing poll. What's pinned here is when the markup exists
-at all, and that it doesn't reuse .summary-card - those are flex: 1 1 0, so two
-friends would each stretch wider than the viewer's own Now Playing card while
-holding less content.
+The strip lives INSIDE the Now Playing panel - "what is playing right now" is
+one question, and the answer for you and the answer for the people you share
+with belong in one card rather than in a card and a separate row below it. It is
+populated by the existing now-playing poll. What's pinned here is when the
+markup exists at all, where it sits in the panel, and that it doesn't reuse
+.summary-card - those are flex: 1 1 0, so a chip built from one would stretch to
+the full card width while holding a fraction of its content.
 """
 import os
 import re
@@ -69,15 +71,25 @@ class TestWhenTheStripIsRendered(FriendsStripTestCase):
 
 
 class TestStripLayout(FriendsStripTestCase):
-    def test_it_sits_between_the_live_cards_and_the_trends_row(self):
+    def test_it_sits_inside_the_now_playing_panel(self):
+        """Not in a row of its own below the cards: the panel answers "what is
+        playing right now", and the friends are the rest of that answer."""
+        html = self._dashboardHtml()
+        panel = html[html.index('id="nowPlayingPanel"'):html.index("onthisday-card")]
+
+        self.assertIn('id="friendsListening"', panel)
+
+    def test_it_sits_between_your_own_track_and_the_streak(self):
+        """Both halves of "right now" together, with the streak - a statistic
+        about the past - kept below them."""
         html = self._dashboardHtml()
 
-        nowPlayingIdx = html.index('id="nowPlayingPanel"')
+        ownTrackIdx = html.index('id="nowPlayingCard"')
         stripIdx = html.index('id="friendsListening"')
-        trendsIdx = html.index('id="dashboardTrendsContainer"')
+        streakIdx = html.index('class="streak-block"')
 
-        self.assertLess(nowPlayingIdx, stripIdx)
-        self.assertLess(stripIdx, trendsIdx)
+        self.assertLess(ownTrackIdx, stripIdx)
+        self.assertLess(stripIdx, streakIdx)
 
     def test_it_is_inside_the_filter_independent_live_panel(self):
         """Below the filter form it would read as filtered data, which it isn't."""
@@ -88,13 +100,25 @@ class TestStripLayout(FriendsStripTestCase):
     def test_chips_do_not_reuse_the_stretching_summary_card_class(self):
         html = self._dashboardHtml()
 
-        # End the slice at the START of the trends div - its own
-        # class="dashboard-summary-cards" contains "summary-card" as a substring.
+        # End the slice at the streak block, the next thing in the panel: the
+        # enclosing card IS a .summary-card, so the slice has to cover the
+        # friends block alone.
         stripMarkup = html[
             html.index('<div class="friends-listening"'):
-            html.index('<div class="dashboard-summary-cards" id="dashboardTrendsContainer"')
+            html.index('<div class="streak-block">')
         ]
         self.assertNotIn("summary-card", stripMarkup)
+
+    def test_it_is_titled_like_the_panel_s_other_blocks(self):
+        """Inside the card it is a section of one, not a labelled strip - so it
+        carries an h2 like "Now playing" and "Listening streak" above it."""
+        html = self._dashboardHtml()
+        stripMarkup = html[
+            html.index('<div class="friends-listening"'):
+            html.index('<div class="streak-block">')
+        ]
+
+        self.assertIn("<h2>Friends listening</h2>", stripMarkup)
 
     def test_the_chip_container_and_overflow_count_exist_for_the_poll(self):
         html = self._dashboardHtml()
@@ -166,6 +190,35 @@ class TestTheChipIsALink(unittest.TestCase):
         self.assertIn("if (signature === renderedFriends) return;", self.script)
 
 
+class TestTheStripTellsThePanelItIsShowing(unittest.TestCase):
+    """Now that the strip is a block inside the card, the card has to know
+    whether it is showing - that's what draws the divider above the streak when
+    the viewer isn't playing anything themselves. Asserted against the source
+    for the same reason the poll's guards are: the class is set from a fetch
+    callback no render test can reach."""
+
+    def setUp(self):
+        scriptPath = os.path.join(os.path.dirname(__file__), "..", "static", "js", "dashboard-page.js")
+        with open(scriptPath, encoding="utf-8") as handle:
+            self.script = handle.read()
+
+    def test_the_panel_is_marked_while_friends_are_listening(self):
+        self.assertIn("panel.classList.add('has-friends')", self.script)
+
+    def test_the_mark_is_dropped_when_nobody_is(self):
+        self.assertIn("panel.classList.remove('has-friends')", self.script)
+
+    def test_the_mark_is_set_before_the_unchanged_poll_early_return(self):
+        """Below it, the very first poll of a page load would set the class and
+        every later one would skip it - fine - but a chips-unchanged poll
+        arriving first after a re-render would leave the divider off."""
+        renderFriends = self.script[self.script.index("function renderFriends("):]
+        renderFriends = renderFriends[:renderFriends.index("\n  var pollTimer")]
+
+        self.assertLess(renderFriends.index("panel.classList.add('has-friends')"),
+                        renderFriends.index("if (signature === renderedFriends) return;"))
+
+
 class TestStripStyling(unittest.TestCase):
     """The one rule the layout depends on, asserted against the stylesheet: a
     chip that can grow reintroduces exactly the stretched-slab problem."""
@@ -176,9 +229,19 @@ class TestStripStyling(unittest.TestCase):
             self.css = handle.read()
 
     def _block(self, selector):
-        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
-        self.assertIsNotNone(match, f"{selector} missing from style.css")
-        return match.group(1)
+        """The declarations of the rule whose selector LIST includes `selector`.
+
+        Split on commas rather than matching "<selector> {" directly: the panel's
+        dividers share one rule, so most of their selectors are followed by a
+        comma and a direct lookup finds nothing. Comments come out first - this
+        stylesheet's carry the reasoning, commas and all, and one sits directly
+        above nearly every rule here.
+        """
+        rules = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
+        for match in re.finditer(r"([^{}]*)\{([^{}]*)\}", rules):
+            if selector in [part.strip() for part in match.group(1).split(",")]:
+                return match.group(2)
+        self.fail(f"{selector} missing from style.css")
 
     def test_a_chip_never_grows(self):
         self.assertIn("flex: 0 1 auto", self._block(".friends-listening-chip"))
@@ -206,14 +269,29 @@ class TestStripStyling(unittest.TestCase):
         self.assertIn("text-decoration: none", block)
         self.assertIn("color: inherit", block)
 
-    def test_the_row_wraps_rather_than_scrolling(self):
-        block = self._block(".friends-listening")
+    def test_the_chips_wrap_rather_than_scrolling(self):
+        block = self._block(".friends-listening-chips")
         self.assertIn("flex-wrap: wrap", block)
         self.assertNotIn("overflow-x", block)
 
+    def test_the_block_stacks_its_heading_above_the_chips(self):
+        """Inside the card the label is a heading with the chips under it, not a
+        label sitting to their left - that's what the other blocks look like."""
+        self.assertIn("display: grid", self._block(".friends-listening"))
+
     def test_long_names_ellipsise_instead_of_widening_the_chip(self):
-        block = self._block(".friends-listening-track,\n.friends-listening-artist")
+        block = self._block(".friends-listening-track")
         self.assertIn("text-overflow: ellipsis", block)
+
+    def test_a_divider_separates_it_from_your_own_track_above(self):
+        """The blocks are hidden with display:none, which :first-child cannot
+        see - so each divider is keyed off the class the poll sets."""
+        self.assertIn("border-top", self._block(".now-playing-card.has-now-playing .friends-listening"))
+
+    def test_the_streak_below_is_divided_off_when_only_friends_are_playing(self):
+        """Its old rule fired on has-now-playing alone, so a viewer who wasn't
+        playing got the friends block welded to the streak."""
+        self.assertIn("border-top", self._block(".now-playing-card.has-friends .streak-block"))
 
 
 if __name__ == "__main__":

@@ -289,14 +289,42 @@ button {
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Now Playing card (dashboard) - hidden until /api/now-playing reports a track.
-   Text sits on the left, cover art on the right; the text is bottom-aligned so
-   it lines up with the base of the (taller) cover instead of the heading. */
-.now-playing-body {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
+/* Now Playing block (dashboard) - hidden until /api/now-playing reports a
+   track. Heading, track text and cover art are one grid rather than a heading
+   above a text+cover row: from full-nav widths up the heading moves INTO the
+   row beside the cover (see the area swap below), and it can only do that as a
+   grid sibling of it. The text is bottom-aligned either way, so it lines up
+   with the base of the (taller) cover instead of floating under the heading. */
+.now-playing-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head head"
+    "meta cover";
+  align-items: end;
+  gap: 8px 12px;
   min-width: 0;
+}
+
+.now-playing-heading {
+  grid-area: head;
+  /* Beside the 112px cover this row is taller than the heading, and centred
+     text there reads as floating in the cover's top half. */
+  align-self: start;
+}
+
+/* Below the full-nav breakpoint the cover is a 56px thumbnail, and a heading
+   squeezed beside it leaves too little for either. From there up the cover is
+   112px, so a full-width heading row left an empty strip to its left and made
+   the card taller for nothing. Same breakpoint as the cover bump further down,
+   deliberately: at any width where they disagree the heading would sit beside
+   a thumbnail, or the tall cover would keep the wasted strip. */
+@media (min-width: 1025px) {
+  .now-playing-inner {
+    grid-template-areas:
+      "head cover"
+      "meta cover";
+  }
 }
 
 .now-playing-cover {
@@ -308,8 +336,8 @@ button {
 }
 
 .now-playing-meta {
+  grid-area: meta;
   min-width: 0;
-  flex: 1;
   display: grid;
   gap: 4px;
 }
@@ -346,9 +374,9 @@ button {
 }
 
 .now-playing-cover-link {
+  grid-area: cover;
   display: inline-block;
   line-height: 0;
-  flex-shrink: 0;
 }
 
 .now-playing-state {
@@ -4096,27 +4124,23 @@ html.theme-red {
   }
 }
 
-/* Friends-listening strip: what the people you share with are playing right
-   now, between the live cards row and the trends row.
+/* Friends-listening block: what the people you share with are playing right
+   now. It lives inside the Now Playing panel - one card answers "what is
+   playing right now", for you and for them - so it stacks a heading above the
+   chips like the panel's other blocks rather than labelling a row from the
+   left. Vertical spacing is the panel's own grid gap; the divider above it
+   comes from the has-* rules further down.
 
-   Deliberately not built from .summary-card. Those are flex: 1 1 0, so with
-   two friends each item would stretch to roughly 590px - wider than the
-   viewer's own Now Playing card while holding less content. These chips never
-   grow (flex: 0 1 auto + max-width) and the row wraps, so it reads the same at
-   one friend as at six. The row is hidden entirely when nobody is playing (see
-   the poll in tracks.html), which is the common case. */
+   The chips are deliberately not built from .summary-card. Those are
+   flex: 1 1 0, so a chip built from one would stretch across the whole card
+   holding a fraction of its content. These never grow (flex: 0 1 auto +
+   max-width) and they wrap, so the block reads the same at one friend as at
+   six. It is hidden entirely when nobody is playing (see the poll in
+   static/js/dashboard-page.js), which is the common case. */
 .friends-listening {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  margin-top: 14px;
-}
-
-.friends-listening-label {
-  flex: 0 0 auto;
-  font-size: 0.8rem;
-  color: var(--muted);
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .friends-listening-chips {
@@ -4181,7 +4205,6 @@ html.theme-red {
 }
 
 .friends-listening-more {
-  flex: 0 0 auto;
   font-size: 0.78rem;
   color: var(--muted);
 }
@@ -4367,8 +4390,9 @@ html.theme-red {
   margin-top: 0.5rem;
 }
 
-/* Streak lives below the now-playing sub-panel inside the same card; the
-   divider only appears when now-playing is actually showing above it. */
+/* Streak lives at the bottom of the now-playing panel, below your own track and
+   the friends who are listening; the dividers only appear when there is
+   actually a block above. */
 .streak-block .summary-value {
   font-variant-numeric: tabular-nums;
   margin: 0;
@@ -4388,7 +4412,15 @@ html.theme-red {
   margin-top: 0;
 }
 
-.now-playing-card.has-now-playing .streak-block {
+/* The panel stacks up to three blocks and each of the first two disappears
+   whenever there's nothing to show, so a divider belongs above a block only
+   when something is actually rendered above it. :first-child can't see
+   display:none, so the poll marks the panel instead (has-now-playing /
+   has-friends) and each divider is keyed off the mark for what sits ABOVE it -
+   which is why the streak has two selectors and the friends block one. */
+.now-playing-card.has-now-playing .friends-listening,
+.now-playing-card.has-now-playing .streak-block,
+.now-playing-card.has-friends .streak-block {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
