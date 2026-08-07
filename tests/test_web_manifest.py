@@ -29,6 +29,11 @@ _MANIFEST_PATH = _ROOT / "static" / "manifest.json"
 #< the manifest's src paths are relative to itself (it lives in static/)
 _MANIFEST_DIR = _MANIFEST_PATH.parent
 
+#< Chrome's installability floor. A manifest whose largest icon is under this
+#  never produces an install prompt, whatever else it declares - which is what
+#  a lone 64x64 favicon left the app with once `any` stopped overstating it.
+_INSTALLABLE_ICON_PX = 192
+
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 #< width and height are the first two fields of the IHDR chunk's data, which
 #  starts at byte 16 of every PNG - close enough to a header read that the
@@ -81,6 +86,25 @@ class TestManifestIcons(unittest.TestCase):
                 self.assertIn(f"{width}x{height}", declared,
                               f"{src} is {width}x{height} but the manifest says "
                               f"{icon['sizes']}")
+
+    def test_an_icon_is_big_enough_to_install_the_app_with(self):
+        """Declaring the truth about a 64x64 icon silenced Chrome's console
+        error and, by the same stroke, left nothing that meets the install
+        criteria - `any` had been overstating the only icon there was. This is
+        the other half of that fix, and it is a floor rather than an exact size
+        so a future icon set can add to the list without editing this."""
+        largest = max(
+            (min(_pngDimensions(_MANIFEST_DIR / icon["src"]))
+             for icon in self.icons if icon.get("type") != "image/svg+xml"),
+            default=0)
+
+        self.assertGreaterEqual(largest, _INSTALLABLE_ICON_PX)
+
+    def test_the_tab_favicon_is_among_them(self):
+        """layout.html's <link rel="icon"> and the manifest name the same file
+        for the small size. A manifest that dropped it would leave the browser
+        tab pulling an icon nothing in here describes."""
+        self.assertIn("images/favicon.png", [icon["src"] for icon in self.icons])
 
 
 if __name__ == "__main__":
