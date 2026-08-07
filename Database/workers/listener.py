@@ -543,14 +543,24 @@ class ListenerMixin:
                 self.user, _dbmod.parseError(e),
             )
 
-    def getNowPlaying(self) -> dict | None:
+    def getNowPlaying(self, includePlayedFlags: bool = True) -> dict | None:
         """What this user is playing right now, read from the listener's
         cached connect player_state (zero extra network calls - see
         Listener.getConnectPlayerState). None when nothing is playing, the
         state looks stale, or the track can't be identified. Track metadata
         comes from the catalog; a first-ever listen isn't in the catalog yet
         (metadata is only fetched when a play completes), so the connect
-        state's own metadata is the fallback."""
+        state's own metadata is the fallback.
+
+        `includePlayedFlags=False` answers `trackPlayed` and each artist's
+        `played` as False without asking, for a caller that has no use for them.
+        The two lookups behind those flags are the only DATABASE work here - the
+        rest is one catalog read - and the friends strip is exactly such a
+        caller: it runs this for every counterpart on a 15-second poll, drops
+        the flags (they describe someone else's history, see
+        getFriendsNowPlaying) and answers the same question against the viewer
+        instead. The keys stay in the payload either way, so nothing downstream
+        has to learn about the distinction."""
         if self.listener is None:
             return None
         state = self.listener.getConnectPlayerState()
@@ -617,12 +627,15 @@ class ListenerMixin:
         # (this is why it used to always link out to Spotify). artists carry ids
         # only in the catalog branch; a first-listen fallback has none, so the
         # UI keeps showing artistsText as plain text there.
-        trackPlayed = bool(self.repo.getPlayedTrackIds(self.user, [trackId]))
+        trackPlayed = (bool(self.repo.getPlayedTrackIds(self.user, [trackId]))
+                       if includePlayedFlags else False)
         artists = []
         if track:
             artistList = track.get("artists") or []
-            artistIds = [a.get("id") for a in artistList if a.get("id")]
-            playedArtistIds = self.repo.getPlayedArtistIds(self.user, artistIds) if artistIds else set()
+            playedArtistIds = set()
+            if includePlayedFlags:
+                artistIds = [a.get("id") for a in artistList if a.get("id")]
+                playedArtistIds = self.repo.getPlayedArtistIds(self.user, artistIds) if artistIds else set()
             artists = [
                 {"id": a.get("id"), "name": a.get("name", ""), "played": a.get("id") in playedArtistIds}
                 for a in artistList if a.get("id")

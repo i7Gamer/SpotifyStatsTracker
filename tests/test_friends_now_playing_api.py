@@ -241,6 +241,21 @@ class TestWhatIsReported(FriendsNowPlayingTestCase):
 
         self.assertEqual(self._payload()["moreCount"], 0)
 
+    def test_the_friend_s_own_flags_are_not_even_computed(self):
+        """Not disclosing them is the requirement; not PAYING for them is this.
+
+        getNowPlaying answers those flags with a getPlayedTrackIds and a
+        getPlayedArtistIds against that friend's own history - two queries per
+        playing friend, every 15 seconds, for values this drops on the floor and
+        then recomputes for the viewer (_markViewerPlayed). The strip asks for
+        the payload without them."""
+        db = self._addUser("bob", playing=_nowPlaying())
+        self._share("bob")
+
+        self._payload()
+
+        db.getNowPlaying.assert_called_once_with(includePlayedFlags=False)
+
 
 class TestTheChipLinksToTheFriend(FriendsNowPlayingTestCase):
     """A chip names someone you already share with, and /compare is the page

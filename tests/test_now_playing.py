@@ -129,6 +129,29 @@ class TestGetNowPlaying(DatabaseTestCase):
         self.assertEqual(nowPlaying["artists"],
                          [{"id": "a1", "name": "Artist One", "played": False}])
 
+    def test_the_played_flags_can_be_skipped_by_a_caller_that_drops_them(self):
+        """The friends strip asks for every counterpart's now-playing and then
+        answers the played question against the VIEWER instead, so the two
+        history lookups here are pure cost to it - two queries per playing
+        friend on a 15-second poll. The shape stays identical; only the answers
+        go unasked, which is why they read False rather than disappearing."""
+        tracks = {"t1": {"id": "t1", "name": "Live Song",
+                         "artists": [{"id": "a1", "name": "Artist One"}]}}
+        entries = [{"id": "t1", "playedAt": 1000.0, "timePlayed": 200000}]
+        db = self._makeDb(tracks, entries)
+        db.listener = SimpleNamespace(getConnectPlayerState=lambda: _playingState("t1"))
+
+        with patch.object(db.repo, "getPlayedTrackIds") as trackIds, \
+             patch.object(db.repo, "getPlayedArtistIds") as artistIds:
+            nowPlaying = db.getNowPlaying(includePlayedFlags=False)
+
+        trackIds.assert_not_called()
+        artistIds.assert_not_called()
+        self.assertFalse(nowPlaying["trackPlayed"])
+        self.assertEqual(nowPlaying["artists"],
+                         [{"id": "a1", "name": "Artist One", "played": False}])
+        self.assertEqual(nowPlaying["name"], "Live Song")   #< everything else still answered
+
     def test_first_listen_fallback_has_no_structured_artists(self):
         # Not in the catalog yet -> no artist ids -> the UI keeps plain-text
         # artistsText and the Spotify fallback link.

@@ -257,7 +257,10 @@ class UserRegistryMixin:
             if db is None:
                 continue   #< no active session in this process
             try:
-                nowPlaying = db.getNowPlaying()
+                #< without the friend's own played flags: they are dropped below
+                #  and re-answered against the viewer (_markViewerPlayed), so
+                #  computing them here is two queries per friend, every 15s
+                nowPlaying = db.getNowPlaying(includePlayedFlags=False)
             except Exception as e:
                 logger.warning("Now-playing lookup failed for %s: %s", name, e)
                 continue
