@@ -48,6 +48,37 @@ var DASHBOARD_SUMMARY_ID = 'dashboardSummary';
 
 var byId = function (id) { return document.getElementById(id); };
 
+//< how far into the track the bar sits, as a percentage, or null for a track
+//  with no duration to measure against (podcasts, local files)
+var PROGRESS_BAR_FULL_PERCENT = 100;
+//< consecutive failed polls before the panel is marked out of date. A 15s poll
+//  drops one request on any flaky connection, so one is not news; three is 45
+//  seconds of silence, by which point what is on screen may be minutes old.
+var NOW_PLAYING_STALE_AFTER_FAILURES = 3;
+
+// Where the progress bar should sit `elapsedMs` after a payload said the track
+// was at `positionMs`. The poll only lands every 15 seconds, so without this
+// the bar stepped once per poll; this is the same arithmetic the server does
+// against the connect state's own timestamp (see getNowPlaying).
+//
+// Pure and exported (see the bottom of this file) for tests/test_dashboard_page.js.
+function progressPercent(positionMs, durationMs, elapsedMs, isPaused) {
+  if (!(durationMs > 0)) return null;
+  //< a paused track does not advance, and wall-clock time is not monotonic - an
+  //  NTP correction can hand back a negative elapsed, which must not rewind it
+  var position = isPaused ? positionMs : positionMs + Math.max(0, elapsedMs);
+  return Math.max(0, Math.min(PROGRESS_BAR_FULL_PERCENT,
+                              (position / durationMs) * PROGRESS_BAR_FULL_PERCENT));
+}
+
+// Whether the panel should say it is out of date. Its own function so the
+// threshold is asserted somewhere: the failure path is a catch() nothing else
+// exercises, and "keep the last state" silently rendering a track that ended
+// twenty minutes ago is the defect this exists to end.
+function pollIsStale(consecutiveFailures) {
+  return consecutiveFailures >= NOW_PLAYING_STALE_AFTER_FAILURES;
+}
+
 // The streak calendar tooltip's second line. Pure and exported (see the bottom
 // of this file) because the DOM code that shows it cannot be tested from here,
 // and a source-shape assertion on it proved worthless: the check looked for the
@@ -125,6 +156,9 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
 // something is playing. The listening streak below it stays put.
 (function () {
   var NOW_PLAYING_POLL_MS = 15000;
+  //< the bar's own clock: fast enough that the track visibly moves, slow enough
+  //  to be free. The bar's 0.6s CSS transition smooths the step between ticks.
+  var PROGRESS_TICK_MS = 1000;
   var card = document.getElementById('nowPlayingCard');
   var panel = document.getElementById('nowPlayingPanel');
   // Friends' current tracks ride along on this same poll (see
@@ -143,6 +177,7 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     if (!np || !np.name) {
       card.style.display = 'none';
       if (panel) panel.classList.remove('has-now-playing');
+      playing = null;   //< or the tick keeps advancing a bar nobody is playing
       return;
     }
     var nameEl = document.getElementById('nowPlayingName');
@@ -214,15 +249,36 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
       cover.style.display = 'none';
       if (coverLink) coverLink.style.display = 'none';
     }
-    var bar = document.getElementById('nowPlayingBar');
-    if (np.durationMs > 0) {
-      bar.parentElement.style.display = '';
-      bar.style.width = Math.min(100, (np.positionMs / np.durationMs) * 100) + '%';
-    } else {
-      bar.parentElement.style.display = 'none';
-    }
+    // What the bar needs to keep moving between polls: the position this
+    // payload reported and the moment it arrived. tickProgress does the rest.
+    playing = { positionMs: np.positionMs, durationMs: np.durationMs,
+                isPaused: !!np.isPaused, atMs: Date.now() };
+    drawProgress(0);
     card.style.display = '';
     if (panel) panel.classList.add('has-now-playing');
+  }
+
+  //< the last payload's position + when it landed, or null while nothing is
+  //  playing. Read by the tick below, which runs on its own (much faster) timer.
+  var playing = null;
+
+  function drawProgress(elapsedMs) {
+    var bar = document.getElementById('nowPlayingBar');
+    if (!bar) return;
+    var percent = playing
+      ? progressPercent(playing.positionMs, playing.durationMs, elapsedMs, playing.isPaused)
+      : null;
+    if (percent === null) {
+      bar.parentElement.style.display = 'none';   //< nothing to measure against
+      return;
+    }
+    bar.parentElement.style.display = '';
+    bar.style.width = percent + '%';
+  }
+
+  function tickProgress() {
+    if (!playing || playing.isPaused) return;   //< a paused track sits still
+    drawProgress(Date.now() - playing.atMs);
   }
 
   //< what the chips currently show, so an unchanged poll leaves them alone -
@@ -292,36 +348,65 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     friendsRow.style.display = '';
   }
 
-  var pollTimer = null;
+  var pollHandle = null;
+  var consecutiveFailures = 0;
+
+  // Both blocks are fed by the one request, so when it stops answering both are
+  // equally out of date - and neither said so: the card kept rendering a track
+  // that may have ended twenty minutes ago exactly like one playing now. The
+  // panel dims and the state pill says Stale until a poll gets through again.
+  function setStale(stale) {
+    if (card) card.classList.toggle('is-stale', stale);
+    if (friendsRow) friendsRow.classList.toggle('is-stale', stale);
+    var stateEl = document.getElementById('nowPlayingState');
+    if (stateEl && stale) {
+      stateEl.textContent = 'Stale';
+      stateEl.title = 'The last few updates did not get through - this may be out of date';
+    } else if (stateEl) {
+      stateEl.removeAttribute('title');   //< render() writes Playing/Paused back
+    }
+  }
 
   function poll() {
     fetch('/api/now-playing')
       .then(function (resp) {
-        // An expired session used to fall into the `null` branch below and be
-        // treated as a transient blip, so the card and the friends strip sat
-        // frozen on stale content for as long as the tab stayed open, polling
-        // every 15s forever and never redirecting. A background poll shouldn't
-        // yank the page away mid-read, so it stops rather than navigates - the
-        // next click on anything goes through the normal login redirect.
+        // An expired session used to be treated as a transient blip, so the
+        // card and the friends block sat frozen on stale content for as long as
+        // the tab stayed open, polling every 15s forever and never redirecting.
+        // A background poll shouldn't yank the page away mid-read, so it stops
+        // rather than navigates - the next click on anything goes through the
+        // normal login redirect. What is on screen is frozen from here on, so
+        // it is marked as such rather than left looking live.
         if (resp.status === 401) {
-          if (pollTimer !== null) {
-            clearInterval(pollTimer);
-            pollTimer = null;
-          }
+          if (pollHandle) pollHandle.stop();
+          setStale(true);
           return null;
         }
-        return resp.ok ? resp.json() : null;
+        //< thrown, not returned as null: a 500 is a FAILED poll, and the null
+        //  branch below cannot tell one from "the session ended" without it
+        if (!resp.ok) throw new Error('now-playing poll failed: ' + resp.status);
+        return resp.json();
       })
       .then(function (data) {
-        if (!data) return;
+        if (!data) return;   //< the 401 branch above, which has had its say
+        consecutiveFailures = 0;
+        setStale(false);
         render(data.nowPlaying);
         renderFriends(data.friends, data.friendsMoreCount);
       })
-      .catch(function () { /* transient network error - keep last state */ });
+      .catch(function () {
+        //< one dropped request is not news on a 15s poll; three in a row is
+        consecutiveFailures += 1;
+        if (pollIsStale(consecutiveFailures)) setStale(true);
+      });
   }
 
-  poll();
-  pollTimer = setInterval(poll, NOW_PLAYING_POLL_MS);
+  // Not a bare setInterval: a hidden tab has nobody reading this, and the
+  // request is not cheap (a fan-out over everyone the viewer shares with). The
+  // tick has its own handle so the bar stops moving in a background tab too,
+  // where its arithmetic would be answering a question nobody asked.
+  pollHandle = window.VisibilityPoll.start(poll, NOW_PLAYING_POLL_MS);
+  window.VisibilityPoll.start(tickProgress, PROGRESS_TICK_MS);
 })();
 
 // The two deferred cards fail independently of the summary and of each other,
@@ -419,5 +504,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     calendarTooltipLabel: calendarTooltipLabel,
     friendsStripSignature: friendsStripSignature,
+    progressPercent: progressPercent,
+    pollIsStale: pollIsStale,
   };
 }

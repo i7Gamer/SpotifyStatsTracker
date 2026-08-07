@@ -21,11 +21,13 @@ COMPARE_TOP_GENRES_LIMIT = 10  #< per-side genres (and shared genres) shown on C
 COMPARE_GENRE_POOL_SIZE = 50   #< per-side genre pool the shared-genre intersection is computed over
 TRACK_CARD_GENRE_LIMIT = 3     #< genre pills shown per track/artist/album card, position-ordered
 ON_THIS_DAY_YEARS_LIMIT = 5    #< max prior years surfaced in the dashboard "On this day" card
-# Chips shown in the dashboard's friends-listening strip before it collapses
-# into a "+N more" count. The row wraps rather than scrolling, and its length
-# is driven by other people's listening rather than anything the viewer
-# controls - uncapped, a busy evening would push the trends row off-screen.
-FRIENDS_NOW_PLAYING_LIMIT = 6
+# Chips shown in the dashboard's friends-listening block before it collapses
+# into a "+N more" count. Its length is driven by other people's listening
+# rather than by anything the viewer controls, so it needs a cap of some kind.
+# Lowered from 6 when the block moved inside the Now Playing card: chips that
+# used to spread across a full-width row now stack down one card, and six of
+# them made that card several times taller than the two beside it.
+FRIENDS_NOW_PLAYING_LIMIT = 4
 LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS = 10   #< the listen-time totals (dashboard "Total listen time", /genres stat strip) drop the seconds component once the total reaches this many hours
 RECOMMENDATION_ARTIST_LIMIT = 5    #< artists shown in the dashboard "Discover" recommendations card
 RECOMMENDATION_GENRE_POOL = 15     #< how many of the user's top genres candidate artists are matched against

@@ -18,7 +18,8 @@ global.document = {
   createElement() { return { classList: { add() {} }, appendChild() {} }; },
 };
 
-const { calendarTooltipLabel, friendsStripSignature } = require('../static/js/dashboard-page.js');
+const { calendarTooltipLabel, friendsStripSignature,
+        progressPercent, pollIsStale } = require('../static/js/dashboard-page.js');
 
 function run(name, fn) {
   try { fn(); console.log(`ok - ${name}`); }
@@ -86,6 +87,55 @@ run('two friends cannot collide by concatenation', () => {
 
 run('nothing playing is a stable signature', () => {
   assert.strictEqual(friendsStripSignature([], 0), friendsStripSignature([], 0));
+});
+
+// --- the progress bar between polls ------------------------------------------
+// The payload carries the position as of the moment the poll landed, so with
+// nothing else the bar stepped once every 15 seconds. This advances it from
+// there, which is the same arithmetic the server does against the connect
+// state's own timestamp (Database/workers/listener.py::getNowPlaying).
+
+const FOUR_MINUTES_MS = 240000;
+
+run('the bar advances with the time since the poll landed', () => {
+  assert.strictEqual(progressPercent(120000, FOUR_MINUTES_MS, 30000, false), 62.5);
+});
+
+run('a paused track stays exactly where it stopped', () => {
+  assert.strictEqual(progressPercent(120000, FOUR_MINUTES_MS, 30000, true), 50);
+});
+
+run('the bar never runs past the end of the track', () => {
+  // A track that ended between polls: the server drops it on the next one, and
+  // until then a bar past 100% would render outside its own track.
+  assert.strictEqual(progressPercent(230000, FOUR_MINUTES_MS, 60000, false), 100);
+});
+
+run('a track with no duration reports no bar at all', () => {
+  // Podcasts and local files arrive without one; the caller hides the track.
+  assert.strictEqual(progressPercent(1000, 0, 0, false), null);
+  assert.strictEqual(progressPercent(1000, undefined, 0, false), null);
+});
+
+run('a clock that jumped backwards does not rewind the bar', () => {
+  // Wall-clock time is not monotonic - an NTP correction or a laptop waking up
+  // can hand back a negative elapsed.
+  assert.strictEqual(progressPercent(120000, FOUR_MINUTES_MS, -5000, false), 50);
+});
+
+// --- the poll's own health ---------------------------------------------------
+
+run('a single missed poll is not worth flagging', () => {
+  // A 15s poll drops one request on any flaky connection; saying "stale" there
+  // would cry wolf often enough that nobody reads it.
+  assert.strictEqual(pollIsStale(0), false);
+  assert.strictEqual(pollIsStale(1), false);
+  assert.strictEqual(pollIsStale(2), false);
+});
+
+run('three in a row means what is on screen may be minutes old', () => {
+  assert.strictEqual(pollIsStale(3), true);
+  assert.strictEqual(pollIsStale(9), true);
 });
 
 console.log('all dashboard-page tests passed');

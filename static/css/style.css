@@ -397,6 +397,15 @@ button {
   border-color: var(--border);
 }
 
+/* Both blocks the now-playing poll feeds, once it has stopped getting through
+   (see pollIsStale). What is on screen may be minutes old, so it stops looking
+   like live data - the state pill says Stale beside it, and this is what keeps
+   a glance from reading the dimmed card as current. */
+.is-stale {
+  opacity: 0.55;
+  transition: opacity 0.3s ease;
+}
+
 .now-playing-progress {
   height: 4px;
   border-radius: 999px;

@@ -23,6 +23,10 @@ const assert = require('assert');
 const path = require('path');
 
 const SCRIPT = path.join(__dirname, '..', 'static', 'js', 'layout-chrome.js');
+//< layout.html loads this first and the polls below read it off window at load,
+//  so the stub has to reproduce that order (tests/test_poll_visibility.py pins
+//  the template half)
+const VISIBILITY_POLL = path.join(__dirname, '..', 'static', 'js', 'visibility-poll.js');
 
 function makeElement() {
   const classes = new Set();
@@ -50,7 +54,8 @@ function makeElement() {
 // side effects ARE most of what is under test.
 function loadChrome(options) {
   options = options || {};
-  const calls = { intervals: [], timeouts: [], clearedTimeouts: [], clearedIntervals: [], fetched: [] };
+  const calls = { intervals: [], timeouts: [], clearedTimeouts: [], clearedIntervals: [],
+                  fetched: [], listeners: {} };
   const elements = options.elements || {};
 
   global.window = {
@@ -58,7 +63,11 @@ function loadChrome(options) {
     clearTimeout(id) { calls.clearedTimeouts.push(id); },
     setTimeout(fn, ms) { calls.timeouts.push({ fn, ms }); return calls.timeouts.length; },
   };
-  global.document = { getElementById(id) { return elements[id] || null; } };
+  global.document = {
+    hidden: !!options.hidden,
+    getElementById(id) { return elements[id] || null; },
+    addEventListener(type, fn) { calls.listeners[type] = fn; },
+  };
   global.setInterval = function (fn, ms) { calls.intervals.push({ fn, ms }); return calls.intervals.length; };
   global.clearInterval = function (id) { calls.clearedIntervals.push(id); };
   global.fetch = function (url) {
@@ -67,9 +76,16 @@ function loadChrome(options) {
     return responder ? responder() : Promise.reject(new Error('no stub for ' + url));
   };
 
+  delete require.cache[require.resolve(VISIBILITY_POLL)];
+  require(VISIBILITY_POLL);
   delete require.cache[require.resolve(SCRIPT)];
   require(SCRIPT);
   calls.window = global.window;
+  //< what the browser does on a tab switch: flip the flag, then fire the event
+  calls.setHidden = function (hidden) {
+    global.document.hidden = hidden;
+    calls.listeners.visibilitychange();
+  };
   return calls;
 }
 
@@ -283,6 +299,48 @@ run('an expired session stops the poll instead of hiding the pill and polling on
   assert.ok(listenerInterval, 'the 10s poll is armed at load');
   assert.ok(chrome.clearedIntervals.length >= 1,
             'the interval is cleared, or the tab keeps hitting the server every 10s forever');
+});
+
+run('a hidden tab stops asking for the pill', async () => {
+  // Every authenticated page arms this, so a browser sitting on any of them
+  // overnight used to hit /api/listener-status every 10s until it was closed.
+  const pill = makeElement();
+  const chrome = loadChrome({ elements: { 'listener-status-pill': pill }, responses: pillResponses('active') });
+  await new Promise(resolve => setImmediate(resolve));
+
+  chrome.setHidden(true);
+
+  assert.ok(chrome.clearedIntervals.length >= 1, 'the 10s poll keeps running in a background tab');
+});
+
+run('coming back to the tab asks again straight away', async () => {
+  const pill = makeElement();
+  const chrome = loadChrome({ elements: { 'listener-status-pill': pill }, responses: pillResponses('active') });
+  await new Promise(resolve => setImmediate(resolve));
+  const before = chrome.fetched.filter(url => url === '/api/listener-status').length;
+
+  chrome.setHidden(true);
+  chrome.setHidden(false);
+
+  assert.strictEqual(chrome.fetched.filter(url => url === '/api/listener-status').length, before + 1,
+                     'a returning tab shows a pill that is up to 10s stale otherwise');
+});
+
+run('an expired session stays stopped across a tab switch', async () => {
+  // The 401 branch exists so an expired session stops hitting the server;
+  // restarting it on the next tab switch would put that straight back.
+  const pill = makeElement();
+  const chrome = loadChrome({
+    elements: { 'listener-status-pill': pill },
+    responses: { '/api/listener-status': () => Promise.resolve({ status: 401, json: () => Promise.resolve({}) }) },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const after401 = chrome.fetched.filter(url => url === '/api/listener-status').length;
+
+  chrome.setHidden(true);
+  chrome.setHidden(false);
+
+  assert.strictEqual(chrome.fetched.filter(url => url === '/api/listener-status').length, after401);
 });
 
 // ------------------------------------------------------------- nav menu

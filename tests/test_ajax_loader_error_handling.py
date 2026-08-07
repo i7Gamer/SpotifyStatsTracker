@@ -63,12 +63,17 @@ def _code(text):
     return _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", text))
 
 
-# Swallows that ARE correct, because a non-2xx has a real recovery path here:
-#   dashboard-page.js - the 15s now-playing poll deliberately keeps the last
-#     state on a transient error rather than yanking a background failure into
-#     the user's face (its 401 is handled separately, by stopping the timer).
-# Counted per file so that a NEW swallow alongside this one still fails.
-DELIBERATE_SWALLOWS = {"dashboard-page.js": 1}
+# Swallows that ARE correct, because a non-2xx has a real recovery path here.
+# Counted per file so that a NEW swallow alongside an exempt one still fails.
+#
+# There is none left. dashboard-page.js's 15s now-playing poll was the entry:
+# it kept the last state on a transient error rather than yanking a background
+# failure into the user's face, which is still the right call - but "keep the
+# last state" and "say nothing about it" turned out to be separable. The poll
+# now throws on a non-2xx like everything else and COUNTS the failures, marking
+# the panel stale after three in a row (see pollIsStale); the screen keeps its
+# content, and stops claiming that content is current.
+DELIBERATE_SWALLOWS = {}
 
 # The files that must carry the guard, as of this test. Named rather than purely
 # discovered so that a loader DISAPPEARING from the discovery (an extraction that
@@ -179,11 +184,11 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
                               (templatesDir / layout).read_text(encoding="utf-8"))
 
     def test_no_script_swallows_a_non_2xx_into_null(self):
-        """Counted, not merely absent, so the deliberate swallow stays exempt
-        while a NEW one in the same file still fails.
+        """Counted, not merely absent, so an exempt swallow stays exempt while a
+        NEW one in the same file still fails.
 
         Scans EVERY script, not just EXPECTED_PAGE_LOADERS, and that widening is
-        load-bearing: the one deliberate swallow lives in dashboard-page.js's
+        load-bearing: the last deliberate swallow lived in dashboard-page.js's
         now-playing poll, and the dashboard left that set when it moved to htmx.
         Scoped to the loaders, this rule would have quietly stopped covering the
         only file it still had anything to say about - and the poll is exactly

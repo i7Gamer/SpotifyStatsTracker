@@ -247,9 +247,12 @@ class TestTheNowPlayingPollStaysHandWritten(DashboardHtmxTestCase):
                                    "dashboard-page.js"), encoding="utf-8").read()
 
         self.assertIn("/api/now-playing", source)
-        self.assertIn("setInterval", source)
-        #< the 401 branch: stop the timer, do not navigate
-        self.assertIn("clearInterval", source)
+        #< the timer itself moved to static/js/visibility-poll.js, which stops
+        #  it while the tab is hidden - it is still this file's own poll, armed
+        #  in JS, not an hx-trigger="every 15s"
+        self.assertIn("VisibilityPoll.start(poll", source)
+        #< the 401 branch: stop the poll, do not navigate
+        self.assertIn("pollHandle.stop()", source)
 
 
 class TestDeferredCardsAreNotRedirected(DashboardHtmxTestCase):

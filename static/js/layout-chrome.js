@@ -71,6 +71,12 @@ window.handleJumpToPageKeydown = function(event, totalPages) {
   window.location = window.location.pathname + '?' + params.toString();
 };
 
+//< how often the topbar's two background checks ask. Both go through
+//  VisibilityPoll (loaded just before this file), so a background tab asks for
+//  neither - see static/js/visibility-poll.js for why that is not just tidiness.
+const VERSION_CHECK_POLL_MS = 15 * 60 * 1000;
+const LISTENER_STATUS_POLL_MS = 10 * 1000;
+
 (function(){
   const badge = document.getElementById('version-badge');
   const textEl = document.getElementById('version-badge-text');
@@ -89,31 +95,28 @@ window.handleJumpToPageKeydown = function(event, totalPages) {
     }).catch(()=>{});
   }
 
-  checkVersion();
-  setInterval(checkVersion, 15 * 60 * 1000);
+  window.VisibilityPoll.start(checkVersion, VERSION_CHECK_POLL_MS);
 })();
 
 (function(){
   const statusPill = document.getElementById('listener-status-pill');
 
-  let pollTimer = null;
+  let poll = null;
 
   function updateListenerStatus() {
     fetch('/api/listener-status')
       .then(r => {
         if (r.status === 401) {
           // Session expired: stop polling, don't just hide the pill. The
-          // throw below lands in the catch, and with nothing clearing the
-          // interval this kept hitting the server every 10s for the life of
+          // throw below lands in the catch, and with nothing stopping the
+          // poll this kept hitting the server every 10s for the life of
           // the tab - the exact leak dashboard-page.js's now-playing poll
           // already fixed. A background poll shouldn't yank the page away
           // mid-read, so it stops rather than navigates - the next click on
-          // anything goes through the normal login redirect.
+          // anything goes through the normal login redirect. stop() is
+          // permanent, so the next tab switch does not restart it.
           if (statusPill) statusPill.style.display = 'none';
-          if (pollTimer !== null) {
-            clearInterval(pollTimer);
-            pollTimer = null;
-          }
+          if (poll) poll.stop();
           throw new Error('Not logged in');
         }
         return r.json();
@@ -129,8 +132,7 @@ window.handleJumpToPageKeydown = function(event, totalPages) {
       .catch(() => {});
   }
 
-  updateListenerStatus();
-  pollTimer = setInterval(updateListenerStatus, 10 * 1000);
+  poll = window.VisibilityPoll.start(updateListenerStatus, LISTENER_STATUS_POLL_MS);
 })();
 
 

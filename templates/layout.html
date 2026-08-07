@@ -32,6 +32,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    {#- In <head>, and not deferred, because its two readers run at opposite
+        ends of the document: layout-chrome.js at the end of the body, and each
+        page's own scripts INSIDE {% block content %} - which is inside <main>,
+        so they execute before anything down there has loaded. Small enough
+        (one function) that blocking on it costs less than the bug of a page
+        whose poll silently never starts. -#}
+    <script src="{{ url_for('static', filename='js/visibility-poll.js') }}"></script>
   </head>
   <body>
     {#- First thing in the body so the first Tab reaches it, and the only

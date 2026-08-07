@@ -213,7 +213,7 @@ class TestTheStripTellsThePanelItIsShowing(unittest.TestCase):
         every later one would skip it - fine - but a chips-unchanged poll
         arriving first after a re-render would leave the divider off."""
         renderFriends = self.script[self.script.index("function renderFriends("):]
-        renderFriends = renderFriends[:renderFriends.index("\n  var pollTimer")]
+        renderFriends = renderFriends[:renderFriends.index("\n  var pollHandle")]
 
         self.assertLess(renderFriends.index("panel.classList.add('has-friends')"),
                         renderFriends.index("if (signature === renderedFriends) return;"))
