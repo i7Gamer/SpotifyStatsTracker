@@ -25,6 +25,12 @@
      a theme override them instead of relying on the fallback. */
   --fg: var(--text);
   --danger: #e05252;
+  /* The positive counterpart to --danger, for "this got better" anywhere it is
+     worth a colour: the summary deltas and the Top lists' rank-movement badge.
+     Deliberately NOT theme-scoped, exactly like --danger - the accent is, and
+     two of the four themes set it to a red, which is how a rank CLIMB once came
+     out the same colour as a fall. */
+  --success: #5dd97c;
   --border-color: #2d2d2d;
   --glass-bg: rgba(18, 18, 18, 0.65);
   --glass-border: rgba(255, 255, 255, 0.06);
@@ -532,7 +538,7 @@ button {
 }
 
 .change-positive {
-  color: #5dd97c;
+  color: var(--success);
 }
 
 .change-negative {
@@ -1191,7 +1197,11 @@ progress::-moz-progress-bar {
    the list is already on screen (see templates/_top_list_movement.html), so
    until then it must take up no room at all - hence :empty, since the flex
    gap above would otherwise show for a badge that may never arrive. Direction
-   is carried by the glyph and by visually-hidden text, never by colour alone. */
+   is carried by the glyph and by visually-hidden text, never by colour alone.
+
+   Up/down are the two semantic tokens rather than accent/danger: the accent is
+   theme-scoped, and the rose and red themes make it a red barely apart from
+   --danger, so at a glance a climb and a fall said the same thing. */
 .rank-move {
   font-size: 0.68rem;
   font-weight: 700;
@@ -1203,7 +1213,7 @@ progress::-moz-progress-bar {
 }
 
 .rank-move-up {
-  color: var(--accent);
+  color: var(--success);
 }
 
 .rank-move-down {
