@@ -30,6 +30,33 @@ SPOTIFY_BULK_ALBUM_LIMIT = 20
 # album cap because it is a different endpoint, not because ISRCs are cheaper.
 SPOTIFY_BULK_TRACK_LIMIT = 50
 
+# How much of a failed response's body reaches the log. A Spotify error object
+# is ~90 characters; this is room for several, and a bound for everything else.
+ERROR_BODY_LOG_LIMIT = 500
+
+
+def _responseDetail(resp) -> str:
+    """`status <code>: <body>` for a log line - on one line, and bounded.
+
+    The status alone is not a diagnosis. Both endpoints here take no scope at
+    all, so a 403 on them is not "you asked for too much": Spotify answers
+    "Insufficient client scope", which is what tells you the token is being
+    rejected wholesale rather than the request being malformed. Two unrelated
+    problems behind one number, and the number was all the log carried - the
+    live instance's 403 could only be read at all by digging out a body the
+    LISTENER had logged, on a different endpoint, weeks earlier.
+
+    Collapsed onto one line because Spotify pretty-prints its error objects over
+    five, and a log this size is read through grep, where a five-line entry
+    means the message is invisible unless you already knew to ask for context.
+    Bounded because a proxy or a captive portal in front of the API answers with
+    a page rather than an object, and a log line is not the place to find that
+    out. str() rather than a bare read: a response is not always a real one."""
+    body = " ".join(str(getattr(resp, "text", "") or "").split())
+    if len(body) > ERROR_BODY_LOG_LIMIT:
+        body = body[:ERROR_BODY_LOG_LIMIT] + "..."
+    return f"status {resp.status_code}: {body}" if body else f"status {resp.status_code}"
+
 
 class _CycleAccessToken:
     """The one Web-API access token a backfill cycle uses, minted on first ask.
@@ -178,8 +205,8 @@ class MetadataBackfillMixin:
                 # a FLASK_DEBUG gate a persistent 401 was indistinguishable from
                 # "still draining", the queue sitting untouched cycle after
                 # cycle with nothing in the log to say why.
-                _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned status %d",
-                                       self.user, resp.status_code)
+                _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned %s",
+                                       self.user, _responseDetail(resp))
                 return
             payload = resp.json()
 
@@ -334,10 +361,16 @@ class MetadataBackfillMixin:
                             attempted_ids = list(target_ids)
                             use_fallback = False
                         else:
+                            #< still behind the gate: this path degrades to the
+                            #  cookie client and logs that it did, so the status
+                            #  is colour on a story the log already tells. It
+                            #  carries the body for the same reason its twin
+                            #  above does - when it IS asked for, the number on
+                            #  its own answers nothing
                             if flaskDebugEnabled():
                                 _dbmod.logger.warning(
-                                    "[Backfiller-%s] Spotify Web API returned status %d. Falling back to the cookie client.",
-                                    self.user, resp.status_code
+                                    "[Backfiller-%s] Spotify Web API returned %s. Falling back to the cookie client.",
+                                    self.user, _responseDetail(resp)
                                 )
                     elif hasWebApiCreds:
                         _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to the cookie client.", self.user)

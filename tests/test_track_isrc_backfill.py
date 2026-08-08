@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from conftest import DatabaseTestCase, normalizeTrackForTest
 from Database.database import Database
 from Database.repository import TRACK_ISRC_RETRY_SECONDS
-from Database.workers.metadata_backfiller import SPOTIFY_BULK_TRACK_LIMIT
+from Database.workers.metadata_backfiller import ERROR_BODY_LOG_LIMIT, SPOTIFY_BULK_TRACK_LIMIT
 
 # A 22-character alphanumeric id is what looksLikeSpotifyTrackId accepts; the
 # export importer's surrogate is a bare 32-char md5. Both shapes appear below
@@ -428,6 +428,61 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
 
         warnings = [args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list]
         self.assertTrue(any("401" in line for line in warnings), warnings)
+
+    def _failureLine(self, mock_logger, mock_get, status=403, body=""):
+        response = MagicMock()
+        response.status_code = status
+        response.text = body
+        mock_get.return_value = response
+        db = self._db()
+        _insertTrack(db.repo._conn(), REAL_ID)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        lines = [args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list]
+        matching = [line for line in lines if str(status) in line]
+        self.assertTrue(matching, lines)
+        return matching[0]
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_failed_response_logs_what_spotify_said(self, mock_get, mock_logger):
+        """The status alone is not a diagnosis. These endpoints take no scope at
+        all, so a 403 on them is not "you asked for too much" - Spotify answers
+        "Insufficient client scope", which is what tells you the token is being
+        rejected wholesale rather than the request being malformed. Two very
+        different problems behind one number, and the log carried only the
+        number: the live instance's 403 could only be read at all by digging out
+        a body the LISTENER had logged, on a different endpoint, weeks earlier."""
+        line = self._failureLine(
+            mock_logger, mock_get,
+            body='{\n  "error" : {\n    "status" : 403,\n    "message" : "Insufficient client scope"\n  }\n}')
+
+        self.assertIn("Insufficient client scope", line)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_the_body_is_collapsed_onto_one_line(self, mock_get, mock_logger):
+        """Spotify pretty-prints its error objects over five lines, and a log
+        this size is read through grep - where a five-line entry means the
+        message is invisible unless you already knew to ask for context."""
+        line = self._failureLine(mock_logger, mock_get, body='{\n  "error" : {\n    "status" : 403\n  }\n}')
+
+        self.assertNotIn("\n", line)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_body_that_is_not_an_error_object_is_bounded(self, mock_get, mock_logger):
+        """A proxy or a captive portal in front of the API answers with a page,
+        not an object, and a log line is not the place to discover that."""
+        line = self._failureLine(mock_logger, mock_get, status=502, body="<html>" + ("x" * 20000))
+
+        self.assertLess(len(line), ERROR_BODY_LOG_LIMIT * 2)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_response_with_no_body_still_logs_its_status(self, mock_get, mock_logger):
+        self.assertIn("429", self._failureLine(mock_logger, mock_get, status=429, body=""))
 
     @patch("requests.get")
     def test_an_empty_queue_mints_no_token(self, mock_get):

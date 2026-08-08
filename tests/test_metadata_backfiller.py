@@ -480,9 +480,12 @@ class TestMetadataBackfiller(DatabaseTestCase):
             db._metadataBackfillLoop()
             
             # Check warning was logged
+            #< rendered, not the raw template: the status moved into an argument
+            #  when the response body joined it there, and a template match
+            #  would go on passing for a line that no longer says the status
             warning_calls = [
-                args[0] for args, _ in mock_logger.warning.call_args_list
-                if "Spotify Web API returned status" in args[0]
+                args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list
+                if "Spotify Web API returned" in args[0]
             ]
             self.assertTrue(len(warning_calls) > 0)
 
@@ -504,9 +507,12 @@ class TestMetadataBackfiller(DatabaseTestCase):
             db._metadataBackfillLoop()
             
             # Check warning was logged
+            #< rendered, not the raw template: the status moved into an argument
+            #  when the response body joined it there, and a template match
+            #  would go on passing for a line that no longer says the status
             warning_calls = [
-                args[0] for args, _ in mock_logger.warning.call_args_list
-                if "Spotify Web API returned status" in args[0]
+                args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list
+                if "Spotify Web API returned" in args[0]
             ]
             self.assertTrue(len(warning_calls) > 0)
 
@@ -528,9 +534,12 @@ class TestMetadataBackfiller(DatabaseTestCase):
             db._metadataBackfillLoop()
             
             # Check warning was NOT logged
+            #< rendered, not the raw template: the status moved into an argument
+            #  when the response body joined it there, and a template match
+            #  would go on passing for a line that no longer says the status
             warning_calls = [
-                args[0] for args, _ in mock_logger.warning.call_args_list
-                if "Spotify Web API returned status" in args[0]
+                args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list
+                if "Spotify Web API returned" in args[0]
             ]
             self.assertEqual(len(warning_calls), 0)
 
