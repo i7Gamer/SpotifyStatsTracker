@@ -266,6 +266,28 @@ class TestPerIdIsrcLookups(DatabaseTestCase):
 
     @patch("Database.database.logger")
     @patch("requests.get")
+    def test_an_aborted_batch_reports_what_it_asked_for_not_what_it_claimed(self, mock_get, mock_logger):
+        """The count has to be failures, not "everything not stamped".
+
+        When the breaker trips, the rest of the batch is never asked about at
+        all - so counting it as failed says "50 of 50 failed" over five actual
+        failures. That is the same shape of misleading log that made the 403
+        take a day to find, in the very line added to stop it happening again."""
+        db = self._db()
+        conn = db.repo._conn()
+        for i in range(30):
+            _insertTrack(conn, f"{i:022d}")
+        mock_get.return_value = self._response(status=403)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        lines = [args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list]
+        failureLines = [line for line in lines if "ISRC lookup failed for" in line]
+        self.assertTrue(failureLines, lines)
+        self.assertIn(f"failed for {CONSECUTIVE_FAILURE_ABORT} of", failureLines[0])
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
     def test_a_systemic_failure_stops_the_batch_early(self, mock_get, mock_logger):
         """The failure this was written under: every request 403ing. Without a
         breaker each worker spends a full batch of futile requests every cycle,

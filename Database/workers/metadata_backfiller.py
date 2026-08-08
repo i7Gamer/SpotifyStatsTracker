@@ -289,6 +289,11 @@ class MetadataBackfillMixin:
             isrcByTrackId = {}
             attempted_ids = []   #< got a DEFINITIVE answer; only these leave the queue
             consecutiveFailures = 0
+            #< counted, not derived from len(target_ids) - len(attempted_ids):
+            #  once the batch can stop early, the ids after the break were never
+            #  ASKED about, and calling them failures reports "50 of 50 failed"
+            #  over five real failures - in the line that exists to be believed
+            failures = 0
             firstFailure = None
 
             for track_id in target_ids:
@@ -322,6 +327,7 @@ class MetadataBackfillMixin:
                         # window over a transient, so it stays queued.
                         if firstFailure is None:
                             firstFailure = _responseDetail(resp)
+                        failures += 1
                         consecutiveFailures += 1
                         #< the API asking for less; the rest of the batch waits
                         #  for the next cycle rather than being spent proving it
@@ -333,6 +339,7 @@ class MetadataBackfillMixin:
                     #  is fifty requests now rather than one
                     if firstFailure is None:
                         firstFailure = f"request failed: {e}"
+                    failures += 1
                     consecutiveFailures += 1
 
                 if rateLimited or consecutiveFailures >= CONSECUTIVE_FAILURE_ABORT:
@@ -355,7 +362,7 @@ class MetadataBackfillMixin:
                 # cycle with nothing in the log to say why.
                 _dbmod.logger.warning(
                     "[Backfiller-%s] ISRC lookup failed for %d of %d track(s); first was %s",
-                    self.user, len(target_ids) - len(attempted_ids), len(target_ids), firstFailure)
+                    self.user, failures, len(target_ids), firstFailure)
 
             if isrcByTrackId:
                 _dbmod.logger.info("[Backfiller-%s] Recorded ISRCs for %d/%d track(s)",
@@ -499,6 +506,7 @@ class MetadataBackfillMixin:
                         # between then and now degraded to the cookie client.
                         headers = {"Authorization": f"Bearer {access_token}"}
                         consecutiveFailures = 0
+                        albumFailures = 0   #< real failures, not "everything unstamped" - see the ISRC step
                         firstFailure = None
 
                         for album_id in target_ids:
@@ -522,6 +530,7 @@ class MetadataBackfillMixin:
                                 else:
                                     if firstFailure is None:
                                         firstFailure = _responseDetail(resp)
+                                    albumFailures += 1
                                     consecutiveFailures += 1
                                     rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
                             except Exception as e:
@@ -529,6 +538,7 @@ class MetadataBackfillMixin:
                                 #  of the batch its turn
                                 if firstFailure is None:
                                     firstFailure = f"request failed: {e}"
+                                albumFailures += 1
                                 consecutiveFailures += 1
 
                             if rateLimited or consecutiveFailures >= CONSECUTIVE_FAILURE_ABORT:
@@ -553,8 +563,7 @@ class MetadataBackfillMixin:
                             if flaskDebugEnabled():
                                 _dbmod.logger.warning(
                                     "[Backfiller-%s] Spotify Web API returned %s for %d of %d album(s).",
-                                    self.user, firstFailure,
-                                    len(target_ids) - len(attempted_ids), len(target_ids)
+                                    self.user, firstFailure, albumFailures, len(target_ids)
                                 )
                     elif hasWebApiCreds:
                         _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to the cookie client.", self.user)
