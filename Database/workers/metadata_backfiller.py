@@ -77,13 +77,16 @@ SPOTIFY_RATE_LIMIT_STATUS = 429
 def _responseDetail(resp) -> str:
     """`status <code>: <body>` for a log line - on one line, and bounded.
 
-    The status alone is not a diagnosis. Both endpoints here take no scope at
-    all, so a 403 on them is not "you asked for too much": Spotify answers
-    "Insufficient client scope", which is what tells you the token is being
-    rejected wholesale rather than the request being malformed. Two unrelated
-    problems behind one number, and the number was all the log carried - the
-    live instance's 403 could only be read at all by digging out a body the
-    LISTENER had logged, on a different endpoint, weeks earlier.
+    The status alone is not a diagnosis, and 403 is the case that proves it.
+    Measured on the live instance 2026-08-08: the withdrawn bulk endpoints
+    answered `{"error": {"status": 403, "message": "Forbidden"}}` - a bare
+    refusal, with a valid token whose refresh succeeded and whose scopes were
+    intact. The listener's recently-played endpoint answers the SAME status with
+    "Insufficient client scope", and that one really does mean re-authorize.
+    Same number, opposite remedies, and only the body tells them apart.
+
+    (Do not read the scope message as expected here: these endpoints take no
+    scope at all. It is named only so the contrast is on the record.)
 
     Collapsed onto one line because Spotify pretty-prints its error objects over
     five, and a log this size is read through grep, where a five-line entry

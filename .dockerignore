@@ -75,6 +75,10 @@ dev.py
 # (see the negation above): it is placeholder shape documentation, and this
 # suite's proof that a `!` exception works at all.
 Database/Spotify/smoketest.py
+# Manual analysis tools, excluded for the same reason: read-only scripts run by
+# hand against a COPY of a database, imported by nothing and runnable only as
+# __main__. Nothing in a published image can invoke them.
+tools/
 # Lint-only, dev-only: the image ships no JS bundle and needs no node runtime.
 node_modules/
 package.json
