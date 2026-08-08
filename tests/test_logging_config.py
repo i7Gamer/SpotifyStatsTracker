@@ -12,10 +12,78 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Database.logging_config import configureLogging, LOG_FILE_NAME
+from Database.logging_config import (
+    configureLogging, InstanceZoneFormatter, LOG_FILE_NAME, LOG_FORMAT,
+)
+
+
+class TestLogTimestampZone(unittest.TestCase):
+    """The stamp on every line comes from the instance's configured zone, not
+    the C runtime's idea of local time.
+
+    logging.Formatter renders %(asctime)s through time.localtime, and on Windows
+    the UCRT reads TZ itself and parses it as a POSIX spec - so an IANA name is
+    neither understood nor ignored. TZ=Europe/Zurich silently resolved to a
+    fixed UTC+1 with no DST, putting every log line an hour behind the wall
+    clock for half the year, while the app's own date handling (which goes
+    through ZoneInfo) stayed right. TZ=America/Los_Angeles lands on the same
+    wrong answer, which is how you can tell it is reading letters rather than
+    looking anything up."""
+
+    #< a fixed instant - 2026-08-07 10:14:13 in Europe/Zurich (CEST, +02:00),
+    #  08:14:13 UTC - so the assertion does not depend on when the suite runs,
+    #  or on which side of a DST change it runs
+    FIXED_EPOCH = 1786090453.0
+
+    def _line(self, zone):
+        record = logging.LogRecord("probe", logging.INFO, __file__, 1, "hello", None, None)
+        #< set after construction: LogRecord derives msecs from its own
+        #  time.time() call, so both have to be pinned or the two disagree
+        record.created = self.FIXED_EPOCH
+        record.msecs = 95.0
+        with patch("Database.utils.tz", ZoneInfo(zone)):
+            return InstanceZoneFormatter(LOG_FORMAT).format(record)
+
+    def test_a_record_is_stamped_in_the_configured_zone(self):
+        self.assertTrue(self._line("Europe/Zurich").startswith("2026-08-07 10:14:13,095+0200"),
+                        self._line("Europe/Zurich"))
+
+    def test_a_different_zone_moves_the_stamp(self):
+        """Proves it reads the configured zone rather than happening to agree
+        with the machine's - the same instant, two hours apart."""
+        self.assertTrue(self._line("UTC").startswith("2026-08-07 08:14:13,095+0000"),
+                        self._line("UTC"))
+
+    def test_the_offset_is_part_of_the_stamp(self):
+        """A bare local time in a file that outlives a DST change cannot be read
+        back unambiguously - and this log is read months later, by hand, next to
+        an incident. Two lines an hour apart across the October change are
+        otherwise indistinguishable from two an hour apart."""
+        for zone, offset in (("Europe/Zurich", "+0200"), ("America/Los_Angeles", "-0700")):
+            with self.subTest(zone=zone):
+                self.assertIn(offset, self._line(zone).split()[1])
+
+    def test_configure_logging_installs_it_on_every_handler(self):
+        root = logging.getLogger()
+        original = list(root.handlers)
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
+        try:
+            configureLogging(tmpdir)
+            added = [h for h in root.handlers if h not in original]
+            self.assertTrue(added)
+            for handler in added:
+                self.assertIsInstance(handler.formatter, InstanceZoneFormatter)
+        finally:
+            for handler in list(root.handlers):
+                if handler not in original:
+                    root.removeHandler(handler)
+                    handler.close()
 
 
 class TestConfigureLogging(unittest.TestCase):
