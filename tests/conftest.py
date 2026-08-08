@@ -331,4 +331,5 @@ class DatabaseTestCase(unittest.TestCase):
         self.addCleanup(db.stopLastfmBiographyBackfiller)
         self.addCleanup(db.stopLastfmAlbumBiographyBackfiller)
         self.addCleanup(Database._active_backfills.clear)
+        self.addCleanup(Database._active_isrc_backfills.clear)
         return db

@@ -257,6 +257,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     WRAPPED_YEAR_DELAY_SECONDS = 5             #< breathing room delay in seconds between recalculating years
 
     BACKFILLER_ALBUM_QUEUE_SIZE = 80           #< number of albums queued from DB for backfilling
+    BACKFILLER_TRACK_QUEUE_SIZE = 200          #< same, for the ISRC queue: four times SPOTIFY_BULK_TRACK_LIMIT,
+                                                #  the ratio the album queue uses. Read wider than one batch on
+                                                #  purpose - the catalog is shared, so every user's backfiller
+                                                #  drains this one queue, and a pool the size of a batch would
+                                                #  leave the second worker to claim nothing and sit the cycle out
     BACKFILLER_IDLE_WAIT_SECONDS = 300         #< wait between metadata-backfill cycles when there's nothing
                                                 #  to do (kill switch off, queue drained) or after a cycle
 
@@ -302,6 +307,12 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     # ALBUM_BIO_FETCH_WORKERS) rather than sharing _artistBioFetchExecutor.
     _albumBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=ALBUM_BIO_FETCH_WORKERS)
     _active_backfills = set()
+    # The same idea for the ISRC queue, which drains the shared tracks table and
+    # so has exactly the problem albums have. A separate set because these are
+    # track ids, not album ids - two different namespaces that only happen to
+    # look alike - but the same lock: both are momentary set edits, never held
+    # across a request, and never nested one inside the other.
+    _active_isrc_backfills = set()
     _backfill_lock = threading.Lock()
     # Same idea for the Last.fm genre backfillers: catalog entities are shared,
     # so two users' workers must not fetch the same (kind, id) concurrently.

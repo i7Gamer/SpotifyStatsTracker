@@ -114,9 +114,9 @@ class MetadataBackfillMixin:
         `getAccessToken()` answers None exactly then - and also when a refresh
         failed, which wants the same treatment for the same reason.
 
-        Asked for AFTER the queue read, and asked for at all only when there is
-        a batch to spend it on - see _CycleAccessToken for why a cycle with
-        nothing to do must make no network calls.
+        Asked for AFTER the queue read and the claim below, and asked for at all
+        only when there is a batch to spend it on - see _CycleAccessToken for
+        why a cycle with nothing to do must make no network calls.
 
         The ISRC is what makes "the single and the album track are the same
         recording" answerable without guessing at names: both releases carry the
@@ -137,8 +137,28 @@ class MetadataBackfillMixin:
 
         import requests
 
+        target_ids = []
         try:
-            target_ids = self.repo.getTracksMissingIsrc(SPOTIFY_BULK_TRACK_LIMIT)
+            # The catalog is shared - one tracks table for the whole instance -
+            # so every user's backfiller drains THIS queue, and two in flight at
+            # once used to request the same 50 ids: three API calls to make one
+            # batch of progress, and three writes of the same rows. Claimed
+            # process-wide for the length of the request, exactly as the album
+            # queue does it (Database._active_backfills, step 4 in the loop).
+            #
+            #< the pool is read four times wider than the batch, the ratio the
+            #  album queue uses: reading exactly one batch would have the second
+            #  worker find everything claimed and sit the cycle out, which is
+            #  correct but throws away the parallelism three workers are for
+            pool = self.repo.getTracksMissingIsrc(self.BACKFILLER_TRACK_QUEUE_SIZE)
+            with _dbmod.Database._backfill_lock:
+                for track_id in pool:
+                    if track_id in _dbmod.Database._active_isrc_backfills:
+                        continue
+                    target_ids.append(track_id)
+                    _dbmod.Database._active_isrc_backfills.add(track_id)
+                    if len(target_ids) >= SPOTIFY_BULK_TRACK_LIMIT:
+                        break
             if not target_ids:
                 return
             access_token = getAccessToken()
@@ -183,6 +203,18 @@ class MetadataBackfillMixin:
             #  list, a locked database. Same verdict as a 429: nothing learned,
             #  so nothing stamped, and the ids stay queued
             _dbmod.logger.warning("[Backfiller-%s] ISRC backfill failed: %s", self.user, e)
+        finally:
+            # In a finally because the failure paths are the ones that need it:
+            # a successful batch has stamped isrc_attempted_at and left the queue
+            # anyway, while a failure stamps nothing, so ids held after one would
+            # be skipped as "already in flight" by every later cycle in this
+            # process - a backfill that quietly stops making progress on them.
+            try:
+                with _dbmod.Database._backfill_lock:
+                    _dbmod.Database._active_isrc_backfills.difference_update(target_ids)
+            except Exception as cleanupError:
+                _dbmod.logger.warning("[Backfiller-%s] Failed to release %d in-flight track ids: %s",
+                                       self.user, len(target_ids), cleanupError)
 
     def _metadataBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Periodically queries Spotify for missing album release dates and tracks.

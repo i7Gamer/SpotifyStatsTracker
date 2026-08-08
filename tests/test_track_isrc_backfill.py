@@ -141,6 +141,130 @@ def _token(value="mock_token"):
     return lambda: value
 
 
+class TestConcurrentIsrcBatches(DatabaseTestCase):
+    """The catalog is shared - one tracks table for the whole instance - so
+    every user's backfiller drains the SAME ISRC queue. Albums have carried
+    process-wide claims since they had this problem (Database._active_backfills,
+    and a pool four times the batch size so claiming does not starve anyone);
+    the ISRC queue had neither, and asked for exactly one batch's worth of ids,
+    so two workers in flight at once requested the same 50 - three API calls to
+    make one batch of progress, and three writes of the same rows."""
+
+    def _db(self):
+        with patch.object(Database, "startMetadataBackfiller"):
+            return self._makeDb({}, [])
+
+    def _okResponse(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"tracks": []}
+        return response
+
+    def _requestedIds(self, mock_get):
+        return mock_get.call_args[0][0].split("ids=")[1].split(",")
+
+    def _insertTracks(self, conn, count):
+        for i in range(count):
+            _insertTrack(conn, f"{i:022d}")
+
+    def _heldByAnotherWorker(self, db, count):
+        """Ids another user's backfiller is holding right now."""
+        held = set(db.repo.getTracksMissingIsrc(count))
+        Database._active_isrc_backfills.update(held)
+        return held
+
+    @patch("requests.get")
+    def test_a_batch_skips_ids_another_worker_holds(self, mock_get):
+        db = self._db()
+        conn = db.repo._conn()
+        self._insertTracks(conn, 120)
+        mock_get.return_value = self._okResponse()
+        held = self._heldByAnotherWorker(db, SPOTIFY_BULK_TRACK_LIMIT)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(set(self._requestedIds(mock_get)) & held, set())
+
+    @patch("requests.get")
+    def test_a_full_batch_is_still_available_while_another_worker_holds_one(self, mock_get):
+        """Skipping in-flight ids is only half of it. Reading exactly one
+        batch's worth would mean the second worker found nothing left and sat
+        the cycle out - correct, but it throws away the parallelism that having
+        three backfillers is supposed to buy. The pool is read wider than the
+        batch for the same reason the album queue is."""
+        db = self._db()
+        conn = db.repo._conn()
+        self._insertTracks(conn, 120)
+        mock_get.return_value = self._okResponse()
+        self._heldByAnotherWorker(db, SPOTIFY_BULK_TRACK_LIMIT)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(len(self._requestedIds(mock_get)), SPOTIFY_BULK_TRACK_LIMIT)
+
+    @patch("requests.get")
+    def test_a_fully_claimed_queue_makes_no_request(self, mock_get):
+        db = self._db()
+        conn = db.repo._conn()
+        self._insertTracks(conn, 20)
+        minted = []
+        self._heldByAnotherWorker(db, 20)
+
+        db._backfillTrackIsrcs(lambda: minted.append(1) or "mock_token",
+                               MagicMock(is_set=MagicMock(return_value=False)))
+
+        mock_get.assert_not_called()
+        self.assertEqual(minted, [])   #< and no token spent deciding that
+
+    @patch("requests.get")
+    def test_a_finished_batch_releases_its_ids(self, mock_get):
+        db = self._db()
+        conn = db.repo._conn()
+        self._insertTracks(conn, 60)
+        mock_get.return_value = self._okResponse()
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(Database._active_isrc_backfills, set())
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_failed_batch_releases_its_ids_too(self, mock_get, mock_logger):
+        """A held id that is never released is worse than one never claimed: a
+        failure stamps nothing, so the ids stay queued, and every later cycle in
+        this process skips them as "already in flight". The backfill then
+        quietly stops making progress on them for the life of the process."""
+        db = self._db()
+        conn = db.repo._conn()
+        self._insertTracks(conn, 60)
+
+        for failure in (lambda **kw: RuntimeError("connection reset"), None):
+            with self.subTest(failure="raise" if failure else "non-200"):
+                Database._active_isrc_backfills.clear()
+                if failure:
+                    mock_get.side_effect = RuntimeError("connection reset")
+                else:
+                    mock_get.side_effect = None
+                    response = MagicMock()
+                    response.status_code = 429
+                    mock_get.return_value = response
+
+                db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+                self.assertEqual(Database._active_isrc_backfills, set())
+
+    @patch("requests.get")
+    def test_a_queue_read_that_raises_releases_nothing_and_says_so(self, mock_get):
+        """The release runs in a finally, so it also runs on the path where
+        nothing was ever claimed."""
+        db = self._db()
+        with patch.object(db.repo, "getTracksMissingIsrc", side_effect=RuntimeError("database is locked")):
+            db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(Database._active_isrc_backfills, set())
+        mock_get.assert_not_called()
+
+
 class TestIsrcBackfillWorker(DatabaseTestCase):
     def _db(self):
         with patch.object(Database, "startMetadataBackfiller"):
