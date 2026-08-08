@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from conftest import DatabaseTestCase, normalizeTrackForTest
 from Database.database import Database
 from Database.repository import TRACK_ISRC_RETRY_SECONDS
-from Database.workers.metadata_backfiller import ERROR_BODY_LOG_LIMIT, SPOTIFY_BULK_TRACK_LIMIT
+from Database.workers.metadata_backfiller import (
+    CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT, SPOTIFY_BULK_TRACK_LIMIT,
+)
 
 # A 22-character alphanumeric id is what looksLikeSpotifyTrackId accepts; the
 # export importer's surrogate is a bare 32-char md5. Both shapes appear below
@@ -141,6 +143,188 @@ def _token(value="mock_token"):
     return lambda: value
 
 
+class TestPerIdIsrcLookups(DatabaseTestCase):
+    """Spotify withdrew the bulk `?ids=` catalog endpoints on 2026-07-31 - they
+    answer 403 Forbidden for a single id as readily as for fifty, while
+    /v1/tracks/<id> answers 200. So a batch is now fifty independent requests,
+    and partial success is the ordinary outcome rather than the exception: what
+    used to be one verdict for fifty tracks is fifty verdicts."""
+
+    def _db(self):
+        with patch.object(Database, "startMetadataBackfiller"):
+            return self._makeDb({}, [])
+
+    def _response(self, status=200, isrc="USRC12345678", trackId=None):
+        response = MagicMock()
+        response.status_code = status
+        response.text = ""
+        response.json.return_value = ({"id": trackId, "external_ids": {"isrc": isrc} if isrc else {}}
+                                      if status == 200 else {})
+        return response
+
+    def _attempted(self, conn, trackId):
+        return conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (trackId,)).fetchone()[0]
+
+    def _isrc(self, conn, trackId):
+        return conn.execute("SELECT isrc FROM tracks WHERE id=?", (trackId,)).fetchone()["isrc"]
+
+    @patch("requests.get")
+    def test_each_track_is_asked_for_on_its_own_url(self, mock_get):
+        """The bulk form is gone; /v1/tracks?ids= 403s even for one id."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        _insertTrack(conn, REAL_ID_2)
+        mock_get.side_effect = lambda url, **kw: self._response(trackId=url.rsplit("/", 1)[-1])
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        urls = [call[0][0] for call in mock_get.call_args_list]
+        self.assertEqual(len(urls), 2)
+        for url in urls:
+            self.assertNotIn("?ids=", url)
+            self.assertRegex(url, r"/v1/tracks/[A-Za-z0-9]+$")
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_one_track_failing_does_not_cost_the_others_their_turn(self, mock_get, mock_logger):
+        """The whole point of going per-id: under the bulk form a single bad
+        response threw away the batch. Now it throws away one track."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        _insertTrack(conn, REAL_ID_2)
+
+        def byId(url, **kw):
+            trackId = url.rsplit("/", 1)[-1]
+            if trackId == REAL_ID:
+                raise RuntimeError("connection reset")
+            return self._response(trackId=trackId)
+        mock_get.side_effect = byId
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(self._isrc(conn, REAL_ID_2), "USRC12345678")
+        self.assertIsNotNone(self._attempted(conn, REAL_ID_2))
+        #< the one that failed learned nothing, so it is stamped with nothing
+        #  and stays queued for the next cycle
+        self.assertIsNone(self._attempted(conn, REAL_ID))
+
+    @patch("requests.get")
+    def test_a_track_spotify_has_no_data_for_is_still_attempted(self, mock_get):
+        """A 404 is a definitive answer, and the bulk form said the same thing
+        with a null entry. Left unstamped it would be re-requested every cycle
+        forever for a track that will never have an ISRC."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._response(status=404)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertIsNotNone(self._attempted(conn, REAL_ID))
+        self.assertIn(self._isrc(conn, REAL_ID), (None, ""))
+
+    @patch("requests.get")
+    def test_a_track_with_no_isrc_in_its_payload_is_attempted(self, mock_get):
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._response(isrc=None, trackId=REAL_ID)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertIsNotNone(self._attempted(conn, REAL_ID))
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_transient_status_stamps_nothing_for_that_track(self, mock_get, mock_logger):
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._response(status=503)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertIsNone(self._attempted(conn, REAL_ID))
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_rate_limit_stops_the_batch_rather_than_finishing_it(self, mock_get, mock_logger):
+        """50x the requests means 50x the ways to make a rate limit worse. A 429
+        is the API asking for less, so the rest of the batch waits for the next
+        cycle instead of being spent proving the point."""
+        db = self._db()
+        conn = db.repo._conn()
+        for i in range(10):
+            _insertTrack(conn, f"{i:022d}")
+        mock_get.return_value = self._response(status=429)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(mock_get.call_count, 1)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_systemic_failure_stops_the_batch_early(self, mock_get, mock_logger):
+        """The failure this was written under: every request 403ing. Without a
+        breaker each worker spends a full batch of futile requests every cycle,
+        forever, and three of them do it at once."""
+        db = self._db()
+        conn = db.repo._conn()
+        for i in range(30):
+            _insertTrack(conn, f"{i:022d}")
+        mock_get.return_value = self._response(status=403)
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(mock_get.call_count, CONSECUTIVE_FAILURE_ABORT)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_recovered_failure_does_not_count_toward_the_breaker(self, mock_get, mock_logger):
+        """Consecutive, not cumulative - an intermittent 503 among successes is
+        the API being busy, not the API being gone."""
+        db = self._db()
+        conn = db.repo._conn()
+        for i in range(12):
+            _insertTrack(conn, f"{i:022d}")
+        calls = {"n": 0}
+
+        def alternating(url, **kw):
+            calls["n"] += 1
+            trackId = url.rsplit("/", 1)[-1]
+            return self._response(status=503) if calls["n"] % 2 else self._response(trackId=trackId)
+        mock_get.side_effect = alternating
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(mock_get.call_count, 12)
+
+    @patch("requests.get")
+    def test_a_shutdown_mid_batch_stops_between_tracks(self, mock_get):
+        """A batch is now up to fifty requests long, so shutdown has to be able
+        to land inside one - waiting out the whole batch is the kind of delay
+        the 45-second stop grace was measured without."""
+        db = self._db()
+        conn = db.repo._conn()
+        for i in range(10):
+            _insertTrack(conn, f"{i:022d}")
+        mock_get.side_effect = lambda url, **kw: self._response(trackId=url.rsplit("/", 1)[-1])
+
+        stop = MagicMock()
+        #< not set at the gate, set once the third track is being considered
+        stop.is_set.side_effect = [False] + [False, False] + [True] * 40
+
+        db._backfillTrackIsrcs(_token(), stop)
+
+        self.assertLess(mock_get.call_count, 10)
+        #< what it did fetch before stopping is still recorded: a shutdown is
+        #  not a failure, and re-fetching it next start is wasted work
+        self.assertGreater(
+            conn.execute("SELECT COUNT(*) FROM tracks WHERE isrc_attempted_at IS NOT NULL").fetchone()[0], 0)
+
+
 class TestConcurrentIsrcBatches(DatabaseTestCase):
     """The catalog is shared - one tracks table for the whole instance - so
     every user's backfiller drains the SAME ISRC queue. Albums have carried
@@ -157,11 +341,14 @@ class TestConcurrentIsrcBatches(DatabaseTestCase):
     def _okResponse(self):
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"tracks": []}
+        response.text = ""
+        response.json.return_value = {"external_ids": {}}
         return response
 
     def _requestedIds(self, mock_get):
-        return mock_get.call_args[0][0].split("ids=")[1].split(",")
+        #< one request per id since the bulk `?ids=` form was withdrawn, so the
+        #  batch is read off the URLs rather than out of one query string
+        return [call[0][0].rsplit("/", 1)[-1] for call in mock_get.call_args_list]
 
     def _insertTracks(self, conn, count):
         for i in range(count):
@@ -302,13 +489,16 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         _insertTrack(conn, REAL_ID)
         _insertTrack(conn, REAL_ID_2)
 
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"tracks": [
-            {"id": REAL_ID, "external_ids": {"isrc": "USRC12345678"}},
-            None,   #< Spotify has no data for the second id
-        ]}
-        mock_get.return_value = response
+        def byId(url, **kwargs):
+            response = MagicMock()
+            response.text = ""
+            if url.rsplit("/", 1)[-1] == REAL_ID:
+                response.status_code = 200
+                response.json.return_value = {"external_ids": {"isrc": "USRC12345678"}}
+            else:
+                response.status_code = 404   #< Spotify has no data for the second id
+            return response
+        mock_get.side_effect = byId
 
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
@@ -322,6 +512,9 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
 
     @patch("requests.get")
     def test_batches_at_the_web_api_id_cap(self, mock_get):
+        """The cap outlived the bulk endpoint it was named for: it is now how
+        many single requests a cycle spends, which is what keeps the drain rate
+        and the request rate where they were measured."""
         db = self._db()
         conn = db.repo._conn()
         for i in range(SPOTIFY_BULK_TRACK_LIMIT + 10):
@@ -329,13 +522,13 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
 
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"tracks": []}
+        response.text = ""
+        response.json.return_value = {"external_ids": {}}
         mock_get.return_value = response
 
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
-        requestedIds = mock_get.call_args[0][0].split("ids=")[1].split(",")
-        self.assertEqual(len(requestedIds), SPOTIFY_BULK_TRACK_LIMIT)
+        self.assertEqual(mock_get.call_count, SPOTIFY_BULK_TRACK_LIMIT)
 
     @patch("requests.get")
     def test_without_an_access_token_it_does_nothing(self, mock_get):

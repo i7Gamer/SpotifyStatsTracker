@@ -11,6 +11,47 @@ from Database.database import Database
 from test_track_isrc_backfill import _insertTrack
 
 
+def runsOneCycle(db, event=None):
+    """Wire a stop event so _metadataBackfillLoop runs exactly ONE cycle.
+
+    Keyed on WHICH wait it is, rather than on how many is_set() calls a cycle
+    happens to make. Every one of these used to be a fixed side_effect list
+    ([False, False, True] and friends), which a per-id batch exhausted the
+    moment a batch became one is_set per item - the loop's shutdown check moved
+    inside the batch, so the count is now the batch size. The startup delay is a
+    random 30-90s and the pacing is sub-second, so neither collides with
+    BACKFILLER_IDLE_WAIT_SECONDS."""
+    event = event if event is not None else MagicMock()
+    event.is_set.return_value = False
+    event.wait.side_effect = lambda seconds=None: seconds == db.BACKFILLER_IDLE_WAIT_SECONDS
+    return event
+
+
+def perIdResponder(albums=(), trackPayload=None):
+    """Serves the per-id catalog endpoints from a list of album payloads.
+
+    Spotify withdrew GET /v1/albums?ids= and GET /v1/tracks?ids= on 2026-07-31
+    (403 Forbidden even for a single id, while /v1/albums/<id> answers 200), so
+    a batch is now one request per id. The tests below keep the album data they
+    were written with and are served it one URL at a time; an album not in the
+    list answers 404, which is the per-id spelling of the null entry the bulk
+    payload used for "Spotify has no data for this one"."""
+    byId = {album["id"]: album for album in albums if album and album.get("id")}
+
+    def respond(url, **kwargs):
+        response = MagicMock()
+        response.text = ""
+        if "/v1/tracks/" in url:
+            response.status_code = 200
+            response.json.return_value = trackPayload if trackPayload is not None else {"external_ids": {}}
+            return response
+        album = byId.get(url.rsplit("/", 1)[-1])
+        response.status_code = 200 if album else 404
+        response.json.return_value = album or {}
+        return response
+    return respond
+
+
 class TestMetadataBackfiller(DatabaseTestCase):
     def test_repository_get_albums_missing_metadata(self):
         import time
@@ -148,29 +189,24 @@ class TestMetadataBackfiller(DatabaseTestCase):
         queue through getAlbumsWithArtistlessTracks, and the album payload's
         per-track artists repair the missing links - without disturbing
         tracks whose links already exist."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "albums": [{
-                "id": "alb1",
-                "name": "Album 1",
-                "release_date": "2020-05-05",
-                "total_tracks": 2,
-                "tracks": {"items": [
-                    {"id": "tr1", "name": "Track 1", "duration_ms": 1000,
-                     "artists": [
-                         {"id": "artA", "name": "Artist A",
-                          "external_urls": {"spotify": "https://open.spotify.com/artist/artA"}},
-                         {"id": "artB", "name": "Artist B",
-                          "external_urls": {"spotify": "https://open.spotify.com/artist/artB"}},
-                         {"name": "No Id Artist"},   #< skipped: nothing real to link
-                     ]},
-                    {"id": "tr2", "name": "Track 2", "duration_ms": 1000,
-                     "artists": [{"id": "artC", "name": "Artist C"}]},
-                ]},
-            }]
-        }
-        mock_get.return_value = mock_response
+        mock_get.side_effect = perIdResponder([{
+            "id": "alb1",
+            "name": "Album 1",
+            "release_date": "2020-05-05",
+            "total_tracks": 2,
+            "tracks": {"items": [
+                {"id": "tr1", "name": "Track 1", "duration_ms": 1000,
+                 "artists": [
+                     {"id": "artA", "name": "Artist A",
+                      "external_urls": {"spotify": "https://open.spotify.com/artist/artA"}},
+                     {"id": "artB", "name": "Artist B",
+                      "external_urls": {"spotify": "https://open.spotify.com/artist/artB"}},
+                     {"name": "No Id Artist"},   #< skipped: nothing real to link
+                 ]},
+                {"id": "tr2", "name": "Track 2", "duration_ms": 1000,
+                 "artists": [{"id": "artC", "name": "Artist C"}]},
+            ]},
+        }])
 
         with patch.object(Database, "startMetadataBackfiller"):
             db = self._makeDb({}, [])
@@ -190,8 +226,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         db.backfiller_stop_event = MagicMock()
         #< loop head, the ISRC step's shutdown guard, loop head again - see the
         #  same three-value sequence in test_backfiller_loop_fetches_and_deduplicates
-        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
-        db.backfiller_stop_event.wait.return_value = False
+        runsOneCycle(db, db.backfiller_stop_event)
 
         db._metadataBackfillLoop()
 
@@ -222,8 +257,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
             "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
 
         db.backfiller_stop_event = MagicMock()
-        db.backfiller_stop_event.is_set.side_effect = [False, True]
-        db.backfiller_stop_event.wait.return_value = False
+        runsOneCycle(db, db.backfiller_stop_event)
 
         db._metadataBackfillLoop()
 
@@ -237,45 +271,40 @@ class TestMetadataBackfiller(DatabaseTestCase):
     @patch("requests.get")
     def test_backfiller_loop_fetches_and_deduplicates(self, mock_get, mock_refresh):
         # 1. Setup mock HTTP response for Spotify v1/albums
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "albums": [
-                {
-                    "id": "alb1",
-                    "name": "Updated Album Name",
-                    "release_date": "2020-05-05",
-                    "total_tracks": 10,
-                    "tracks": {
-                        "items": [
-                            {
-                                "id": "tr1",
-                                "name": "Updated Track Name",
-                                "duration_ms": 215000
-                            }
-                        ]
-                    }
-                },
-                {
-                    # Blanked response (restricted album): names are not data and
-                    # must not overwrite what the importer filled from the export
-                    "id": "alb3",
-                    "name": "",
-                    "release_date": "2020-01-01",
-                    "total_tracks": 4,
-                    "tracks": {
-                        "items": [
-                            {
-                                "id": "tr3",
-                                "name": "",
-                                "duration_ms": 100000
-                            }
-                        ]
-                    }
+        mock_get.side_effect = perIdResponder([
+            {
+                "id": "alb1",
+                "name": "Updated Album Name",
+                "release_date": "2020-05-05",
+                "total_tracks": 10,
+                "tracks": {
+                    "items": [
+                        {
+                            "id": "tr1",
+                            "name": "Updated Track Name",
+                            "duration_ms": 215000
+                        }
+                    ]
                 }
-            ]
-        }
-        mock_get.return_value = mock_response
+            },
+            {
+                # Blanked response (restricted album): names are not data and
+                # must not overwrite what the importer filled from the export
+                "id": "alb3",
+                "name": "",
+                "release_date": "2020-01-01",
+                "total_tracks": 4,
+                "tracks": {
+                    "items": [
+                        {
+                            "id": "tr3",
+                            "name": "",
+                            "duration_ms": 100000
+                        }
+                    ]
+                }
+            }
+        ])
 
         # Disable the default automatic backfiller from launching automatically in init by overriding startMetadataBackfiller
         with patch.object(Database, "startMetadataBackfiller"):
@@ -306,8 +335,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # (keep going), then the loop head again (exit). The ISRC step is a
         # no-op here regardless - its queue only accepts real 22-char Spotify
         # ids, and these fixtures use short fake ones.
-        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
-        db.backfiller_stop_event.wait.return_value = False
+        runsOneCycle(db, db.backfiller_stop_event)
 
         # Run one iteration of the backfiller
         db._metadataBackfillLoop()
@@ -365,8 +393,7 @@ class TestMetadataBackfiller(DatabaseTestCase):
         #  same three-value sequence in test_backfiller_loop_fetches_and_deduplicates.
         #  The ISRC step runs BEFORE the album queue, so it must not swallow the
         #  RuntimeError this test is checking the telemetry for.
-        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
-        db.backfiller_stop_event.wait.return_value = False
+        runsOneCycle(db, db.backfiller_stop_event)
 
         db._metadataBackfillLoop()
 
@@ -456,8 +483,20 @@ class TestMetadataBackfiller(DatabaseTestCase):
             db = self._makeDb({}, [])
             
         conn = db.repo._conn()
-        with conn:
-            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+
+        def queueAlbum():
+            """Put alb1 back in the queue before each of the three runs below.
+
+            Each run now completes its cookie-client fallback, which fetches the
+            album and takes it out of getAlbumsMissingMetadata - so runs two and
+            three would find an empty queue and never reach the Web API at all.
+            They used to leave it behind only because the stop-event mock was a
+            call counter that fired mid-fallback."""
+            with conn:
+                conn.execute("INSERT OR REPLACE INTO albums (id, name, url, release_date, total_tracks, "
+                             "backfill_attempted_at) VALUES ('alb1', 'Album 1', '', 0.0, 0, NULL)")
+
+        queueAlbum()
 
         db.getUserSpotifyCredentials = MagicMock(return_value={
             "client_id": "test_id",
@@ -468,15 +507,8 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Run with FLASK_DEBUG = "1"
         with patch.dict(os.environ, {"FLASK_DEBUG": "1"}):
             Database._active_backfills.clear()
-            stop_mock = MagicMock()
-            calls_1 = 0
-            def is_set_1():
-                nonlocal calls_1
-                calls_1 += 1
-                return calls_1 > 1
-            stop_mock.is_set.side_effect = is_set_1
-            stop_mock.wait.return_value = False
-            db.backfiller_stop_event = stop_mock
+            queueAlbum()
+            db.backfiller_stop_event = runsOneCycle(db)
             db._metadataBackfillLoop()
             
             # Check warning was logged
@@ -495,15 +527,8 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Run with FLASK_DEBUG = "true"
         with patch.dict(os.environ, {"FLASK_DEBUG": "true"}):
             Database._active_backfills.clear()
-            stop_mock = MagicMock()
-            calls_2 = 0
-            def is_set_2():
-                nonlocal calls_2
-                calls_2 += 1
-                return calls_2 > 1
-            stop_mock.is_set.side_effect = is_set_2
-            stop_mock.wait.return_value = False
-            db.backfiller_stop_event = stop_mock
+            queueAlbum()
+            db.backfiller_stop_event = runsOneCycle(db)
             db._metadataBackfillLoop()
             
             # Check warning was logged
@@ -522,15 +547,8 @@ class TestMetadataBackfiller(DatabaseTestCase):
         # Run with FLASK_DEBUG = "0"
         with patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
             Database._active_backfills.clear()
-            stop_mock = MagicMock()
-            calls_3 = 0
-            def is_set_3():
-                nonlocal calls_3
-                calls_3 += 1
-                return calls_3 > 1
-            stop_mock.is_set.side_effect = is_set_3
-            stop_mock.wait.return_value = False
-            db.backfiller_stop_event = stop_mock
+            queueAlbum()
+            db.backfiller_stop_event = runsOneCycle(db)
             db._metadataBackfillLoop()
             
             # Check warning was NOT logged
@@ -561,9 +579,14 @@ class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
             "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
         Database._active_backfills.clear()
         db.backfiller_stop_event = MagicMock()
-        #< loop head, the ISRC step's shutdown guard, loop head again
-        db.backfiller_stop_event.is_set.side_effect = [False, False, True]
-        db.backfiller_stop_event.wait.return_value = False
+        db.backfiller_stop_event.is_set.return_value = False
+        #< exactly one cycle, keyed on WHICH wait it is rather than on how many
+        #  is_set calls a cycle happens to make. It used to be a three-element
+        #  side_effect, which a per-id batch exhausted the moment a batch became
+        #  one is_set per item - any fixed call count is a test that breaks the
+        #  next time the batch size or the pacing changes
+        db.backfiller_stop_event.wait.side_effect = (
+            lambda seconds=None: seconds == db.BACKFILLER_IDLE_WAIT_SECONDS)
         return db, conn
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
@@ -590,10 +613,7 @@ class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
     def test_one_refresh_per_cycle(self, mock_get, mock_refresh):
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"albums": [], "tracks": []}
-        mock_get.return_value = response
+        mock_get.side_effect = perIdResponder()
         db, _ = self._oneCycleDb()
 
         db._metadataBackfillLoop()
@@ -612,17 +632,13 @@ class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
         db, conn = self._oneCycleDb()
         _insertTrack(conn, "4cOdK2wGLETKBW3PvgPWqT")   #< a real-shaped id, so the ISRC queue is non-empty
 
-        albums = MagicMock()
-        albums.status_code = 200
-        albums.json.return_value = {"albums": [
-            {"id": "alb1", "name": "Album 1", "release_date": "2020-05-05",
-             "total_tracks": 10, "tracks": {"items": []}},
-        ]}
+        serve = perIdResponder([{"id": "alb1", "name": "Album 1", "release_date": "2020-05-05",
+                                 "total_tracks": 10, "tracks": {"items": []}}])
 
         def byUrl(url, **kwargs):
-            if "/v1/tracks" in url:
+            if "/v1/tracks/" in url:
                 raise RuntimeError("connection reset")
-            return albums
+            return serve(url, **kwargs)
         mock_get.side_effect = byUrl
 
         db._metadataBackfillLoop()
@@ -642,19 +658,133 @@ class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
         db, conn = self._oneCycleDb()
         _insertTrack(conn, "4cOdK2wGLETKBW3PvgPWqT")
 
-        albums = MagicMock()
-        albums.status_code = 200
-        albums.json.return_value = {"albums": [
+        mock_get.side_effect = perIdResponder([
             {"id": "alb1", "name": "Album 1", "release_date": "2020-05-05",
-             "total_tracks": 10, "tracks": {"items": []}},
-        ]}
-        mock_get.return_value = albums
+             "total_tracks": 10, "tracks": {"items": []}}])
 
         with patch.object(db.repo, "getTracksMissingIsrc", side_effect=RuntimeError("database is locked")):
             db._metadataBackfillLoop()
 
         self.assertEqual(conn.execute("SELECT total_tracks FROM albums WHERE id='alb1'").fetchone()[0], 10)
         Database._active_backfills.clear()
+
+
+class TestPerIdAlbumLookups(DatabaseTestCase):
+    """The album queue lost the same bulk endpoint the ISRC queue did
+    (/v1/albums?ids= answers 403 Forbidden since 2026-07-31, /v1/albums/<id>
+    answers 200), which is why every cycle since has degraded to the cookie
+    client. Per-id restores the Web-API path and makes partial success normal."""
+
+    def _db(self, albumIds):
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            for albumId in albumIds:
+                conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) "
+                             "VALUES (?, ?, '', 0.0, 0)", (albumId, f"Album {albumId}"))
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        db.backfiller_stop_event.is_set.return_value = False
+        #< exactly one cycle, keyed on WHICH wait it is rather than on how many
+        #  is_set calls a cycle happens to make - a per-id batch calls is_set
+        #  once per item now, so any fixed call count is a test that breaks the
+        #  next time the batch size or the pacing changes
+        db.backfiller_stop_event.wait.side_effect = (
+            lambda seconds=None: seconds == db.BACKFILLER_IDLE_WAIT_SECONDS)
+        self.addCleanup(Database._active_backfills.clear)
+        return db, conn
+
+    def _albumPayload(self, albumId):
+        return {"id": albumId, "name": f"Album {albumId}", "release_date": "2020-05-05",
+                "total_tracks": 7, "tracks": {"items": []}}
+
+    def _response(self, status=200, payload=None):
+        response = MagicMock()
+        response.status_code = status
+        response.text = ""
+        response.json.return_value = payload if payload is not None else {}
+        return response
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_each_album_is_asked_for_on_its_own_url(self, mock_get, mock_spotify, mock_refresh):
+        db, conn = self._db(["alb1", "alb2"])
+        mock_get.side_effect = lambda url, **kw: (
+            self._response() if "/v1/tracks/" in url
+            else self._response(payload=self._albumPayload(url.rsplit("/", 1)[-1])))
+
+        db._metadataBackfillLoop()
+
+        albumUrls = [c[0][0] for c in mock_get.call_args_list if "/v1/albums" in c[0][0]]
+        self.assertEqual(len(albumUrls), 2)
+        for url in albumUrls:
+            self.assertNotIn("?ids=", url)
+        mock_spotify.assert_not_called()   #< the Web API answered; no fallback
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_one_album_failing_leaves_the_others_fetched(self, mock_get, mock_spotify, mock_refresh):
+        db, conn = self._db(["alb1", "alb2"])
+
+        def byId(url, **kw):
+            if "/v1/tracks/" in url:
+                return self._response()
+            albumId = url.rsplit("/", 1)[-1]
+            if albumId == "alb1":
+                return self._response(status=503)
+            return self._response(payload=self._albumPayload(albumId))
+        mock_get.side_effect = byId
+
+        db._metadataBackfillLoop()
+
+        self.assertGreater(conn.execute("SELECT release_date FROM albums WHERE id='alb2'").fetchone()[0], 0)
+        #< the failed one learned nothing, so it is not stamped and comes back
+        self.assertIsNone(
+            conn.execute("SELECT backfill_attempted_at FROM albums WHERE id='alb1'").fetchone()[0])
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_web_api_that_answers_nothing_still_falls_back(self, mock_get, mock_spotify, mock_refresh):
+        """Exactly today's live state - every album request 403ing - has to keep
+        reaching the cookie client, which is the only reason album metadata kept
+        arriving at all while this was broken."""
+        db, conn = self._db(["alb1"])
+        mock_get.side_effect = lambda url, **kw: self._response(
+            status=200 if "/v1/tracks/" in url else 403)
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb1")
+
+        db._metadataBackfillLoop()
+
+        mock_spotify.assert_called_once_with()
+        self.assertGreater(conn.execute("SELECT release_date FROM albums WHERE id='alb1'").fetchone()[0], 0)
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_partial_web_api_batch_does_not_also_run_the_cookie_client(self, mock_get, mock_spotify,
+                                                                        mock_refresh):
+        """The fallback re-fetches the whole target list, so running it after a
+        partial success would ask the cookie client for albums the Web API just
+        answered - paying twice and, worse, twice as often as the pacing allows."""
+        db, conn = self._db(["alb1", "alb2"])
+
+        def byId(url, **kw):
+            if "/v1/tracks/" in url:
+                return self._response()
+            albumId = url.rsplit("/", 1)[-1]
+            return (self._response(status=503) if albumId == "alb1"
+                    else self._response(payload=self._albumPayload(albumId)))
+        mock_get.side_effect = byId
+
+        db._metadataBackfillLoop()
+
+        mock_spotify.assert_not_called()
 
 
 if __name__ == "__main__":
