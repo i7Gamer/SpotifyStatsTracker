@@ -31,6 +31,38 @@ SPOTIFY_BULK_ALBUM_LIMIT = 20
 SPOTIFY_BULK_TRACK_LIMIT = 50
 
 
+class _CycleAccessToken:
+    """The one Web-API access token a backfill cycle uses, minted on first ask.
+
+    Both Web-API steps in a cycle want a token, and each used to mint its own -
+    so a cycle spent two round-trips on Spotify's token endpoint to be told the
+    same thing twice. Minting one eagerly at the top of the cycle fixes that but
+    buys a worse problem: a round-trip on every IDLE cycle, and idle is the
+    steady state here. The album queue drains for good, and the ISRC queue only
+    refills every TRACK_ISRC_RETRY_SECONDS, so a settled instance would spend a
+    request every five minutes forever to produce a token neither step reads.
+
+    Lazy keeps both properties at once: at most one refresh per cycle, and none
+    at all when there is nothing to spend it on. Callers ask by CALLING it, so a
+    plain `lambda: token` substitutes for it anywhere a real one is awkward.
+
+    None is a real answer and is cached like any other: a refresh that failed
+    must not be retried by the next caller in the same cycle."""
+
+    __slots__ = ("_mint", "_token", "_minted")
+
+    def __init__(self, mint):
+        self._mint = mint
+        self._token = None
+        self._minted = False
+
+    def __call__(self) -> str | None:
+        if not self._minted:
+            self._minted = True
+            self._token = self._mint()
+        return self._token
+
+
 class MetadataBackfillMixin:
     """The Spotify Web-API metadata backfiller (missing album/track dates, artistless tracks)."""
 
@@ -70,7 +102,7 @@ class MetadataBackfillMixin:
             artists.append({"id": artistId, "name": name, "url": url, "imageId": artistId})
         return artists
 
-    def _backfillTrackIsrcs(self, access_token: str | None, stop_event: threading.Event) -> None:
+    def _backfillTrackIsrcs(self, getAccessToken, stop_event: threading.Event) -> None:
         """Fill in tracks.isrc from GET /v1/tracks, one batch per backfill cycle.
 
         Web-API only, with no cookie-client fallback - and that is a property of
@@ -79,65 +111,78 @@ class MetadataBackfillMixin:
         Web-API credentials simply has no ISRC source; attempting the fallback
         would burn a request per track to learn nothing. Nothing is stamped in
         that case either, so the queue is intact the moment credentials arrive.
-        `access_token` is None exactly then - and also when a refresh failed,
-        which wants the same treatment for the same reason.
+        `getAccessToken()` answers None exactly then - and also when a refresh
+        failed, which wants the same treatment for the same reason.
+
+        Asked for AFTER the queue read, and asked for at all only when there is
+        a batch to spend it on - see _CycleAccessToken for why a cycle with
+        nothing to do must make no network calls.
 
         The ISRC is what makes "the single and the album track are the same
         recording" answerable without guessing at names: both releases carry the
         issuer's identifier for the master. (A remaster is a new master and gets
         its own ISRC, so this is a precise key, not a fuzzy one.)
 
-        Nothing raises out of here. This step runs FIRST in the cycle (see the
-        loop, which explains why), so an escaping exception is caught by the
-        per-cycle handler and costs the album and artist-link repair their whole
-        turn - a DNS blip on this request stalling unrelated work for five
-        minutes."""
+        Nothing raises out of here, and that covers the repo calls as much as
+        the request: a locked database is the ordinary way one of them fails on
+        a live instance. This step runs FIRST in the cycle (see the loop, which
+        explains why), so anything escaping is caught by the per-cycle handler
+        and costs the album and artist-link repair their whole turn - a DNS blip
+        or a busy database stalling unrelated work for five minutes."""
         #< the shutdown check first: a worker being torn down should stop
         #  whether or not this instance has credentials, and it is the one gate
         #  here that is about the process rather than about the data
         if stop_event.is_set():
             return
-        if not access_token:
-            return
-
-        target_ids = self.repo.getTracksMissingIsrc(SPOTIFY_BULK_TRACK_LIMIT)
-        if not target_ids:
-            return
 
         import requests
 
         try:
+            target_ids = self.repo.getTracksMissingIsrc(SPOTIFY_BULK_TRACK_LIMIT)
+            if not target_ids:
+                return
+            access_token = getAccessToken()
+            if not access_token:
+                return
+
             resp = requests.get(f"https://api.spotify.com/v1/tracks?ids={','.join(target_ids)}",
                                 headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
             if resp.status_code != 200:
                 # Not a definitive "no ISRC" - a 429/5xx stamped as attempted would
                 # park these tracks for the whole retry window over a transient.
-                if flaskDebugEnabled():
-                    _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned status %d",
-                                           self.user, resp.status_code)
+                #
+                # Unconditional, unlike the album lookup's twin below: that one
+                # falls back to the cookie client and says so, so its status is
+                # colour on a story the log already tells. This step has no
+                # fallback, which makes the status the ENTIRE story - and behind
+                # a FLASK_DEBUG gate a persistent 401 was indistinguishable from
+                # "still draining", the queue sitting untouched cycle after
+                # cycle with nothing in the log to say why.
+                _dbmod.logger.warning("[Backfiller-%s] ISRC lookup returned status %d",
+                                       self.user, resp.status_code)
                 return
             payload = resp.json()
+
+            isrcByTrackId = {}
+            for track_raw in payload.get("tracks") or []:
+                if not track_raw:
+                    continue   #< an id Spotify has no data for; still counts as attempted below
+                track_id = track_raw.get("id")
+                isrc = (track_raw.get("external_ids") or {}).get("isrc")
+                if track_id and isrc:
+                    isrcByTrackId[track_id] = isrc
+
+            self.repo.updateTrackIsrcs(isrcByTrackId)
+            self.repo.markTracksIsrcAttempted(target_ids)
+
+            if isrcByTrackId:
+                _dbmod.logger.info("[Backfiller-%s] Recorded ISRCs for %d/%d track(s)",
+                                    self.user, len(isrcByTrackId), len(target_ids))
         except Exception as e:
-            #< a timeout, a reset, a 200 that isn't JSON. Same verdict as a 429:
-            #  nothing learned, so nothing stamped, and the ids stay queued
-            _dbmod.logger.warning("[Backfiller-%s] ISRC lookup failed: %s", self.user, e)
-            return
-
-        isrcByTrackId = {}
-        for track_raw in payload.get("tracks") or []:
-            if not track_raw:
-                continue   #< an id Spotify has no data for; still counts as attempted below
-            track_id = track_raw.get("id")
-            isrc = (track_raw.get("external_ids") or {}).get("isrc")
-            if track_id and isrc:
-                isrcByTrackId[track_id] = isrc
-
-        self.repo.updateTrackIsrcs(isrcByTrackId)
-        self.repo.markTracksIsrcAttempted(target_ids)
-
-        if isrcByTrackId:
-            _dbmod.logger.info("[Backfiller-%s] Recorded ISRCs for %d/%d track(s)",
-                                self.user, len(isrcByTrackId), len(target_ids))
+            #< a timeout, a reset, a 200 that isn't JSON, a 200 whose JSON is a
+            #  list, a locked database. Same verdict as a 429: nothing learned,
+            #  so nothing stamped, and the ids stay queued
+            _dbmod.logger.warning("[Backfiller-%s] ISRC backfill failed: %s", self.user, e)
 
     def _metadataBackfillLoop(self, stop_event: threading.Event | None = None) -> None:
         """Periodically queries Spotify for missing album release dates and tracks.
@@ -164,22 +209,28 @@ class MetadataBackfillMixin:
                             break
                         continue
 
-                    # 2. Get Spotify API credentials if configured, and mint the
-                    # one access token this cycle's Web-API work shares. Both
-                    # steps below want it and each used to refresh its own, so a
-                    # cycle spent two round-trips on Spotify's token endpoint to
-                    # be told the same thing twice.
+                    # 2. Get Spotify API credentials if configured, and set up
+                    # the one access token this cycle's Web-API work shares.
+                    # Both steps below want it and each used to refresh its own,
+                    # so a cycle spent two round-trips on Spotify's token
+                    # endpoint to be told the same thing twice. Minted on first
+                    # ask rather than here, so a cycle with nothing to do still
+                    # makes no network calls at all - see _CycleAccessToken.
                     #
                     #< all three, like the listener's own gate - see the same
                     #  comment on _fetchArtistImageUrl's copy in media_fetch.py
                     creds = self.getUserSpotifyCredentials()
                     hasWebApiCreds = bool(creds and creds.get("client_id") and creds.get("client_secret")
                                           and creds.get("refresh_token"))
-                    access_token = None
-                    if hasWebApiCreds:
+
+                    def mintAccessToken():
+                        if not hasWebApiCreds:
+                            return None
                         from Database.Listeners.spotifyListener import _refresh_spotify_access_token
-                        access_token = _refresh_spotify_access_token(
+                        return _refresh_spotify_access_token(
                             creds["client_id"], creds["client_secret"], creds["refresh_token"])
+
+                    getAccessToken = _CycleAccessToken(mintAccessToken)
 
                     # 2b. One ISRC batch per cycle. Deliberately ahead of the
                     # album queue's early-out below: albums run dry long before
@@ -189,7 +240,7 @@ class MetadataBackfillMixin:
                     # meant the ISRC backfill silently stopped the moment album
                     # metadata was complete - which is the steady state. That
                     # ordering is also why it swallows its own failures.
-                    self._backfillTrackIsrcs(access_token, stop_event)
+                    self._backfillTrackIsrcs(getAccessToken, stop_event)
 
                     # 3. Query up to N missing album IDs. Albums whose tracks
                     # lack artist links piggyback on the same fetch: the album
@@ -228,8 +279,11 @@ class MetadataBackfillMixin:
                     attempted_ids = []  #< albums that got a definitive response (incl. "gone") - rate-limits their next retry
                     use_fallback = True
 
-                    #< the token was minted once at the top of this cycle (step
-                    #  2), so there is nothing to refresh here
+                    #< the cycle's shared token, minted here only if the ISRC
+                    #  step above did not already need it (step 2). Asked for
+                    #  behind the early-out above, so a drained album queue
+                    #  costs nothing
+                    access_token = getAccessToken()
                     if access_token:
                         import requests
 

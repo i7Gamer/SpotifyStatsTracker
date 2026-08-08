@@ -559,6 +559,27 @@ class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
+    def test_a_cycle_with_no_work_mints_nothing(self, mock_get, mock_refresh):
+        """One refresh per cycle is only half the goal; the other half is none
+        at all when there is nothing to spend it on. Both Web-API steps early
+        out - the album queue drains for good, and the ISRC queue only refills
+        every TRACK_ISRC_RETRY_SECONDS - so the steady state on a settled
+        instance is an idle cycle, and minting up front spent a round-trip on
+        Spotify's token endpoint every five minutes to produce a token nobody
+        read."""
+        db, conn = self._oneCycleDb()
+        with conn:
+            #< the album queue's only entry, answered, so the loop reaches its
+            #  own early-out with nothing left to fetch
+            conn.execute("UPDATE albums SET release_date=1.0, total_tracks=9 WHERE id='alb1'")
+
+        db._metadataBackfillLoop()
+
+        mock_refresh.assert_not_called()
+        mock_get.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
     def test_one_refresh_per_cycle(self, mock_get, mock_refresh):
         response = MagicMock()
         response.status_code = 200
@@ -596,6 +617,32 @@ class TestTheCycleSharesOneAccessToken(DatabaseTestCase):
         mock_get.side_effect = byUrl
 
         db._metadataBackfillLoop()
+
+        self.assertEqual(conn.execute("SELECT total_tracks FROM albums WHERE id='alb1'").fetchone()[0], 10)
+        Database._active_backfills.clear()
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
+    def test_an_isrc_database_error_does_not_cost_the_album_backfill_its_cycle(self, mock_get, mock_refresh):
+        """The same guarantee as the test above, for the failure the network
+        guard does not cover. The ISRC step's queue read and its two writes are
+        repo calls sitting outside that guard, and a locked database is the
+        ordinary way one of them raises on a live instance - at which point the
+        album work behind it is gone for the full five minutes, which is exactly
+        what running this step first was supposed to be safe to do."""
+        db, conn = self._oneCycleDb()
+        _insertTrack(conn, "4cOdK2wGLETKBW3PvgPWqT")
+
+        albums = MagicMock()
+        albums.status_code = 200
+        albums.json.return_value = {"albums": [
+            {"id": "alb1", "name": "Album 1", "release_date": "2020-05-05",
+             "total_tracks": 10, "tracks": {"items": []}},
+        ]}
+        mock_get.return_value = albums
+
+        with patch.object(db.repo, "getTracksMissingIsrc", side_effect=RuntimeError("database is locked")):
+            db._metadataBackfillLoop()
 
         self.assertEqual(conn.execute("SELECT total_tracks FROM albums WHERE id='alb1'").fetchone()[0], 10)
         Database._active_backfills.clear()

@@ -134,6 +134,13 @@ class TestIsrcQueue(DatabaseTestCase):
         db.repo.markTracksIsrcAttempted([])
 
 
+#< the step takes a PROVIDER, not a token, so that a cycle with nothing to do
+#  mints nothing (see _CycleAccessToken). Tests that only care about the happy
+#  path hand it this.
+def _token(value="mock_token"):
+    return lambda: value
+
+
 class TestIsrcBackfillWorker(DatabaseTestCase):
     def _db(self):
         with patch.object(Database, "startMetadataBackfiller"):
@@ -154,7 +161,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         ]}
         mock_get.return_value = response
 
-        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertEqual(conn.execute("SELECT isrc FROM tracks WHERE id=?", (REAL_ID,)).fetchone()["isrc"],
                          "USRC12345678")
@@ -176,7 +183,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         response.json.return_value = {"tracks": []}
         mock_get.return_value = response
 
-        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
         requestedIds = mock_get.call_args[0][0].split("ids=")[1].split(",")
         self.assertEqual(len(requestedIds), SPOTIFY_BULK_TRACK_LIMIT)
@@ -191,7 +198,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         conn = db.repo._conn()
         _insertTrack(conn, REAL_ID)
 
-        db._backfillTrackIsrcs(None, MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs(_token(None), MagicMock(is_set=MagicMock(return_value=False)))
 
         mock_get.assert_not_called()
         self.assertIsNone(
@@ -209,7 +216,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         response.status_code = 429
         mock_get.return_value = response
 
-        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertIsNone(
             conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0])
@@ -217,7 +224,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
     @patch("requests.get")
     def test_empty_queue_makes_no_request(self, mock_get):
         db = self._db()
-        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
         mock_get.assert_not_called()
 
     @patch("requests.get")
@@ -226,7 +233,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         conn = db.repo._conn()
         _insertTrack(conn, REAL_ID)
 
-        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=True)))
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=True)))
 
         mock_get.assert_not_called()
 
@@ -244,7 +251,103 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         _insertTrack(conn, REAL_ID)
         mock_get.side_effect = RuntimeError("connection reset")
 
-        db._backfillTrackIsrcs("mock_token", MagicMock(is_set=MagicMock(return_value=False)))
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertIsNone(
+            conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0])
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_failed_response_is_reported_outside_debug(self, mock_get, mock_logger):
+        """The album backfill can afford to whisper a non-200: it falls back to
+        the cookie client and says so on the way. This step has no fallback by
+        design, so a non-200 is the whole story - and behind a FLASK_DEBUG gate
+        it is a story nobody hears. A persistent 401 then looks exactly like
+        "still draining": the queue is untouched cycle after cycle and the log
+        says nothing at all, which is how the live instance sat at 0 ISRCs
+        without a single line to explain it."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+
+        response = MagicMock()
+        response.status_code = 401
+        mock_get.return_value = response
+
+        with patch("Database.workers.metadata_backfiller.flaskDebugEnabled", return_value=False):
+            db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        warnings = [args[0] % args[1:] for args, _ in mock_logger.warning.call_args_list]
+        self.assertTrue(any("401" in line for line in warnings), warnings)
+
+    @patch("requests.get")
+    def test_an_empty_queue_mints_no_token(self, mock_get):
+        """Laziness is the point of the provider: the album queue drains for
+        good and the ISRC queue only refills every TRACK_ISRC_RETRY_SECONDS, so
+        the steady state is a cycle with nothing to do. Minting up front spent a
+        round-trip on Spotify's token endpoint every five minutes, forever, for
+        a token neither step would use."""
+        db = self._db()
+        minted = []
+
+        db._backfillTrackIsrcs(lambda: minted.append(1) or "mock_token",
+                               MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(minted, [])
+        mock_get.assert_not_called()
+
+    @patch("requests.get")
+    def test_a_set_stop_event_mints_no_token(self, mock_get):
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        minted = []
+
+        db._backfillTrackIsrcs(lambda: minted.append(1) or "mock_token",
+                               MagicMock(is_set=MagicMock(return_value=True)))
+
+        self.assertEqual(minted, [])
+        mock_get.assert_not_called()
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_database_error_is_contained_too(self, mock_get, mock_logger):
+        """"Nothing raises out of here" has to hold for the repo calls, not just
+        the request. The queue read and the two writes are as capable of raising
+        as requests.get is - a locked database is the ordinary way it happens on
+        a live instance - and they cost exactly the same thing when they do: the
+        loop's per-cycle handler catches it and the album and artist-link repair
+        lose their whole turn."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"tracks": [{"id": REAL_ID, "external_ids": {"isrc": "USRC12345678"}}]}
+        mock_get.return_value = response
+
+        for method in ("getTracksMissingIsrc", "updateTrackIsrcs", "markTracksIsrcAttempted"):
+            with self.subTest(method=method):
+                with patch.object(db.repo, method, side_effect=RuntimeError("database is locked")):
+                    db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_payload_that_is_not_an_object_is_contained(self, mock_get, mock_logger):
+        """resp.json() succeeding does not make the result a dict - a proxy or
+        an error page can answer 200 with a JSON list. .get() on it raises, and
+        that raise is outside the request's own guard."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = ["not", "an", "object"]
+        mock_get.return_value = response
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertIsNone(
             conn.execute("SELECT isrc_attempted_at FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0])
