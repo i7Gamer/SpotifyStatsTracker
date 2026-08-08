@@ -879,9 +879,22 @@ class TestReauthPrompting(DatabaseTestCase):
     @patch("Database.Spotify.Spotify")
     @patch("requests.get")
     def test_a_refresh_that_recovers_resets_the_streak(self, mock_get, mock_spotify):
-        """Consecutive, not cumulative: an outage that ends is not a revocation."""
+        """Consecutive, not cumulative: an outage that ends is not a revocation.
+
+        The lookups fail so that nothing is ever stamped and the queue stays
+        populated. Serving them SUCCESSFULLY made this test vacuous - the good
+        cycle drained the queue, so the cycles after it asked for no token at
+        all, were correctly not counted, and the streak could never have reached
+        the threshold whether it reset or not. Caught by mutation: deleting the
+        reset left the whole suite green."""
         db, _ = self._db()
-        mock_get.side_effect = perIdResponder()
+
+        def alwaysFails(url, **kwargs):
+            response = MagicMock()
+            response.status_code = 503
+            response.text = ""
+            return response
+        mock_get.side_effect = alwaysFails
         tokens = [None] * (TOKEN_REFRESH_REAUTH_THRESHOLD - 1) + ["mock_token"] \
             + [None] * (TOKEN_REFRESH_REAUTH_THRESHOLD - 1)
 
