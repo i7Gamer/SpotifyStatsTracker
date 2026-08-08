@@ -98,6 +98,27 @@ def groupsBy(keyOf, tracks, requireDuration=True):
     return grouped
 
 
+def pairsOf(groups):
+    """Every unordered pair of ids inside each group.
+
+    Comparing whole GROUPS gets questions 4 and 5 wrong whenever the two methods
+    carve the same tracks differently. A three-track title group that ISRC sees
+    as one pair plus a singleton would land in both "ISRC finds, titles miss"
+    (the pair is not a group titles produced) and "titles find, ISRC misses"
+    (the triple is not a group ISRC produced) - two findings out of one
+    agreement, in the numbers deciding whether a second matcher gets built.
+
+    A pair is the unit the two methods can actually agree or disagree on: "are
+    these two the same recording?" is the whole question."""
+    pairs = set()
+    for items in groups.values():
+        ids = sorted(track["id"] for track in items)
+        for index, first in enumerate(ids):
+            for second in ids[index + 1:]:
+                pairs.add((first, second))
+    return pairs
+
+
 def playsMoved(groups, plays):
     """Plays that would move onto a canonical track - everything but the
     largest member of each group, which is the one they merge into."""
@@ -151,13 +172,13 @@ def main(dbPath):
     print(f"   not yet judgeable (missing ISRCs)    {unjudgeable:>4}")
     print()
 
-    titlePairs = {frozenset(t["id"] for t in items) for items in titleGroups.values()}
-    isrcPairs = {frozenset(t["id"] for t in items) for items in isrcGroups.values()}
+    titlePairs = pairsOf(titleGroups)
+    isrcPairs = pairsOf(isrcGroups)
     onlyIsrc = isrcPairs - titlePairs
     onlyTitle = titlePairs - isrcPairs
-    print(f"4. ISRC finds, titles miss              {len(onlyIsrc):>4}"
+    print(f"4. ISRC finds, titles miss              {len(onlyIsrc):>4} pairs"
           f"   <- what ISRC is worth over title matching")
-    print(f"5. titles find, ISRC misses             {len(onlyTitle):>4}"
+    print(f"5. titles find, ISRC misses             {len(onlyTitle):>4} pairs"
           f"   <- what a second tier would still add")
     print()
 
