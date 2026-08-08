@@ -123,6 +123,22 @@ class TestChartsRoute(AppTestCase):
 
         self.assertIn(b'<option value="year" selected>Last Year</option>', resp.data)
 
+    def test_an_empty_interval_resolves_to_the_saved_window(self):
+        """`?interval=` is PRESENT and empty, so the .get() default never fires
+        and "" reaches _getValidInterval, which accepts it. _getDateRange then
+        coerces "" to the default for the DATA - but the template's All Time
+        option only matches the "all time" spelling, so "" selected no option at
+        all and the browser fell back to displaying the FIRST one, Today, over
+        week-scoped numbers. The dashboard route carries the same `or` for the
+        same reason, and the top lists were just given it."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "week", "timezone": None}
+
+        resp = self._get(dash, db, query="?interval=")
+
+        self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
+
     def test_decade_distribution_order_survives_json_serialization(self):
         """getReleaseDecadeDistribution returns decades chronologically
         (Database/database.py's `ORDER BY decade`). Shipping the payload as an

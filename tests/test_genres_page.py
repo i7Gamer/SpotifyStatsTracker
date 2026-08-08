@@ -112,6 +112,18 @@ class GenresPageTestCase(AppTestCase):
         resp = self._get(dash, db)
         self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
 
+    def test_an_empty_interval_resolves_to_the_saved_window(self):
+        """`?interval=` is PRESENT and empty, so the .get() default never fires
+        and "" reaches _getValidInterval, which accepts it. _getDateRange
+        coerces "" to the default for the DATA, but the All Time option above
+        only matches the "all time" spelling - so "" selected nothing and the
+        browser displayed the first option, Today, over week-scoped numbers.
+        See the same test on /charts, and the `or` the dashboard route carries."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="week")
+        resp = self._get(dash, db, query="?interval=")
+        self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
+
     def test_shell_renders_an_empty_swap_target_and_defers_data(self):
         # The canvases used to live in the shell and be filled by JS. They now
         # arrive with the fragment, so the shell is the filter form plus the

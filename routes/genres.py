@@ -122,7 +122,13 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
 
-        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow), default=defaultWindow)
+        #< `or defaultWindow` before validating - same reason /charts and the
+        #  dashboard carry it: ?interval= is present and empty, _getValidInterval
+        #  accepts "", and the All Time <option> below only matches the "all
+        #  time" spelling, so "" selected nothing and the control showed its
+        #  first option over default-window numbers
+        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow) or defaultWindow,
+                                               default=defaultWindow)
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
         if interval == "custom" and not (customStart and customEnd):

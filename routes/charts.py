@@ -1044,7 +1044,16 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
 
-        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow), default=defaultWindow)
+        #< `or defaultWindow` before validating, like dashboardIndex above:
+        #  ?interval= is PRESENT and empty, so the .get() default never fires,
+        #  and _getValidInterval accepts "" (it means "unset" on other paths).
+        #  _getDateRange coerces it for the DATA, but the template's <select>
+        #  compares against this variable and its All Time option only matches
+        #  the "all time" spelling - so an empty ?interval= left every option
+        #  unselected and the control displayed the first one, Today, over
+        #  default-window numbers
+        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow) or defaultWindow,
+                                               default=defaultWindow)
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
         if interval == "custom" and not (customStart and customEnd):
