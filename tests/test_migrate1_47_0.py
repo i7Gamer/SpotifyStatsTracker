@@ -26,7 +26,10 @@ class TestMigrate1_47_0(unittest.TestCase):
     existing row - tracks.isrc is empty catalog-wide because no ingest path has
     ever been able to fill it."""
 
-    COLUMN_LINE = "    isrc_attempted_at REAL\n"
+    #< carries a trailing comma since 1.49.0 added canonical_id after it. Every
+    #  new last column shifts the previous one's comma, so the fixture of the
+    #  migration BEFORE it needs this line updated - expect to be here again.
+    COLUMN_LINE = "    isrc_attempted_at REAL,\n"
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()

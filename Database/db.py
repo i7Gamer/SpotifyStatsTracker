@@ -134,7 +134,19 @@ CREATE TABLE IF NOT EXISTS tracks (
     created_reason  TEXT,
     lastfm_attempted_at REAL,
     availability_reason TEXT,
-    isrc_attempted_at REAL
+    isrc_attempted_at REAL,
+    -- The track this one has been merged INTO, or NULL for "not merged", which
+    -- also means "is its own canonical track". Spotify lists the same recording
+    -- once per release it appears on - a single, an album, a compilation - and
+    -- each gets its own id, so one song can hold several rows here and split a
+    -- listener's play count between them.
+    --
+    -- Deliberately NOT indexed, for the reason isrc_attempted_at is not: SCHEMA
+    -- is re-stamped onto older databases BEFORE their migrations run, so an
+    -- index naming a column that does not exist yet fails the stamping. The
+    -- reverse lookup ("what merged into this?") is a scan over a few hundred
+    -- non-NULL rows in a ~25k catalog, which is not worth the trap.
+    canonical_id    TEXT REFERENCES tracks(id)
 );
 -- tracks.album_id is a foreign key filtered/joined by every "tracks on this
 -- album" lookup (album detail, artist-per-album rollups, play scans, genre
@@ -207,6 +219,28 @@ CREATE TABLE IF NOT EXISTS images (
     kind    TEXT NOT NULL CHECK (kind IN ('track', 'artist')),
     status  TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ok', 'failed')),
     PRIMARY KEY (id, kind)
+);
+
+-- Why each tracks.canonical_id is what it is: an audit trail, and the place a
+-- human verdict outranks the automatic matcher.
+--
+-- One row per track that has been JUDGED, which is not the same set as the
+-- tracks that were merged: canonical_id NULL here is a deliberate "these are
+-- NOT the same recording", a different statement from having no row at all
+-- (never looked at). That distinction is what stops a rejected pair being
+-- re-proposed on every pass.
+--
+-- decided_by NULL means the matcher decided it; a username means a person did,
+-- and an automatic pass must leave those alone. `evidence` is the ISRC for an
+-- ISRC merge - kept so a merge can be explained, and re-checked, long after the
+-- catalog row it came from has changed underneath it.
+CREATE TABLE IF NOT EXISTS track_merge_decisions (
+    track_id     TEXT PRIMARY KEY REFERENCES tracks(id),
+    canonical_id TEXT REFERENCES tracks(id),
+    reason       TEXT NOT NULL,
+    evidence     TEXT,
+    decided_at   REAL NOT NULL,
+    decided_by   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS user_tags (

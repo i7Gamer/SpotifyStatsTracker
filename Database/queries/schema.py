@@ -139,6 +139,50 @@ class SchemaQueries:
             with conn:
                 conn.execute("ALTER TABLE tracks ADD COLUMN isrc_attempted_at REAL")
 
+    def addTrackCanonicalIdColumnIfMissing(self) -> None:
+        """Add tracks.canonical_id (migrate1_48_0) if missing - the track this
+        one has been merged into, NULL for "not merged".
+
+        SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases, so
+        a tracks table that predates the column needs an explicit ALTER. Guarded
+        so re-running the migration doesn't fail.
+
+        NULL is the whole migration: every existing row is its own canonical
+        track until a matcher says otherwise, so there is nothing to backfill
+        and no play count moves on upgrade.
+
+        SQLite allows a REFERENCES clause on an added column only when its
+        default is NULL, which is exactly what this wants anyway.
+
+        Not indexed, like isrc_attempted_at and for the same reason - see the
+        column's comment in db.py."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+        if "canonical_id" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE tracks ADD COLUMN canonical_id TEXT REFERENCES tracks(id)")
+
+    def addTrackMergeDecisionsTableIfMissing(self) -> None:
+        """Create track_merge_decisions (migrate1_48_0) if missing.
+
+        A plain CREATE TABLE IF NOT EXISTS, so this is really only here to make
+        the migration explicit about what it adds: SCHEMA stamping would create
+        it on the next connect regardless, since a brand-new TABLE (unlike a new
+        COLUMN, and unlike an index over one) is safe to stamp onto any older
+        database."""
+        conn = self._conn()
+        with conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS track_merge_decisions (
+                    track_id     TEXT PRIMARY KEY REFERENCES tracks(id),
+                    canonical_id TEXT REFERENCES tracks(id),
+                    reason       TEXT NOT NULL,
+                    evidence     TEXT,
+                    decided_at   REAL NOT NULL,
+                    decided_by   TEXT
+                )
+            """)
+
     def addPlayMetadataColumnsIfMissing(self) -> None:
         """Add created_at and created_reason columns to plays table if missing.
         Guarded so re-running the migration doesn't fail."""
