@@ -186,6 +186,31 @@ class TestConcurrentIsrcBatches(DatabaseTestCase):
         self.assertEqual(set(self._requestedIds(mock_get)) & held, set())
 
     @patch("requests.get")
+    def test_the_batch_is_claimed_while_its_request_is_in_flight(self, mock_get):
+        """The other half of the mechanism, and the half a skip test cannot
+        reach: honouring another worker's claims only ever helps if this worker
+        publishes its own. Drop the registration and every worker still skips
+        perfectly - over a set nothing ever puts anything in.
+
+        Asserted from inside the request because that is the whole window the
+        claim exists for: before it there is nothing to see, and after it the
+        ids have been released."""
+        db = self._db()
+        conn = db.repo._conn()
+        self._insertTracks(conn, 60)
+
+        claimedDuringRequest = {}
+
+        def duringRequest(url, **kwargs):
+            claimedDuringRequest["ids"] = set(Database._active_isrc_backfills)
+            return self._okResponse()
+        mock_get.side_effect = duringRequest
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(claimedDuringRequest["ids"], set(self._requestedIds(mock_get)))
+
+    @patch("requests.get")
     def test_a_full_batch_is_still_available_while_another_worker_holds_one(self, mock_get):
         """Skipping in-flight ids is only half of it. Reading exactly one
         batch's worth would mean the second worker found nothing left and sat
