@@ -22,13 +22,20 @@ from Database.dbmodule import dbmod as _dbmod
 from Database.utils import flaskDebugEnabled
 
 
-# The Web API's GET /v1/albums hard cap on ids per request; also bounds the
-# cookie-client fallback's per-cycle batch so both paths pace identically.
-SPOTIFY_BULK_ALBUM_LIMIT = 20
+# How many albums a cycle works through, on the Web API and on the cookie-client
+# fallback alike, so both paths pace identically.
+#
+# These two were SPOTIFY_BULK_ALBUM_LIMIT and SPOTIFY_BULK_TRACK_LIMIT, named
+# for the `?ids=` endpoints' hard caps on ids per request. Those endpoints are
+# gone (see the note above the pacing constants below), so the numbers no longer
+# describe an API limit at all - they are purely our own per-cycle pacing, and
+# the old names would have had a reader looking for a bulk request that is not
+# there. The values are unchanged: the drain rate was always ids-per-cycle.
+ALBUM_BATCH_SIZE = 20
 
-# The Web API's GET /v1/tracks hard cap on ids per request. Higher than the
-# album cap because it is a different endpoint, not because ISRCs are cheaper.
-SPOTIFY_BULK_TRACK_LIMIT = 50
+# The same, for tracks. Higher than the album batch because it always was - a
+# different endpoint, not because ISRCs are cheaper.
+TRACK_BATCH_SIZE = 50
 
 # How much of a failed response's body reaches the log. A Spotify error object
 # is ~90 characters; this is room for several, and a bound for everything else.
@@ -41,7 +48,7 @@ ERROR_BODY_LOG_LIMIT = 500
 # therefore N requests rather than one.
 #
 # It costs no wall-clock: pacing was never request-bound. A cycle has always
-# been SPOTIFY_BULK_TRACK_LIMIT ids per worker, so the whole catalog still
+# been TRACK_BATCH_SIZE ids per worker, so the whole catalog still
 # drains in the same ~14 hours across three workers - it is the same 50 tracks,
 # asked for 50 times instead of once.
 SPOTIFY_REQUEST_PACE_SECONDS = 0.2   #< between per-id requests; ~10s of a 300s cycle
@@ -53,6 +60,14 @@ SPOTIFY_REQUEST_PACE_SECONDS = 0.2   #< between per-id requests; ~10s of a 300s 
 # than cumulative: an intermittent 503 among successes is the API being busy,
 # not the API being gone.
 CONSECUTIVE_FAILURE_ABORT = 5
+
+# Consecutive cycles whose token refresh failed before the account is told its
+# Spotify authorization needs redoing. A refresh returns None for a revoked
+# grant AND for a DNS blip, and only the first is the user's to fix - the same
+# reason the listener waits out SCOPE_ERROR_CONFIRM_THRESHOLD polls before
+# prompting. At one cycle per BACKFILLER_IDLE_WAIT_SECONDS this is a quarter of
+# an hour of sustained failure.
+TOKEN_REFRESH_REAUTH_THRESHOLD = 3
 
 # Spotify's "you are asking too often". Distinguished from the other failures
 # because it is the one that says stopping now helps.
@@ -100,18 +115,27 @@ class _CycleAccessToken:
     None is a real answer and is cached like any other: a refresh that failed
     must not be retried by the next caller in the same cycle."""
 
-    __slots__ = ("_mint", "_token", "_minted")
+    __slots__ = ("_mint", "_token", "_minted", "noted")
 
     def __init__(self, mint):
         self._mint = mint
         self._token = None
         self._minted = False
+        #< set by _noteTokenHealth, so a cycle is counted once whichever of the
+        #  two steps happened to ask for the token first
+        self.noted = False
 
     def __call__(self) -> str | None:
         if not self._minted:
             self._minted = True
             self._token = self._mint()
         return self._token
+
+    @property
+    def attempted(self) -> bool:
+        """Whether anything in this cycle asked for a token at all. A cycle with
+        no work asks for none, and that is not evidence either way."""
+        return self._minted
 
 
 class MetadataBackfillMixin:
@@ -152,6 +176,51 @@ class MetadataBackfillMixin:
                 f"https://open.spotify.com/artist/{artistId}"
             artists.append({"id": artistId, "name": name, "url": url, "imageId": artistId})
         return artists
+
+    def _noteTokenHealth(self, getAccessToken, hasWebApiCreds: bool) -> None:
+        """Count consecutive cycles whose token refresh failed, and ask the
+        account to re-authorize once that is clearly not a blip.
+
+        A refresh returning None is the one failure on this path a USER can fix:
+        the stored grant is dead, so re-authorizing restores it.
+
+        Deliberately NOT wired to a 403 from the lookups themselves, however
+        many times it repeats. That was tested for us on 2026-07-31, when
+        Spotify withdrew the bulk `?ids=` catalog endpoints and every call began
+        answering 403 Forbidden - with a refresh that succeeded, scopes intact,
+        and /v1/me answering 200. Prompting on that would have told all three
+        accounts their Spotify authorization had failed, over a platform change
+        no login could fix; one of them re-consented anyway and it changed
+        nothing. A 403 says "not allowed", not "not you". The 403 that DOES mean
+        re-authorization carries "Insufficient client scope" in its body and
+        arrives on a SCOPED endpoint - the listener's recently-played poll owns
+        that one (see _SCOPE_ERROR), and nothing here asks for a scope at all.
+
+        A cycle that asked for no token is not evidence either way, so it
+        neither counts nor clears.
+
+        Sets but never clears. Clearing belongs to a definitive scoped success
+        (the listener's on_scope_status_change) or to the user finishing the
+        re-auth flow: a token refresh working again says nothing about the scope
+        the flag may have been raised for."""
+        if getAccessToken.noted or not (hasWebApiCreds and getAccessToken.attempted):
+            return
+        getAccessToken.noted = True
+
+        if getAccessToken() is not None:
+            self._backfillTokenFailures = 0
+            return
+
+        self._backfillTokenFailures += 1
+        #< exactly at the threshold, not past it: setSpotifyNeedsReauth queues
+        #  an email every time it is called with True, so a streak that keeps
+        #  running must not keep asking
+        if self._backfillTokenFailures == TOKEN_REFRESH_REAUTH_THRESHOLD:
+            _dbmod.logger.error(
+                "[Backfiller-%s] Spotify token refresh has failed %d cycles running - "
+                "the stored authorization looks revoked; prompting for re-authorization",
+                self.user, self._backfillTokenFailures)
+            self.setSpotifyNeedsReauth(True)
 
     def _backfillTrackIsrcs(self, getAccessToken, stop_event: threading.Event) -> None:
         """Fill in tracks.isrc from GET /v1/tracks, one batch per backfill cycle.
@@ -208,7 +277,7 @@ class MetadataBackfillMixin:
                         continue
                     target_ids.append(track_id)
                     _dbmod.Database._active_isrc_backfills.add(track_id)
-                    if len(target_ids) >= SPOTIFY_BULK_TRACK_LIMIT:
+                    if len(target_ids) >= TRACK_BATCH_SIZE:
                         break
             if not target_ids:
                 return
@@ -318,6 +387,10 @@ class MetadataBackfillMixin:
         import random
         if stop_event is None:
             stop_event = self.backfiller_stop_event
+        #< here rather than on the instance: the streak belongs to THIS run, and
+        #  a worker restarted after a re-auth should start counting again from
+        #  nothing rather than inherit the state that prompted it
+        self._backfillTokenFailures = 0
         try:
             # 1. Random startup offset to prevent multiple user threads from starting at the same moment
             startup_delay = random.randint(self.BACKFILLER_MIN_START_DELAY, self.BACKFILLER_MAX_START_DELAY)
@@ -367,6 +440,13 @@ class MetadataBackfillMixin:
                     # ordering is also why it swallows its own failures.
                     self._backfillTrackIsrcs(getAccessToken, stop_event)
 
+                    #< here AND after the album branch's own use below, because
+                    #  either step can be the one that asks for the token first
+                    #  (this one has work in the steady state; the album queue
+                    #  drains) - the token object remembers it was counted, so a
+                    #  cycle is counted once either way
+                    self._noteTokenHealth(getAccessToken, hasWebApiCreds)
+
                     # 3. Query up to N missing album IDs. Albums whose tracks
                     # lack artist links piggyback on the same fetch: the album
                     # payload carries per-track artists, repairing tracks that
@@ -389,7 +469,7 @@ class MetadataBackfillMixin:
                             if album_id not in _dbmod.Database._active_backfills:
                                 target_ids.append(album_id)
                                 _dbmod.Database._active_backfills.add(album_id)
-                                if len(target_ids) >= SPOTIFY_BULK_ALBUM_LIMIT:
+                                if len(target_ids) >= ALBUM_BATCH_SIZE:
                                     break
 
                     # 5. If nothing eligible remains, wait and try next iteration
@@ -409,6 +489,7 @@ class MetadataBackfillMixin:
                     #  behind the early-out above, so a drained album queue
                     #  costs nothing
                     access_token = getAccessToken()
+                    self._noteTokenHealth(getAccessToken, hasWebApiCreds)
                     if access_token:
                         import requests
 

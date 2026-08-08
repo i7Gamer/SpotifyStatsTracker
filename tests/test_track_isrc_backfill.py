@@ -9,7 +9,7 @@ from conftest import DatabaseTestCase, normalizeTrackForTest
 from Database.database import Database
 from Database.repository import TRACK_ISRC_RETRY_SECONDS
 from Database.workers.metadata_backfiller import (
-    CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT, SPOTIFY_BULK_TRACK_LIMIT,
+    CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT, TRACK_BATCH_SIZE,
 )
 
 # A 22-character alphanumeric id is what looksLikeSpotifyTrackId accepts; the
@@ -366,7 +366,7 @@ class TestConcurrentIsrcBatches(DatabaseTestCase):
         conn = db.repo._conn()
         self._insertTracks(conn, 120)
         mock_get.return_value = self._okResponse()
-        held = self._heldByAnotherWorker(db, SPOTIFY_BULK_TRACK_LIMIT)
+        held = self._heldByAnotherWorker(db, TRACK_BATCH_SIZE)
 
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
@@ -408,11 +408,11 @@ class TestConcurrentIsrcBatches(DatabaseTestCase):
         conn = db.repo._conn()
         self._insertTracks(conn, 120)
         mock_get.return_value = self._okResponse()
-        self._heldByAnotherWorker(db, SPOTIFY_BULK_TRACK_LIMIT)
+        self._heldByAnotherWorker(db, TRACK_BATCH_SIZE)
 
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
-        self.assertEqual(len(self._requestedIds(mock_get)), SPOTIFY_BULK_TRACK_LIMIT)
+        self.assertEqual(len(self._requestedIds(mock_get)), TRACK_BATCH_SIZE)
 
     @patch("requests.get")
     def test_a_fully_claimed_queue_makes_no_request(self, mock_get):
@@ -517,7 +517,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
         and the request rate where they were measured."""
         db = self._db()
         conn = db.repo._conn()
-        for i in range(SPOTIFY_BULK_TRACK_LIMIT + 10):
+        for i in range(TRACK_BATCH_SIZE + 10):
             _insertTrack(conn, f"{i:022d}".replace("-", "0"))
 
         response = MagicMock()
@@ -528,7 +528,7 @@ class TestIsrcBackfillWorker(DatabaseTestCase):
 
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
-        self.assertEqual(mock_get.call_count, SPOTIFY_BULK_TRACK_LIMIT)
+        self.assertEqual(mock_get.call_count, TRACK_BATCH_SIZE)
 
     @patch("requests.get")
     def test_without_an_access_token_it_does_nothing(self, mock_get):

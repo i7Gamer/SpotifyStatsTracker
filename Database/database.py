@@ -257,7 +257,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     WRAPPED_YEAR_DELAY_SECONDS = 5             #< breathing room delay in seconds between recalculating years
 
     BACKFILLER_ALBUM_QUEUE_SIZE = 80           #< number of albums queued from DB for backfilling
-    BACKFILLER_TRACK_QUEUE_SIZE = 200          #< same, for the ISRC queue: four times SPOTIFY_BULK_TRACK_LIMIT,
+    BACKFILLER_TRACK_QUEUE_SIZE = 200          #< same, for the ISRC queue: four times TRACK_BATCH_SIZE,
                                                 #  the ratio the album queue uses. Read wider than one batch on
                                                 #  purpose - the catalog is shared, so every user's backfiller
                                                 #  drains this one queue, and a pool the size of a batch would
