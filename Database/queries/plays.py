@@ -975,23 +975,32 @@ class PlayQueries:
             extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
 
+        # A merged song is ONE song on a global list, and its own row on an
+        # album or artist page - see _mergesCanonically. `e` is whichever track
+        # this query is really about: the played row, or the one it merged into.
+        canonicalJoin = ""
+        e = "t"
+        if self._mergesCanonically(trackId, artistId, albumId):
+            canonicalJoin = self._canonicalTrackJoin()
+            e = "c"
+
         rows = conn.execute(
             f"""
             SELECT
-                t.id AS track_id, t.name AS name, t.url AS url, t.image_id AS image_id,
-                t.duration_ms AS duration_ms, t.explicit AS explicit, t.isrc AS isrc,
-                t.disc_number AS disc_number, t.track_number AS track_number,
-                t.created_reason AS created_reason, t.availability_reason AS availability_reason,
+                {e}.id AS track_id, {e}.name AS name, {e}.url AS url, {e}.image_id AS image_id,
+                {e}.duration_ms AS duration_ms, {e}.explicit AS explicit, {e}.isrc AS isrc,
+                {e}.disc_number AS disc_number, {e}.track_number AS track_number,
+                {e}.created_reason AS created_reason, {e}.availability_reason AS availability_reason,
                 al.id AS album_id, al.name AS album_name, al.url AS album_url,
                 al.total_tracks AS album_total_tracks, al.release_date AS album_release_date,
                 al.image_id AS album_image_id, al.image_url AS album_image_url,
                 COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
                 MIN(p.played_at) AS first_listened_at, MAX(p.played_at) AS last_played_at
             FROM plays p
-            JOIN tracks t ON t.id = p.track_id
-            LEFT JOIN albums al ON al.id = t.album_id
+            JOIN tracks t ON t.id = p.track_id{canonicalJoin}
+            LEFT JOIN albums al ON al.id = {e}.album_id
             WHERE p.username = ? AND p.is_skip=0{rangeClause}{extraClauses}
-            GROUP BY t.id
+            GROUP BY {e}.id
             ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, track_id ASC
             LIMIT ? OFFSET ?
             """,
@@ -1022,11 +1031,19 @@ class PlayQueries:
             if fullPlaysOnly:
                 joinClause = self._tracksJoin(playsAlias="plays")
                 fullPlaysClause = self._fullPlaysClause(params, playsAlias="plays")
+            # Counts what getSongsPage LISTS, so it has to merge the same way -
+            # the two are separate queries and pagination breaks the moment they
+            # disagree about how many rows exist. getSongsCount takes no
+            # track/artist/album narrowing at all, so it is always the global
+            # answer. The tracks join arrives here for the canonical even when
+            # fullPlaysOnly did not ask for one.
+            countJoin = joinClause or self._tracksJoin(playsAlias="plays")
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c FROM (
-                    SELECT track_id FROM plays{joinClause} WHERE username = ? AND is_skip=0{rangeClause}{trackIdsClause}{fullPlaysClause}
-                    GROUP BY track_id
+                    SELECT COALESCE(t.canonical_id, t.id) AS k FROM plays{countJoin}
+                    WHERE username = ? AND is_skip=0{rangeClause}{trackIdsClause}{fullPlaysClause}
+                    GROUP BY k
                 )
                 """,
                 params,
@@ -1048,12 +1065,13 @@ class PlayQueries:
             fullPlaysClause = self._fullPlaysClause(params)
         #< appended last, so it must also be the last clause in the SQL below
         searchClause = self._searchNarrowClause(params, searchQuery, "p.track_id")
+        countJoin = joinClause or self._tracksJoin()   #< see the branch above
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT p.track_id FROM plays p{joinClause}
+                SELECT COALESCE(t.canonical_id, t.id) AS k FROM plays p{countJoin}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{trackIdsClause}{fullPlaysClause}{searchClause}
-                GROUP BY p.track_id
+                GROUP BY k
             )
             """,
             params,

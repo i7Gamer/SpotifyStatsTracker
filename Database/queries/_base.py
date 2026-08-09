@@ -488,6 +488,35 @@ class SqlFragments:
         return f" AND {playsColumn} IN ({subquery.format(placeholders=placeholders)})"
 
     @staticmethod
+    def _mergesCanonically(trackId=None, artistId=None, albumId=None) -> bool:
+        """Whether this query is a GLOBAL one, and so counts a merged song once.
+
+        A merge says two catalog rows are the same recording, which is true
+        everywhere - but it is not the right ANSWER everywhere. An album page
+        asks "what is on this album", and the canonical belongs to exactly one
+        release, so merging there would hand an album a row whose title, cover
+        and link belong to a different one. Same for an artist's own song list.
+        A query narrowed to one track is answering about that track; resolving a
+        merged id to its canonical is the detail page's job, not a silent
+        rewrite here."""
+        return trackId is None and artistId is None and albumId is None
+
+    @staticmethod
+    def _canonicalTrackJoin(trackAlias: str = "t", canonicalAlias: str = "c") -> str:
+        """Join from the played track to the one it has been merged into.
+
+        A second join rather than grouping by COALESCE(canonical_id, id) on the
+        played row: that spelling groups correctly but leaves every non-aggregated
+        column free to come from whichever member SQLite happened to read, so the
+        title and cover could belong to the version nobody chose. It is also
+        slower - 305ms against 119ms on the live database's Top Songs query,
+        because the plan loses the tracks index it was grouping on.
+
+        tracks.id is the primary key, so this is an indexed lookup per row."""
+        return (f" JOIN tracks {canonicalAlias} "
+                f"ON {canonicalAlias}.id = COALESCE({trackAlias}.canonical_id, {trackAlias}.id)")
+
+    @staticmethod
     def _tracksJoin(playsAlias: str = "p", trackAlias: str = "t") -> str:
         """The plays->tracks join the duration-based filters need. Emitted only
         when one of them is active, so queries that scan plays alone stay that
