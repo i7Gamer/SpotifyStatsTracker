@@ -507,12 +507,15 @@ class MetadataBackfillMixin:
                     # ordering is also why it swallows its own failures.
                     self._backfillTrackIsrcs(getAccessToken, stop_event)
 
-                    # New ISRCs can complete a pair, so each batch that
-                    # recorded any re-runs the matcher - this is what "new
+                    # New ISRCs can complete a pair, so the matcher re-runs
+                    # every cycle while the toggle is on - this is what "new
                     # tracks after the checkbox" means: merges stay current
-                    # without anyone pressing anything. Gated on the toggle,
-                    # idempotent, and a few hundred rows at most; skipped
-                    # entirely while OFF so a disabled feature costs nothing.
+                    # without anyone pressing anything. Every cycle rather than
+                    # only after a batch that recorded something, on purpose:
+                    # idempotent, a run that changes nothing invalidates
+                    # nothing, and it also picks up groups completed by other
+                    # workers' batches. Skipped entirely while OFF, so a
+                    # disabled feature costs nothing.
                     if self.repo.isTrackMergeEnabled():
                         mergeSummary = self.repo.mergeTracksByIsrc()
                         if mergeSummary["merged"]:

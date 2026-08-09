@@ -943,12 +943,16 @@ class PlayQueries:
         second, small query keyed by just this page's track ids (mirrors
         getAllTracks()'s two-query shape) rather than fanning out the GROUP BY.
 
-        `trackId`/`artistId`/`albumId` narrow the result to a single track, an
-        artist's songs, or an album's songs - reused by the song/artist/album
-        detail pages instead of a separate query per lookup. `artistId` is
+        `trackId` narrows to ONE SONG - the whole merge group, aggregated onto
+        its canonical row, because the caller is the song detail page and that
+        page is the canonical's (ask by either end of a merge and the same row
+        answers; the route redirects on the id mismatch). `artistId`/`albumId`
+        narrow to an artist's or album's own songs and stay per-release, since
+        those pages describe releases. `artistId` is
         matched via EXISTS rather than an extra JOIN so a multi-artist track
         still yields exactly one row. `trackIds` narrows to an explicit set of
-        track ids (the tag-filtered playlist export) so the caller aggregates
+        track ids (the tag-filtered playlist export, already group-expanded by
+        getTaggedTrackIds) so the caller aggregates
         only those rows instead of the whole library; an empty list matches
         nothing. `searchQuery` narrows to songs whose
         name, album, or artist(s) match - safe to check via the current row's

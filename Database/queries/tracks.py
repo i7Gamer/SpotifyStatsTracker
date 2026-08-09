@@ -854,8 +854,16 @@ class TrackQueries:
 
         pinned = {row["track_id"] for row in conn.execute(
             "SELECT track_id FROM track_merge_decisions WHERE decided_by IS NOT NULL")}
+        #< names only for the duplicate groups under consideration - the whole
+        #  ISRC-carrying catalog is ~25k rows once the backfill completes, and
+        #  this planner runs every backfill cycle while the toggle is on
         names = dict(conn.execute(
-            "SELECT t.id, t.name FROM tracks t WHERE t.isrc IS NOT NULL AND t.isrc <> ''"))
+            """
+            SELECT t.id, t.name FROM tracks t
+            WHERE t.isrc IN (SELECT isrc FROM tracks
+                             WHERE isrc IS NOT NULL AND isrc <> ''
+                             GROUP BY isrc HAVING COUNT(*) > 1)
+            """))
 
         byIsrc = {}
         for row in rows:
