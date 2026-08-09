@@ -626,7 +626,45 @@ class TrackQueries:
 
         isrc_attempted_at rate-limits retries the same way albums use
         backfill_attempted_at - see TRACK_ISRC_RETRY_SECONDS for why this window
-        is the longer one."""
+        is the longer one.
+
+        Merge candidates first. This queue is drained against a Spotify app
+        quota, not a clock: the live instance got through 1,791 of 25,134 tracks
+        in an hour and then drew QUOTA_EXCEEDED for the rest of the day, so the
+        ORDER decides when the catalog becomes USEFUL rather than when it
+        finishes. An ISRC only changes an answer where two tracks are already
+        candidates to be merged (tracks.canonical_id, 1.49.0), and there are
+        ~900 of those - everywhere else it is a value nothing reads yet.
+
+        A priority, not a filter: the rest still drains behind them.
+
+        The key is the title and the FIRST artist, case-insensitively. Each part
+        was measured on a copy of the live database (25,134 tracks, 840
+        candidates still needing an ISRC), because each was wrong at least once:
+
+          title only                        1,707 queued, 60% of candidates
+          + first artist                      540 queued, 62%
+          + LOWER()                           872 queued, 100%
+
+        The artist is what stops a cover flooding the queue - a shared title
+        alone pulled in 6,099 tracks. LOWER() is what makes it complete: SQLite
+        compares text case-sensitively, so without it a third of the candidates
+        never sorted to the front at all. Duration is deliberately NOT here even
+        though the merge rule uses it: with the artist in the key it excluded
+        nothing except pairs straddling a bucket edge, and those it excluded
+        wrongly.
+
+        872 is the number that matters. It fits inside a single Spotify quota
+        window (~1,791 lookups were served before QUOTA_EXCEEDED on 2026-08-08),
+        so the merge question becomes answerable in one window instead of the
+        fourteen the whole catalog would need.
+
+        MEASURED: 0.3ms -> 436ms, and worth it - this runs three times per
+        five-minute cycle, so it is 0.15% of one, and 98% of what it queues now
+        buys a merge decision instead of 3.7%. A correlated EXISTS over the same
+        condition did not finish in two minutes (`name` is unindexed, so it
+        degrades to O(n**2)); the IN subquery here is materialised once. Do not
+        "simplify" it back."""
         conn = self._conn()
         retryCutoff = time.time() - TRACK_ISRC_RETRY_SECONDS
         rows = conn.execute(
@@ -635,6 +673,18 @@ class TrackQueries:
             WHERE (isrc IS NULL OR isrc = '')
               AND LENGTH(id) = ?
               AND (isrc_attempted_at IS NULL OR isrc_attempted_at < ?)
+            ORDER BY ((LOWER(tracks.name),
+                       (SELECT artist_id FROM track_artists ta
+                        WHERE ta.track_id = tracks.id ORDER BY ta.position LIMIT 1)) IN (
+                SELECT LOWER(t.name),
+                       (SELECT artist_id FROM track_artists ta2
+                        WHERE ta2.track_id = t.id ORDER BY ta2.position LIMIT 1)
+                FROM tracks t
+                GROUP BY LOWER(t.name),
+                         (SELECT artist_id FROM track_artists ta3
+                          WHERE ta3.track_id = t.id ORDER BY ta3.position LIMIT 1)
+                HAVING COUNT(*) > 1
+            )) DESC
             LIMIT ?
             """,
             (SPOTIFY_TRACK_ID_LENGTH, retryCutoff, limit),

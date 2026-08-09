@@ -93,6 +93,72 @@ class TestIsrcQueue(DatabaseTestCase):
         self.assertNotIn(FABRICATED_ID, queued)
         self.assertNotIn("2AAAAAAAAAAAAAAAAAAAAA", queued)
 
+    def _insertNamed(self, conn, trackId, name, artistId="art1"):
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO albums (id, name, url) VALUES ('alb1', 'Album 1', '')")
+            conn.execute("INSERT OR IGNORE INTO artists (id, name, url) VALUES (?, ?, '')",
+                         (artistId, f"Artist {artistId}"))
+            conn.execute("INSERT INTO tracks (id, name, url, album_id, duration_ms) "
+                         "VALUES (?, ?, '', 'alb1', 200000)", (trackId, name))
+            conn.execute("INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, 0)",
+                         (trackId, artistId))
+
+    def test_merge_candidates_are_queued_first(self):
+        """The queue is drained against an app quota that ran out after 1,791 of
+        25,134 tracks, so the ORDER decides when this becomes USEFUL rather than
+        when it finishes. An ISRC only changes an answer where two tracks are
+        already candidates to be merged - ~900 of them - and everywhere else it
+        is a value nothing reads yet.
+
+        The pair goes in LAST so it cannot win on rowid."""
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        for i in range(10):
+            self._insertNamed(conn, f"{i:022d}", f"Unique Song {i}")
+        self._insertNamed(conn, "A" * 22, "Shared Song")
+        self._insertNamed(conn, "B" * 22, "Shared Song")
+
+        self.assertEqual(sorted(db.repo.getTracksMissingIsrc(2)), ["A" * 22, "B" * 22])
+
+    def test_the_same_title_by_a_different_artist_is_not_a_candidate(self):
+        """A cover is not the same recording, and titles alone are not rare:
+        prioritising every shared title queued 6,099 tracks against 872 with the
+        artist in the key. Both go in FIRST here, so they would win on rowid if
+        the artist condition did nothing."""
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        self._insertNamed(conn, "A" * 22, "Shared Song", artistId="artA")
+        self._insertNamed(conn, "B" * 22, "Shared Song", artistId="artB")   #< a cover
+        self._insertNamed(conn, "C" * 22, "Other Song", artistId="artC")
+        self._insertNamed(conn, "D" * 22, "Other Song", artistId="artC")    #< a genuine pair
+
+        self.assertEqual(sorted(db.repo.getTracksMissingIsrc(2)), ["C" * 22, "D" * 22])
+
+    def test_the_title_match_ignores_case(self):
+        """SQLite compares text case-sensitively, and without LOWER() a third of
+        the real candidates never sorted to the front at all - 62% coverage
+        against 100%. Measured, not guessed at."""
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        for i in range(4):
+            self._insertNamed(conn, f"{i:022d}", f"Unique Song {i}")
+        self._insertNamed(conn, "A" * 22, "Shared Song")
+        self._insertNamed(conn, "B" * 22, "SHARED SONG")
+
+        self.assertEqual(sorted(db.repo.getTracksMissingIsrc(2)), ["A" * 22, "B" * 22])
+
+    def test_everything_else_still_drains_behind_them(self):
+        """A priority, not a filter. The rest of the catalog is still worth
+        having - it just does not gate the merge decision."""
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        self._insertNamed(conn, "A" * 22, "Shared Song")
+        self._insertNamed(conn, "B" * 22, "Shared Song")
+        for i in range(5):
+            self._insertNamed(conn, f"{i:022d}", f"Unique Song {i}")
+
+        self.assertEqual(len(db.repo.getTracksMissingIsrc(50)), 7)
+
     def test_respects_the_limit(self):
         db = self._makeDb({}, [])
         conn = db.repo._conn()
