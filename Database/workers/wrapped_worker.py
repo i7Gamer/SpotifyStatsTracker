@@ -139,6 +139,10 @@ class WrappedWorkerMixin:
 
     def _calculateAndSaveWrapped(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float) -> None:
         """Runs all queries to precalculate the Spotify Wrapped stats and caches them in user_wrapped table."""
+        #< read before the first query, compared again inside the save's own
+        #  transaction: a merge/split invalidation landing mid-computation
+        #  makes this snapshot a torn read that must not be cached
+        startGeneration = self.repo.getWrappedInvalidationGeneration()
         # 1. Total plays and milliseconds
         totalPlays, totalMs = self.getPlayTotals(yearStart, yearEnd)
 
@@ -216,7 +220,15 @@ class WrappedWorkerMixin:
             "discovered_artists_list": _dbmod.json.dumps(discoveredArtistsList),
             "discovered_albums_list": _dbmod.json.dumps(discoveredAlbumsList),
         }
-        self.repo.saveCachedWrapped(self.user, year, data)
+        if not self.repo.saveCachedWrapped(self.user, year, data,
+                                           expectedGeneration=startGeneration):
+            #< an invalidation (a merge, a split) landed while this year was
+            #  being computed: some reads predate it, some follow it, and the
+            #  freshness signals cannot tell the difference. Dropped; the next
+            #  worker cycle or page view recomputes from a clean state.
+            _dbmod.logger.info(
+                "[WrappedWorker-%s] Year %d recalculated across an invalidation; discarded",
+                self.user, year)
 
     def recalculateWrappedForYear(self, year: int) -> None:
         """Calculate and cache wrapped stats for a year immediately (synchronously).

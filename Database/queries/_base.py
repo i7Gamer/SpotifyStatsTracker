@@ -124,6 +124,9 @@ FRIENDS_NOW_PLAYING_SETTING_KEY = "friends_now_playing_enabled"
 # on is deliberate; the poll loop stays underneath as the fallback.
 PUSH_LISTENER_SETTING_KEY = "push_listener_enabled"
 TRACK_MERGE_SETTING_KEY = "track_merge_enabled"
+# Bumped by every wrapped-cache invalidation; an in-flight recalculation that
+# started under an older value discards its save. See deleteAllWrapped.
+WRAPPED_INVALIDATION_GENERATION_KEY = "wrapped_invalidation_generation"
 
 # Instance-wide skip threshold (app_settings). This is the single, admin-tunable
 # boundary between a "skip" and a real listen - it replaced both the old fixed

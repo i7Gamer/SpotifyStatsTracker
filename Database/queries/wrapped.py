@@ -86,7 +86,31 @@ class WrappedQueries:
         15-minute worker refills the rest. Returns rows dropped."""
         conn = self._conn()
         with conn:
+            #< the generation bump, in the same transaction as the delete: a
+            #  recalculation is seconds of queries under a per-year lock this
+            #  path does not take, so one can be mid-flight right now - and its
+            #  save would land AFTER this delete, resurrecting a snapshot whose
+            #  reads straddle the merge. A merge changes neither freshness
+            #  signal the worker compares, so nothing would ever notice. The
+            #  save re-checks this stamp inside its own transaction and
+            #  discards itself if it moved.
+            self._bumpWrappedGeneration(conn)
             return conn.execute("DELETE FROM user_wrapped").rowcount
+
+    def getWrappedInvalidationGeneration(self) -> int:
+        row = self._conn().execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            (WRAPPED_INVALIDATION_GENERATION_KEY,)).fetchone()
+        return int(row["value"]) if row else 0
+
+    @staticmethod
+    def _bumpWrappedGeneration(conn) -> None:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value) VALUES (?, '1')
+            ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+            """,
+            (WRAPPED_INVALIDATION_GENERATION_KEY,))
 
     def getCachedWrapped(self, username: str, year: int) -> dict | None:
         row = self._conn().execute(
@@ -97,9 +121,23 @@ class WrappedQueries:
             return None
         return dict(row)
 
-    def saveCachedWrapped(self, username: str, year: int, data: dict) -> None:
+    def saveCachedWrapped(self, username: str, year: int, data: dict,
+                          expectedGeneration: int | None = None) -> bool:
+        """Store a computed year. Returns whether it was actually stored.
+
+        `expectedGeneration` is the invalidation stamp the computation STARTED
+        under. Checked inside this write's own transaction, so it serializes
+        against deleteAllWrapped's bump-and-delete: whichever commits second
+        sees the other, and a snapshot whose reads straddle an invalidation is
+        discarded here rather than cached as permanently-unstale truth."""
         conn = self._conn()
         with conn:
+            if expectedGeneration is not None:
+                row = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = ?",
+                    (WRAPPED_INVALIDATION_GENERATION_KEY,)).fetchone()
+                if (int(row["value"]) if row else 0) != expectedGeneration:
+                    return False
             conn.execute(
                 """
                 INSERT INTO user_wrapped (
@@ -141,3 +179,4 @@ class WrappedQueries:
                 """,
                 {**data, "username": username, "year": year}
             )
+        return True
