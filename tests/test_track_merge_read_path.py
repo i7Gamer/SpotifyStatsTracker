@@ -126,5 +126,81 @@ class TestDetailPagesKeepTheirOwnRows(TrackMergeReadPathTestCase):
         self.assertEqual(songs[0]["plays"], 3)
 
 
+class TestTheOtherGlobalCounts(TrackMergeReadPathTestCase):
+    def test_discovered_songs_counts_the_song_once(self):
+        """"Songs discovered this year" is a count of SONGS. Two catalog rows
+        for one recording discovered in the same year is one discovery, and it
+        would otherwise inflate every Wrapped that counts them."""
+        db = self._seed(self._makeDb({}, []))
+
+        self.assertEqual(db.repo.getDiscoveredSongsCount("alice", 0, 4e9), 1)
+
+    def test_discovered_songs_is_unchanged_without_a_merge(self):
+        db = self._seed(self._makeDb({}, []), merge=False)
+
+        self.assertEqual(db.repo.getDiscoveredSongsCount("alice", 0, 4e9), 2)
+
+    def _skip(self, db, trackId, count=4):
+        conn = db.repo._conn()
+        with conn:
+            for i in range(count):
+                conn.execute("INSERT INTO plays (username, track_id, played_at, time_played, is_skip) "
+                             "VALUES ('alice', ?, ?, 1000, 1)", (trackId, 3e9 + hash(trackId) % 500 + i))
+
+    def test_skips_of_the_same_song_are_one_row(self):
+        """A song skipped on both its releases is one song you skip, and the
+        skip rate is only meaningful against the plays it is divided by - which
+        the merge has already combined."""
+        db = self._seed(self._makeDb({}, []))
+        self._skip(db, SINGLE, 4)
+        self._skip(db, ALBUM_CUT, 6)
+
+        rows = db.repo.getMostSkippedTracks("alice", limit=10)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["skips"], 10)
+        self.assertEqual(db.repo.getSkippedTracksCount("alice"), 1)
+
+    def test_an_album_scoped_skip_list_keeps_its_own_rows(self):
+        db = self._seed(self._makeDb({}, []))
+        self._skip(db, SINGLE, 4)
+        self._skip(db, ALBUM_CUT, 6)
+
+        rows = db.repo.getMostSkippedTracks("alice", limit=10, albumId="albSingle")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["skips"], 4)
+
+
+class TestTrendCards(TrackMergeReadPathTestCase):
+    def test_an_obsession_split_across_two_releases_still_counts(self):
+        """The trend cards pick ONE track over a threshold, so a song whose
+        plays are divided between a single and an album cut could miss a bar it
+        has actually cleared - the card then shows nothing, or something
+        quieter, for the song someone has had on repeat."""
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        import time as _time
+        now = _time.time()
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO users (username, created_at) VALUES ('alice', 0)")
+            conn.execute("INSERT OR IGNORE INTO albums (id, name, url) VALUES ('alb', 'A', '')")
+            for trackId in (SINGLE, ALBUM_CUT):
+                conn.execute("INSERT INTO tracks (id, name, url, album_id, duration_ms) "
+                             "VALUES (?, 'Shared Song', '', 'alb', 200000)", (trackId,))
+                for i in range(6):   #< 6 each: 12 together, over the threshold
+                    conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                                 "VALUES ('alice', ?, ?, 200000)",
+                                 (trackId, now - (i + 1) * 3600))
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (ALBUM_CUT, SINGLE))
+
+        trends = db.repo.getDashboardTrendsRaw("alice", now)
+
+        obsession = trends.get("obsession")
+        self.assertIsNotNone(obsession, trends)
+        self.assertEqual(obsession["track_id"], ALBUM_CUT)
+        self.assertEqual(obsession["recent_count"], 12)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -331,8 +331,17 @@ class TestTheSkipListSearches(TwoPhaseSearchTestCase):
                 self.assertEqual(found, resolved)
 
     def test_the_skipped_track_scan_drops_the_joins_it_only_needed_for_the_predicate(self):
-        """Its SELECT reads p.* only, so tracks/albums were joined purely to
-        serve the search - the same joins getSongsPage shed."""
+        """The search is resolved to a track-id set and matched with json_each,
+        rather than by joining the catalog in to filter on it - which is what
+        this has always been about.
+
+        `JOIN tracks` is no longer part of that claim. It came back in 1.49.0 to
+        group by the canonical track, which is a different job, and it is not
+        the cost this test was protecting against: measured on the live database
+        the same aggregate runs 203.8ms scanning plays alone against 116.5ms
+        with the joins, because plays-only scans walk idx_plays_user_track in an
+        order whose rowids are scattered while the join reads them in file
+        order. The albums join stays out - nothing here reads an album."""
         conn = self.repo._conn()
         captured = []
         conn.set_trace_callback(captured.append)
@@ -347,7 +356,6 @@ class TestTheSkipListSearches(TwoPhaseSearchTestCase):
 
         self.assertIn("json_each", aggregate)
         self.assertNotIn("JOIN albums al", aggregate)
-        self.assertNotIn("JOIN tracks t", aggregate)
 
 
 class TestTheHistorySearch(TwoPhaseSearchTestCase):

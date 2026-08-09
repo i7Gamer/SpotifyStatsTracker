@@ -48,10 +48,14 @@ class TrendQueries:
         # avoid).
         obsession_cutoff = now_ts - (TREND_OBSESSION_DAYS * SECONDS_PER_DAY)
         obsessionQuery = """
-            SELECT track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
-            FROM plays
+            SELECT COALESCE(t.canonical_id, t.id) AS track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
+            FROM plays JOIN tracks t ON t.id = plays.track_id
             WHERE username = ? AND is_skip = 0 AND played_at >= ?
-            GROUP BY track_id
+            -- the expression, not `track_id`: that name also belongs to a real
+            -- column on plays, and SQLite resolves GROUP BY to the COLUMN over
+            -- the output alias - which grouped per release while the SELECT
+            -- reported the canonical, and the counts came out per release
+            GROUP BY COALESCE(t.canonical_id, t.id)
             HAVING recent_count >= ?
             ORDER BY recent_count DESC, recent_ms DESC
             LIMIT 1
@@ -71,11 +75,11 @@ class TrendQueries:
         # already low).
         rediscovery_recent_cutoff = now_ts - (TREND_REDISCOVERY_RECENT_DAYS * SECONDS_PER_DAY)
         rediscoveryQuery = """
-            SELECT track_id,
+            SELECT COALESCE(t.canonical_id, t.id) AS track_id,
                    COUNT(CASE WHEN played_at >= ? THEN 1 END) as recent_count,
                    COUNT(CASE WHEN played_at < ? THEN 1 END) as old_count,
                    MAX(CASE WHEN played_at < ? THEN played_at END) as max_old_played_at
-            FROM plays
+            FROM plays JOIN tracks t ON t.id = plays.track_id
             WHERE username = ? AND is_skip = 0
               -- Only tracks with a recent real play can survive the
               -- `recent_count >= 1` below, so aggregating any others is wasted
@@ -90,7 +94,7 @@ class TrendQueries:
                   SELECT track_id FROM plays
                   WHERE username = ? AND is_skip = 0 AND played_at >= ?
               )
-            GROUP BY track_id
+            GROUP BY COALESCE(t.canonical_id, t.id)   -- see the note above
             HAVING recent_count >= 1
                AND old_count >= ?
                AND max_old_played_at IS NOT NULL
@@ -131,11 +135,11 @@ class TrendQueries:
         if not rediscovery_row:
             fresh_find_row = conn.execute(
                 """
-                SELECT track_id,
+                SELECT COALESCE(t.canonical_id, t.id) AS track_id,
                        COUNT(*) as play_count,
                        MIN(played_at) as first_played_at,
                        SUM(time_played) as total_ms
-                FROM plays
+                FROM plays JOIN tracks t ON t.id = plays.track_id
                 WHERE username = ? AND is_skip = 0
                   -- Same candidate narrowing as the rediscovery query above,
                   -- lossless for the same kind of reason: a track whose
@@ -153,7 +157,7 @@ class TrendQueries:
                   -- not `!=` because the parameter is NULL when the user has no
                   -- obsession, and `track_id != NULL` excludes everything.
                   AND track_id IS NOT ?
-                GROUP BY track_id
+                GROUP BY COALESCE(t.canonical_id, t.id)   -- the expression; see the note above
                 HAVING first_played_at >= ? AND play_count >= ?
                 ORDER BY play_count DESC, total_ms DESC
                 LIMIT 1
@@ -179,13 +183,14 @@ class TrendQueries:
         # FULL_PLAY_PREDICATE rather than its own copy of the same SQL, so a
         # change to what "a full listen" means reaches here too.
         forgottenQuery = f"""
-            SELECT p.track_id as track_id, COUNT(*) as total_plays, MAX(p.played_at) as last_played_at
+            SELECT COALESCE(t.canonical_id, t.id) as track_id, COUNT(*) as total_plays,
+                   MAX(p.played_at) as last_played_at
             FROM plays p
             JOIN tracks t ON p.track_id = t.id
             WHERE p.username = ?
               AND p.is_skip = 0
               AND ({FULL_PLAY_PREDICATE.format(plays="p", track="t")})
-            GROUP BY p.track_id
+            GROUP BY COALESCE(t.canonical_id, t.id)   -- the expression; see the note above
             HAVING last_played_at <= ? AND total_plays >= ?
             ORDER BY total_plays DESC, last_played_at DESC
             LIMIT 1

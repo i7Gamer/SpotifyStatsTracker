@@ -1591,21 +1591,31 @@ class PlayQueries:
             orderBy = f"{self._shrunkSkipRateSql()} DESC, skips DESC, track_id ASC"
         else:
             orderBy = "skips DESC, track_id ASC"   #< the same tiebreakers, minus a prior for one row
+        # Global only, like getSongsPage: a song skipped on both its releases is
+        # one song you skip. An album-scoped list keeps its own rows, because
+        # "what do I skip on this album" is a question about that album.
+        skipKey = "p.track_id"
+        skipJoins = joins
+        if self._mergesCanonically(trackId, artistId, albumId):
+            if " tracks t " not in skipJoins and not skipJoins.strip().startswith("JOIN tracks"):
+                skipJoins += self._tracksJoin()
+            skipJoins += self._canonicalTrackJoin()
+            skipKey = "c.id"
         params += [limit, offset]
         rows = self._conn().execute(
             f"""
             WITH {libCte + "," if libCte else ""}
             agg AS (
-                SELECT p.track_id AS track_id,
+                SELECT {skipKey} AS track_id,
                        SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) AS skips,
                        SUM(CASE WHEN p.is_skip = 0 THEN 1 ELSE 0 END) AS plays,
                        COUNT(*) AS encounters,
                        COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
                        COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
                        COALESCE(MAX(CASE WHEN p.is_skip = 0 THEN p.played_at END), MAX(p.played_at)) AS last_played_at
-                FROM plays p{joins}
+                FROM plays p{skipJoins}
                 WHERE p.username = ?{rangeClause}{filterClause}
-                GROUP BY p.track_id
+                GROUP BY {skipKey}
                 HAVING skips > 0
             )
             SELECT * FROM agg
@@ -1635,12 +1645,18 @@ class PlayQueries:
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         joins, filterClause = self._skippedTrackFilters(
             params, None, None, None, searchQuery, trackIds, fullPlaysOnly)
+        #< always global (this takes no entity narrowing), and it has to merge
+        #  the same way the list does or the pager sizes a different population
+        countJoins = joins
+        if " tracks t " not in countJoins and not countJoins.strip().startswith("JOIN tracks"):
+            countJoins += self._tracksJoin()
+        countJoins += self._canonicalTrackJoin()
         row = self._conn().execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT p.track_id FROM plays p{joins}
+                SELECT c.id FROM plays p{countJoins}
                 WHERE p.username = ?{rangeClause}{filterClause}
-                GROUP BY p.track_id
+                GROUP BY c.id
                 HAVING SUM(CASE WHEN p.is_skip = 1 THEN 1 ELSE 0 END) > 0
             )
             """,
@@ -2033,11 +2049,16 @@ class PlayQueries:
         row = conn.execute(
             """
             SELECT COUNT(*) AS c FROM (
-                SELECT track_id
-                FROM plays
-                WHERE username = ? AND is_skip=0
-                GROUP BY track_id
-                HAVING MIN(played_at) >= ? AND MIN(played_at) < ?
+                -- Grouped by the canonical: "songs discovered" counts SONGS, and
+                -- one recording released twice is one discovery. MIN(played_at)
+                -- then spans both releases, which is also the right answer - the
+                -- song was discovered when it was first heard, on whichever of
+                -- them that was.
+                SELECT COALESCE(t.canonical_id, t.id) AS k
+                FROM plays p JOIN tracks t ON t.id = p.track_id
+                WHERE p.username = ? AND p.is_skip=0
+                GROUP BY k
+                HAVING MIN(p.played_at) >= ? AND MIN(p.played_at) < ?
             )
             """,
             (username, startTs, endTs),
