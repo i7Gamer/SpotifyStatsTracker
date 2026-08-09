@@ -204,3 +204,65 @@ class TestTrendCards(TrackMergeReadPathTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTrendNarrowingSpansTheMergeGroup(TrackMergeReadPathTestCase):
+    """The trend queries narrow their candidates with an `IN (recently played)`
+    subquery for speed. Narrowing by the PLAYED id while grouping by the
+    canonical splits a merge group across the boundary: the recently-played
+    release passes the filter, the other release's rows are silently dropped
+    from the aggregate, and the aggregate lies about the group's history."""
+
+    SECONDS_PER_DAY = 86400
+
+    def _seedSplitHistory(self, db, oldDaysAgo=200, oldPlays=4, recentPlays=1):
+        """Old plays on the album cut, recent plays on the single, merged. The
+        song's true history spans both releases; each release alone tells a
+        different (wrong) story."""
+        import time as _time
+        now = _time.time()
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO users (username, created_at) VALUES ('alice', 0)")
+            conn.execute("INSERT OR IGNORE INTO albums (id, name, url) VALUES ('alb', 'A', '')")
+            for trackId in (SINGLE, ALBUM_CUT):
+                conn.execute("INSERT INTO tracks (id, name, url, album_id, duration_ms) "
+                             "VALUES (?, 'Shared Song', '', 'alb', 200000)", (trackId,))
+            for i in range(oldPlays):
+                conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                             "VALUES ('alice', ?, ?, 200000)",
+                             (ALBUM_CUT, now - (oldDaysAgo + i) * self.SECONDS_PER_DAY))
+            for i in range(recentPlays):
+                conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                             "VALUES ('alice', ?, ?, 200000)", (SINGLE, now - (i + 1) * 3600))
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (ALBUM_CUT, SINGLE))
+        return now
+
+    def test_a_rediscovery_via_the_other_release_is_found(self):
+        """Played the album cut heavily half a year ago, came back to the song
+        via its single this week: that IS a rediscovery of the song, and only
+        an aggregate spanning both releases can see it - the old plays live on
+        the release the narrowing filter would drop."""
+        db = self._makeDb({}, [])
+        now = self._seedSplitHistory(db, oldDaysAgo=200, oldPlays=4, recentPlays=1)
+
+        trends = db.repo.getDashboardTrendsRaw("alice", now)
+
+        rediscovery = trends.get("rediscovery")
+        self.assertIsNotNone(rediscovery, trends)
+        self.assertEqual(rediscovery["track_id"], ALBUM_CUT)
+        self.assertEqual(rediscovery["old_count"], 4)
+
+    def test_a_known_song_played_from_a_new_release_is_not_a_fresh_find(self):
+        """The false positive: drop the other release's history and the group's
+        MIN(played_at) is this week, so a song known for half a year reads as
+        discovered days ago. First heard is a property of the SONG."""
+        db = self._makeDb({}, [])
+        now = self._seedSplitHistory(db, oldDaysAgo=200, oldPlays=1, recentPlays=3)
+
+        trends = db.repo.getDashboardTrendsRaw("alice", now)
+
+        freshFind = trends.get("freshFind")
+        if freshFind is not None:
+            self.assertNotEqual(freshFind["track_id"], ALBUM_CUT,
+                                "a song first heard 200 days ago reported as a fresh find")

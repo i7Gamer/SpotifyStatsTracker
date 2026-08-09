@@ -69,6 +69,25 @@ class WrappedQueries:
                 "DELETE FROM user_wrapped WHERE username = ?", (username,)
             ).rowcount
 
+    def deleteAllWrapped(self) -> int:
+        """Drop every cached Wrapped row, for every user at once - the track
+        merge's invalidation.
+
+        A merge is global (sameness is a property of the recording), so its
+        effect on the frozen top_songs / unique_songs / discovered_songs_list
+        JSON reaches every account's every year simultaneously - and none of
+        those years would ever notice on their own, because past years'
+        max_played_at and play counts are exactly what a merge does NOT change,
+        and they are all _wrappedCacheNeedsRecalc compares. Same reasoning as
+        deleteUserWrappedFromYear's, taken to the instance.
+
+        Cheap to invalidate, lazy to rebuild: the page recalculates a missing
+        year synchronously on view (dashboard/wrapped_builder.py) and the
+        15-minute worker refills the rest. Returns rows dropped."""
+        conn = self._conn()
+        with conn:
+            return conn.execute("DELETE FROM user_wrapped").rowcount
+
     def getCachedWrapped(self, username: str, year: int) -> dict | None:
         row = self._conn().execute(
             "SELECT * FROM user_wrapped WHERE username = ? AND year = ?",

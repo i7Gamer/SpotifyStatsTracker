@@ -141,5 +141,81 @@ class TestReversibilityAtTheToggle(ToggleTestCase):
         self.assertIsNone(self._canonical(db, "B" * 22))
 
 
+class TestWrappedInvalidation(ToggleTestCase):
+    """Phase 7. A Wrapped year is a materialised snapshot - top_songs,
+    unique_songs and the discovery lists frozen as JSON - and a merge changes
+    what all of them would say without touching the two freshness signals the
+    worker compares (max_played_at, play count). Past years would stay wrong
+    forever unless the merge itself invalidates them.
+
+    Inside the repo methods rather than at any call site, so the admin toggle,
+    the backfiller's incremental pass and any future per-track split all get it
+    for free. Rebuild is lazy: the page recalculates a missing year on view and
+    the worker refills the rest."""
+
+    def _cacheWrappedRow(self, db, username="alice", year=2025):
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO users (username, created_at) VALUES (?, 0)", (username,))
+            conn.execute(
+                "INSERT INTO user_wrapped (username, year, calculated_at, max_played_at, total_plays,"
+                " total_ms, longest_streak, unique_songs, unique_artists, discovered_songs,"
+                " discovered_artists, time_series_day, time_series_week, time_series_month,"
+                " top_songs, top_artists, top_albums, discovered_songs_list,"
+                " discovered_artists_list, discovered_albums_list)"
+                " VALUES (?, ?, 1, 1, 1, 1, 1, 1, 1, 1, 1, '[]', '[]', '[]', '[]', '[]', '[]',"
+                " '[]', '[]', '[]')",
+                (username, year))
+
+    def _cachedYears(self, db):
+        return db.repo._conn().execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0]
+
+    def test_a_merge_drops_every_users_cached_years(self):
+        """Every user's, not the actor's: the merge is global, so bob's frozen
+        top_songs is as stale as alice's the moment it runs."""
+        db = self._dbWithPair()
+        self._cacheWrappedRow(db, "alice", 2024)
+        self._cacheWrappedRow(db, "bob", 2025)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._cachedYears(db), 0)
+
+    def test_a_run_that_merges_nothing_leaves_the_caches_alone(self):
+        """Idle backfiller cycles re-run the matcher every five minutes while
+        the toggle is on; costing a full Wrapped rebuild each time would be a
+        self-inflicted stampede."""
+        db = self._makeDb({}, [])
+        self._cacheWrappedRow(db)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._cachedYears(db), 1)
+
+    def test_the_full_undo_drops_them_too(self):
+        db = self._dbWithPair()
+        db.repo.mergeTracksByIsrc()
+        self._cacheWrappedRow(db)
+
+        db.repo.unmergeAllIsrcMerges()
+
+        self.assertEqual(self._cachedYears(db), 0)
+
+    def test_an_undo_with_nothing_to_undo_leaves_them_alone(self):
+        db = self._makeDb({}, [])
+        self._cacheWrappedRow(db)
+
+        db.repo.unmergeAllIsrcMerges()
+
+        self.assertEqual(self._cachedYears(db), 1)
+
+    def test_a_single_track_undo_drops_them(self):
+        db = self._dbWithPair()
+        db.repo.mergeTracksByIsrc()
+        self._cacheWrappedRow(db)
+
+        db.repo.unmergeTrack("B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._cachedYears(db), 0)
 if __name__ == "__main__":
     unittest.main()

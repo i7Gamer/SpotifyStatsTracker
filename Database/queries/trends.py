@@ -90,9 +90,16 @@ class TrendQueries:
               -- is_skip = 0 filter deliberately: a track whose only recent
               -- plays are skips has recent_count 0 and must stay excluded, the
               -- same as before (see test_rediscovery_excludes_skips).
-              AND track_id IN (
-                  SELECT track_id FROM plays
-                  WHERE username = ? AND is_skip = 0 AND played_at >= ?
+              -- Canonical on BOTH sides. Narrowing by the PLAYED id while
+              -- grouping by the canonical splits a merge group across this
+              -- boundary: the recently-played release passes, the other
+              -- release's rows are dropped from the aggregate, and old_count /
+              -- max_old_played_at lie about the song's history. A song
+              -- rediscovered VIA a different release is still a rediscovery.
+              AND COALESCE(t.canonical_id, t.id) IN (
+                  SELECT COALESCE(t2.canonical_id, t2.id) FROM plays p2
+                  JOIN tracks t2 ON t2.id = p2.track_id
+                  WHERE p2.username = ? AND p2.is_skip = 0 AND p2.played_at >= ?
               )
             GROUP BY COALESCE(t.canonical_id, t.id)   -- see the note above
             HAVING recent_count >= 1
@@ -148,15 +155,26 @@ class TrendQueries:
                   -- itself is deliberately NOT windowed - MIN(played_at) has to
                   -- see the track's whole history, or every track played this
                   -- week would look new.
-                  AND track_id IN (
-                      SELECT track_id FROM plays
-                      WHERE username = ? AND is_skip = 0 AND played_at >= ?
+                  -- Canonical on both sides, like the rediscovery narrowing
+                  -- above - and here the per-release version was not merely an
+                  -- undercount but a FALSE POSITIVE: dropping the other
+                  -- release's rows leaves MIN(played_at) seeing only this
+                  -- week's plays, so a song first heard half a year ago reads
+                  -- as discovered days ago. First heard is a property of the
+                  -- SONG, which is exactly what the merge group is.
+                  AND COALESCE(t.canonical_id, t.id) IN (
+                      SELECT COALESCE(t2.canonical_id, t2.id) FROM plays p2
+                      JOIN tracks t2 ON t2.id = p2.track_id
+                      WHERE p2.username = ? AND p2.is_skip = 0 AND p2.played_at >= ?
                   )
                   -- The obsession is usually a new track played hard, which
-                  -- would put the same song in two adjacent cards. `IS NOT` and
-                  -- not `!=` because the parameter is NULL when the user has no
-                  -- obsession, and `track_id != NULL` excludes everything.
-                  AND track_id IS NOT ?
+                  -- would put the same song in two adjacent cards. Compared on
+                  -- canonicals: the obsession's track_id is a canonical now, so
+                  -- a played-id comparison would only shield one release of the
+                  -- group. `IS NOT` and not `!=` because the parameter is NULL
+                  -- when the user has no obsession, and `!= NULL` excludes
+                  -- everything.
+                  AND COALESCE(t.canonical_id, t.id) IS NOT ?
                 GROUP BY COALESCE(t.canonical_id, t.id)   -- the expression; see the note above
                 HAVING first_played_at >= ? AND play_count >= ?
                 ORDER BY play_count DESC, total_ms DESC

@@ -812,6 +812,11 @@ class TrackQueries:
                         (member["trackId"], canonicalId, group["isrc"], now),
                     )
                     merged += 1
+        if merged:
+            #< a merge moves numbers frozen inside every user's cached Wrapped
+            #  years, and past years never notice on their own - see
+            #  deleteAllWrapped for why the invalidation is instance-wide
+            self.deleteAllWrapped()
         return {"groups": len(plan["groups"]), "merged": merged}
 
     def previewMergeTracksByIsrc(self) -> dict:
@@ -919,6 +924,7 @@ class TrackQueries:
                 """,
                 (trackId, time.time(), decidedBy),
             )
+        self.deleteAllWrapped()   #< one track's undo still shifts every cached year it appears in
 
     def unmergeAllIsrcMerges(self) -> int:
         """Undo everything the MATCHER did, leaving every human verdict alone.
@@ -940,6 +946,8 @@ class TrackQueries:
             )
             conn.execute(
                 "DELETE FROM track_merge_decisions WHERE decided_by IS NULL AND reason='isrc'")
+        if cur.rowcount:
+            self.deleteAllWrapped()   #< the undo moves the same frozen numbers back
         return cur.rowcount
 
     def updateTrackIsrcs(self, isrcByTrackId: dict[str, str]) -> None:
