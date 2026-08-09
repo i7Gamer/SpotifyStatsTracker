@@ -991,6 +991,7 @@ class PlayQueries:
                 {e}.duration_ms AS duration_ms, {e}.explicit AS explicit, {e}.isrc AS isrc,
                 {e}.disc_number AS disc_number, {e}.track_number AS track_number,
                 {e}.created_reason AS created_reason, {e}.availability_reason AS availability_reason,
+                {e}.canonical_id AS canonical_id,
                 al.id AS album_id, al.name AS album_name, al.url AS album_url,
                 al.total_tracks AS album_total_tracks, al.release_date AS album_release_date,
                 al.image_id AS album_image_id, al.image_url AS album_image_url,
@@ -1262,6 +1263,15 @@ class PlayQueries:
         hasAlbum = row["album_id"] is not None
         return {
             "id": row["track_id"],
+            # The track this one was merged into, or None. Carried so the song
+            # page can redirect to the canonical without a second lookup - it
+            # has already loaded the row that knows.
+            #
+            #< asked for rather than indexed: this function degrades gracefully
+            #  on a partial row (see the album fallback below and the test that
+            #  hands it one directly), and a bare row["canonical_id"] made that
+            #  a KeyError
+            "canonicalId": (row["canonical_id"] if "canonical_id" in row.keys() else None),
             "name": row["name"],
             "url": row["url"],
             "imageUrl": row["album_image_url"] if hasAlbum else "",

@@ -374,6 +374,12 @@ class TrackQueries:
     def _trackRowToDict(cls, trackRow, albumRow, artistRows) -> dict:
         return {
             "id": trackRow["id"],
+            #< the same key _songRowToDict carries, so a song reaches the
+            #  template with the same shape whichever query built it - the
+            #  skip-sorted page hydrates through here rather than through that
+            #  one, and tests/test_skip_sort.py pins the two agreeing
+            "canonicalId": (trackRow["canonical_id"]
+                            if "canonical_id" in trackRow.keys() else None),
             "name": trackRow["name"],
             "url": trackRow["url"],
             "imageUrl": albumRow["image_url"] if albumRow else "",
@@ -690,6 +696,60 @@ class TrackQueries:
             (SPOTIFY_TRACK_ID_LENGTH, retryCutoff, limit),
         ).fetchall()
         return [row["id"] for row in rows]
+
+    def resolveCanonicalTrackId(self, trackId: str) -> str:
+        """The track a merged id should be read as, or the id itself.
+
+        Its own id for anything unmerged AND for anything unknown - a caller
+        that is about to 404 on a bad id must still get that 404 rather than a
+        None it has to special-case."""
+        row = self._conn().execute(
+            "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()
+        return (row["canonical_id"] if row and row["canonical_id"] else trackId)
+
+    def getMergedReleases(self, trackId: str) -> list[dict]:
+        """The OTHER releases carrying this same recording - a single where the
+        page is showing the album cut, a compilation, and so on.
+
+        What makes the merge legible. Once the global lists count a song once,
+        its play count silently spans releases, and a total that spans something
+        invisible is indistinguishable from a wrong one. This is the page's
+        answer to "where did that number come from".
+
+        Takes either end of a merge: hand it a merged id and it answers about
+        the canonical, so a caller does not have to know which it is holding.
+        The canonical itself is not in the result - the page is already showing
+        it."""
+        canonicalId = self.resolveCanonicalTrackId(trackId)
+        rows = self._conn().execute(
+            """
+            SELECT t.id, t.name, t.url, t.duration_ms, t.isrc,
+                   al.id AS album_id, al.name AS album_name, al.url AS album_url,
+                   al.image_id AS album_image_id, al.release_date AS album_release_date
+            FROM tracks t
+            LEFT JOIN albums al ON al.id = t.album_id
+            WHERE t.canonical_id = ?
+            ORDER BY al.release_date, al.name COLLATE NOCASE, t.id
+            """,
+            (canonicalId,),
+        ).fetchall()
+        return [
+            {
+                "trackId": row["id"],
+                "name": row["name"],
+                "url": row["url"],
+                "duration": row["duration_ms"],
+                "isrc": row["isrc"] or "",
+                "album": {
+                    "id": row["album_id"],
+                    "name": row["album_name"],
+                    "url": row["album_url"],
+                    "imageId": row["album_image_id"],
+                    "releaseDate": row["album_release_date"],
+                },
+            }
+            for row in rows
+        ]
 
     def mergeTracksByIsrc(self) -> dict:
         """Point every track that shares an ISRC with another at one canonical.

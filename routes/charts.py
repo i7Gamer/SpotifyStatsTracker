@@ -1374,9 +1374,30 @@ def register(app, dashboard):
     @requiresUser
     def songDetailPage(username, db, track_id):
 
+        # A merged track's page IS its canonical's page. Links to the version
+        # that lost the election keep working - a bookmark, a share, a row in
+        # someone's own history - and land on the numbers the global lists are
+        # already showing, rather than on a page whose count no longer matches
+        # anything else on the site.
+        #
+        # A redirect rather than a silent render, so the URL in the bar names
+        # the song the page is actually about; the "also released on" list below
+        # is where the version they asked for is still reachable. Only on the
+        # plain GET: the htmx and ajax=true requests below carry the id the
+        # shell already resolved, and a redirect mid-swap would replace a region
+        # with a whole page (see _missingEntityResponse for that same trap).
         song = db.getSong(track_id)
         if song is None:
             return _missingEntityResponse("topSongsPage")
+
+        #< off the row already loaded, rather than asking the database a second
+        #  time on every song page to be told "no": a merged track is a few
+        #  hundred rows in a catalog of tens of thousands
+        canonicalId = song.get("canonicalId")
+        if (canonicalId and canonicalId != track_id
+                and not request.headers.get("HX-Request")
+                and request.args.get("ajax") != "true"):
+            return redirect(url_for("songDetailPage", track_id=canonicalId, **request.args))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         # Four modes share this route, and the marker differs by kind. The one
@@ -1408,6 +1429,10 @@ def register(app, dashboard):
                 song=song,
                 username=username,
                 groupBy=groupByParam,
+                #< the other releases carrying this same recording. Empty for
+                #  every unmerged song, so the block is simply absent until a
+                #  merge exists
+                mergedReleases=db.repo.getMergedReleases(track_id),
                 entity_tags=db.repo.getTagsForEntity(username, "track", track_id),
                 success=request.args.get("success"),
                 error=request.args.get("error"),

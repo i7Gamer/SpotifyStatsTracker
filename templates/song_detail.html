@@ -26,6 +26,22 @@
     <div class="hero-content">
       <h1>{{ song.get('name', '') }}</h1>
       <p>{{ artistLinks(song.get('artists', [])) }}</p>
+      {#- Where the numbers on this page came from. Once the global lists count
+          a merged song once, its play count silently spans several releases,
+          and a total that spans something invisible is indistinguishable from a
+          wrong one. Each release still links to its own album, so the version
+          someone was actually looking for stays reachable.
+
+          Absent entirely for an unmerged song, which is every song until a
+          merge exists - not an empty list with a heading over it. -#}
+      {% if mergedReleases %}
+      <p class="hero-merged-releases">
+        Also released on
+        {% for release in mergedReleases %}{% if not loop.first %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}<a
+          href="{{ url_for('albumDetailPage', album_id=release.album.id) }}">{{ release.album.name }}</a>{% endfor %}.
+        Plays across all of them are counted together.
+      </p>
+      {% endif %}
     </div>
   </section>
 
