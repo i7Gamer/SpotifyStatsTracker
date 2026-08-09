@@ -18,6 +18,8 @@ sensitive.
 """
 import datetime
 import logging
+
+from Database import utils
 import os
 import random
 import sqlite3
@@ -177,7 +179,12 @@ class BackupWorker(WorkerTelemetryMixin):
         for stalePartial in self.backupDir.glob(f"{BACKUP_FILENAME_PREFIX}*.partial"):
             stalePartial.unlink(missing_ok=True)
 
-        stamp = datetime.datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+        # In the instance's configured zone, not the C runtime's local time -
+        # the same defect the log had (logging_config.InstanceZoneFormatter):
+        # Windows' UCRT parses TZ as a POSIX spec, so an IANA name silently
+        # resolved to a fixed offset and every filename ran an hour off for
+        # half the year. The name is what an operator picks a restore by.
+        stamp = datetime.datetime.now(tz=utils.tz).strftime(BACKUP_TIMESTAMP_FORMAT)
         finalPath = self.backupDir / f"{BACKUP_FILENAME_PREFIX}{stamp}.db"
         partialPath = finalPath.with_suffix(".partial")
 

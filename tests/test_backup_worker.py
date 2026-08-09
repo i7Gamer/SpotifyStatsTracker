@@ -528,3 +528,40 @@ class TestWorkerThread(BackupWorkerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBackupStampUsesTheInstanceZone(unittest.TestCase):
+    """The filename stamp comes from the instance's configured zone, not the C
+    runtime's idea of local time.
+
+    Same defect the log had (see Database/logging_config.py's
+    InstanceZoneFormatter): on Windows the UCRT parses TZ as a POSIX spec, so
+    TZ=Europe/Zurich silently resolves to fixed UTC+1 and every backup filename
+    ran an hour behind the wall clock for half the year - which matters here
+    because the name is the only thing an operator has when picking a snapshot
+    to restore."""
+
+    def test_the_stamp_matches_the_configured_zone(self):
+        import datetime as dt
+        from unittest.mock import patch
+        from zoneinfo import ZoneInfo
+        import Database.utils as utilsModule
+        from Database.backup import BackupWorker, BACKUP_TIMESTAMP_FORMAT
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            dbPath = Path(tmp) / "spotify_stats.db"
+            seed = sqlite3.connect(dbPath)
+            with seed:
+                seed.execute("CREATE TABLE t (x)")
+            seed.close()   #< Windows keeps an open db file locked; the temp dir must delete
+            worker = BackupWorker(dbPath=dbPath, backupDir=Path(tmp) / "Backups",
+                                  intervalHours=24, retentionCount=7)
+            with patch.object(utilsModule, "tz", ZoneInfo("UTC")):
+                before = dt.datetime.now(tz=ZoneInfo("UTC"))
+                made = worker.runBackup()
+                after = dt.datetime.now(tz=ZoneInfo("UTC"))
+
+        stampText = made.stem.rsplit("backup_", 1)[-1]
+        stamped = dt.datetime.strptime(stampText, BACKUP_TIMESTAMP_FORMAT).replace(tzinfo=ZoneInfo("UTC"))
+        self.assertLessEqual(before.replace(microsecond=0), stamped)
+        self.assertLessEqual(stamped, after)

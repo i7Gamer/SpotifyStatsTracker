@@ -4853,3 +4853,16 @@ html.theme-red {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+
+/* The song hero's "Also released on ..." line (only rendered for a merged
+   song), and the admin-only split control inline in it. The form has to sit
+   inside the sentence, so both it and its button render inline and the button
+   reads as a small dashed action rather than a full button. */
+.hero-merged-releases { color: var(--muted); font-size: 0.95rem; margin-top: 0.4rem; }
+.hero-merged-releases a { color: var(--accent); }
+.hero-split-form { display: inline; }
+.hero-split-button {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--muted); font-size: 0.8em; text-decoration: underline dashed;
+}
+.hero-split-button:hover { color: var(--accent); }

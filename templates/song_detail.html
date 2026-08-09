@@ -35,12 +35,27 @@
           Absent entirely for an unmerged song, which is every song until a
           merge exists - not an empty list with a heading over it. -#}
       {% if mergedReleases %}
-      <p class="hero-merged-releases">
+      {#- a div, not a <p>: <form> is one of HTML5's p-auto-close tags, so a
+          paragraph wrapper would be split apart around every split control -#}
+      <div class="hero-merged-releases">
         Also released on
         {% for release in mergedReleases %}{% if not loop.first %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}<a
-          href="{{ url_for('albumDetailPage', album_id=release.album.id) }}">{{ release.album.name }}</a>{% endfor %}.
+          href="{{ url_for('albumDetailPage', album_id=release.album.id) }}">{{ release.album.name }}</a>{%
+          if isAdmin %} <form method="post" action="{{ url_for('adminSplitTrack', track_id=release.trackId) }}"
+            class="hero-split-form"
+            {#- no apostrophes in the message: it lives in a single-quoted JS
+                string inside a double-quoted attribute, and one stray quote
+                turns the handler into a syntax error that silently skips the
+                confirm -#}
+            onsubmit="return confirm('Split this release out of the merge? Its plays leave the totals shown here, and the matcher will not re-merge it.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            {#- admin-only, because a merge is instance-wide: splitting moves
+                every account's numbers, the same reason the toggle lives on
+                /admin. Records a manual verdict the matcher never overrules. -#}
+            <button type="submit" class="hero-split-button" title="Not the same recording? Split this release back out.">split</button>
+          </form>{% endif %}{% endfor %}.
         Plays across all of them are counted together.
-      </p>
+      </div>
       {% endif %}
     </div>
   </section>

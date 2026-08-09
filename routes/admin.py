@@ -606,6 +606,34 @@ def register(app, dashboard):
         return redirect(url_for(detailRoute, **redirectArgs))
     app.add_url_rule("/admin/lastfm/refresh/<kind>/<entity_id>", "adminRefreshLastfmEntity", adminRefreshLastfmEntity, methods=["POST"])
 
+    def adminSplitTrack(track_id):
+        """Admin-only: take one release back out of its merge - the "Split"
+        control beside the song page's "Also released on" list.
+
+        Records a manual "not the same recording" verdict (unmergeTrack), which
+        is exactly the row the matcher refuses to overrule - so the split holds
+        across every later automatic pass, and across the toggle being cycled.
+        Admin-gated because a merge is instance-wide: splitting moves every
+        account's numbers, the same reason the toggle itself lives on /admin.
+
+        The wrongly-split case has an exit too: deleting the decision row lets
+        the next matcher pass re-merge, which is deliberately NOT a button yet -
+        a split is a person overruling the machine, and un-overruling deserves
+        more ceremony than an adjacent click."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login", next=url_for("songDetailPage", track_id=track_id)))
+        if not dashboard.repo.isAdmin(username):
+            abort(403)
+
+        #< resolved BEFORE the split: afterwards the member resolves to itself,
+        #  and the admin is standing on the canonical's page
+        canonicalId = dashboard.repo.resolveCanonicalTrackId(track_id)
+        dashboard.repo.unmergeTrack(track_id, decidedBy=username)
+        return redirect(url_for("songDetailPage", track_id=canonicalId,
+                                success="Split out of the merge - this stays a separate song from now on."))
+    app.add_url_rule("/admin/split_track/<track_id>", "adminSplitTrack", adminSplitTrack, methods=["POST"])
+
     @requiresAdmin
     def adminSpotifySettings(username, db):
         """Admin-only: the Spotify Developer API backfill kill switch

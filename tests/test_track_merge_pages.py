@@ -142,3 +142,60 @@ class TestTheSongPageRedirectsAMergedId(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSplitButton(unittest.TestCase):
+    """The admin-only exit from a wrong merge, on the page where the merge is
+    visible. Splitting records a manual verdict (unmergeTrack), which is the
+    row the matcher refuses to overrule - so it holds across every later pass
+    and across the toggle being cycled."""
+
+    def _post(self, isAdmin=True, loggedIn=True, manager=None):
+        from unittest.mock import MagicMock, patch
+        from _app_factory import AppTestCase
+
+        case = AppTestCase()
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        dash = case._makeApp()
+        dash.repo.isAdmin = MagicMock(return_value=isAdmin)
+        dash.repo.resolveCanonicalTrackId = MagicMock(return_value=ALBUM_CUT)
+        dash.repo.unmergeTrack = MagicMock()
+        if manager is not None:
+            #< attached BEFORE the request: a manager only records calls made
+            #  after attachment, so attaching afterwards asserts on nothing
+            manager.attach_mock(dash.repo.resolveCanonicalTrackId, "resolve")
+            manager.attach_mock(dash.repo.unmergeTrack, "unmerge")
+        client = dash.app.test_client()
+        with patch.object(dash, "is_user_logged_in", return_value=loggedIn), \
+             patch.object(dash, "get_username_for_email", return_value="alice"), \
+             patch.object(dash, "get_user_db", return_value=MagicMock()):
+            if loggedIn:
+                with client.session_transaction() as sess:
+                    sess["email"] = "alice@example.com"
+            resp = client.post(f"/admin/split_track/{SINGLE}")
+        return resp, dash
+
+    def test_it_splits_and_lands_on_the_canonical_page(self):
+        resp, dash = self._post()
+
+        dash.repo.unmergeTrack.assert_called_once_with(SINGLE, decidedBy="alice")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(ALBUM_CUT, resp.headers["Location"])
+
+    def test_the_canonical_is_resolved_before_the_split(self):
+        """Afterwards the member resolves to itself, and the admin would land
+        on the freshly split member instead of the page they were on. Pinned by
+        call order on a shared manager, since "before" is the whole point."""
+        from unittest.mock import MagicMock, call
+        manager = MagicMock()
+        resp, dash = self._post(manager=manager)
+
+        self.assertEqual(manager.mock_calls,
+                         [call.resolve(SINGLE), call.unmerge(SINGLE, decidedBy="alice")])
+
+    def test_a_non_admin_is_refused(self):
+        resp, dash = self._post(isAdmin=False)
+
+        self.assertEqual(resp.status_code, 403)
+        dash.repo.unmergeTrack.assert_not_called()
