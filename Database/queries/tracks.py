@@ -691,6 +691,114 @@ class TrackQueries:
         ).fetchall()
         return [row["id"] for row in rows]
 
+    def mergeTracksByIsrc(self) -> dict:
+        """Point every track that shares an ISRC with another at one canonical.
+
+        An ISRC identifies a RECORDING, so two tracks carrying the same one are
+        the same performance released twice - a single and an album, an album
+        and a compilation. That is a fact rather than an inference, which is why
+        this tier merges on its own where a title-similarity tier would have to
+        ask. It also means the two things this feature was told NOT to do come
+        free: a remaster is a new master with its own ISRC, and so is a mono
+        mix, so neither can be merged into the original by accident.
+
+        Global, because sameness is a property of the recording rather than of
+        one listener - which is also why the election counts plays across every
+        account rather than the caller's.
+
+        Three rules keep it from overreaching, and they are the whole reason
+        this is more than a GROUP BY:
+
+        1. A manual decision outranks it. A person who judged a pair NOT the
+           same recording has said so in track_merge_decisions with a
+           decided_by, and an automatic pass that re-merged them would make the
+           review queue pointless and the disagreement invisible.
+        2. An existing canonical is STICKY. Re-electing every pass would move
+           the canonical - and every link to it - as play counts drift.
+        3. Never a chain. Every merged track points at a track that is itself
+           canonical, so no reader ever walks a linked list of unknown depth.
+
+        Idempotent: a second run merges nothing and rewrites nothing. Returns
+        {"groups", "merged"} - groups considered, tracks newly pointed."""
+        conn = self._conn()
+        # Only ISRCs that more than one track carries; a group of one is nothing
+        # to decide. Fabricated ids are already excluded by getTracksMissingIsrc
+        # never filling them, but the length test costs nothing and keeps this
+        # honest if an ISRC ever arrives by another route.
+        rows = conn.execute(
+            """
+            SELECT t.id, t.isrc, t.canonical_id, t.created_at,
+                   (SELECT COUNT(*) FROM plays p WHERE p.track_id = t.id) AS play_count
+            FROM tracks t
+            WHERE t.isrc IS NOT NULL AND t.isrc <> ''
+              AND t.isrc IN (SELECT isrc FROM tracks
+                             WHERE isrc IS NOT NULL AND isrc <> ''
+                             GROUP BY isrc HAVING COUNT(*) > 1)
+            """
+        ).fetchall()
+        if not rows:
+            return {"groups": 0, "merged": 0}
+
+        pinned = {row["track_id"] for row in conn.execute(
+            "SELECT track_id FROM track_merge_decisions WHERE decided_by IS NOT NULL")}
+
+        byIsrc = {}
+        for row in rows:
+            byIsrc.setdefault(row["isrc"], []).append(row)
+
+        merged = 0
+        now = time.time()
+        with conn:
+            for isrc, members in byIsrc.items():
+                #< rule 1: a pinned track takes no part at all - neither merged
+                #  nor elected, since electing it would move others onto a track
+                #  a person has said is not the same recording
+                members = [m for m in members if m["id"] not in pinned]
+                if len(members) < 2:
+                    continue
+
+                #< rule 2: whatever this group already agreed on wins. Any member
+                #  already pointing somewhere names the canonical; otherwise
+                #  elect the most-played, tie-broken by first-seen then id so the
+                #  answer is deterministic rather than whatever SQLite returned
+                existing = {m["canonical_id"] for m in members if m["canonical_id"]}
+                if len(existing) == 1:
+                    canonicalId = existing.pop()
+                elif existing:
+                    #< two canonicals for one recording: a merge from before this
+                    #  ran, or a hand edit. Left alone rather than guessed at
+                    continue
+                else:
+                    canonicalId = max(
+                        members,
+                        key=lambda m: (m["play_count"], -(m["created_at"] or 0), m["id"]),
+                    )["id"]
+
+                for member in members:
+                    #< rule 3: the canonical points at nothing, so nothing points
+                    #  through it
+                    if member["id"] == canonicalId or member["canonical_id"] == canonicalId:
+                        continue
+                    conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
+                                 (canonicalId, member["id"]))
+                    conn.execute(
+                        """
+                        INSERT INTO track_merge_decisions
+                            (track_id, canonical_id, reason, evidence, decided_at, decided_by)
+                        VALUES (?, ?, 'isrc', ?, ?, NULL)
+                        ON CONFLICT(track_id) DO UPDATE SET
+                            canonical_id=excluded.canonical_id, reason=excluded.reason,
+                            evidence=excluded.evidence, decided_at=excluded.decided_at
+                        """,
+                        (member["id"], canonicalId, isrc, now),
+                    )
+                    merged += 1
+                #< the elected canonical must not still point somewhere itself
+                conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (canonicalId,))
+                conn.execute("DELETE FROM track_merge_decisions WHERE track_id=?", (canonicalId,))
+
+        return {"groups": len(byIsrc), "merged": merged}
+
     def updateTrackIsrcs(self, isrcByTrackId: dict[str, str]) -> None:
         """Store the ISRCs a backfill response carried. Blank values are skipped
         rather than written: an absent external_ids.isrc is "Spotify didn't say",
