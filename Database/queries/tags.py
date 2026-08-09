@@ -26,6 +26,12 @@ class TagQueries:
         if not norm:
             return None
         conn = self._conn()
+        # A tag on a track is a tag on the SONG: writes land on the canonical,
+        # so a tag added from any release's surface is one row, visible (and
+        # removable) wherever the song shows. Reads still union across the
+        # group for rows written before a merge existed.
+        if entity_type == "track":
+            entity_id = self.resolveCanonicalTrackId(entity_id)
         with conn:
             conn.execute(
                 """
@@ -42,25 +48,55 @@ class TagQueries:
             return False
         conn = self._conn()
         with conn:
-            cur = conn.execute(
-                "DELETE FROM user_tags WHERE username=? AND tag=? AND entity_type=? AND entity_id=?",
-                (username, norm, entity_type, entity_id),
-            )
+            if entity_type == "track":
+                #< the whole merge group: the union-read shows a member's legacy
+                #  row on the canonical's page, so a targeted delete would leave
+                #  an unremovable tag
+                canonical = self.resolveCanonicalTrackId(entity_id)
+                cur = conn.execute(
+                    """
+                    DELETE FROM user_tags WHERE username=? AND tag=? AND entity_type='track'
+                      AND entity_id IN (SELECT id FROM tracks WHERE id=? OR canonical_id=?)
+                    """,
+                    (username, norm, canonical, canonical),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM user_tags WHERE username=? AND tag=? AND entity_type=? AND entity_id=?",
+                    (username, norm, entity_type, entity_id),
+                )
             return cur.rowcount > 0
 
     def getTagsForEntity(self, username: str, entity_type: str, entity_id: str) -> list[str]:
         conn = self._conn()
-        rows = conn.execute(
-            "SELECT tag FROM user_tags WHERE username=? AND entity_type=? AND entity_id=? ORDER BY tag ASC",
-            (username, entity_type, entity_id),
-        ).fetchall()
+        if entity_type == "track":
+            #< the union across the merge group: new writes land on the
+            #  canonical, but a tag added to a release before its merge still
+            #  belongs to the song
+            canonical = self.resolveCanonicalTrackId(entity_id)
+            rows = conn.execute(
+                """
+                SELECT DISTINCT tag FROM user_tags WHERE username=? AND entity_type='track'
+                  AND entity_id IN (SELECT id FROM tracks WHERE id=? OR canonical_id=?)
+                ORDER BY tag ASC
+                """,
+                (username, canonical, canonical),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT tag FROM user_tags WHERE username=? AND entity_type=? AND entity_id=? ORDER BY tag ASC",
+                (username, entity_type, entity_id),
+            ).fetchall()
         return [r["tag"] for r in rows]
 
     def getUserTags(self, username: str) -> list[dict]:
         conn = self._conn()
         rows = conn.execute(
             """
-            SELECT tag, COUNT(*) as cnt
+            SELECT tag, COUNT(DISTINCT entity_type || ':' || CASE
+                       WHEN entity_type = 'track' THEN COALESCE(
+                           (SELECT canonical_id FROM tracks WHERE id = entity_id), entity_id)
+                       ELSE entity_id END) as cnt
             FROM user_tags
             WHERE username=?
             GROUP BY tag
@@ -103,13 +139,19 @@ class TagQueries:
 
         if match_mode == "all":
             # A track must match every tag, so each tag is resolved separately
-            # (one query per tag, single placeholder) and the id sets intersected.
+            # (one query per tag, single placeholder) and the sets intersected -
+            # at SONG level: a group tagged 'a' on its single and 'b' on its
+            # album cut is one song carrying both tags.
             single = query.format(tags="?")
-            track_sets = [
-                {r["id"] for r in conn.execute(single, (username, tag, username, tag, username, tag)).fetchall()}
-                for tag in norm_tags
-            ]
-            return list(set.intersection(*track_sets))
+            track_sets = []
+            for tag in norm_tags:
+                ids = [r["id"] for r in conn.execute(
+                    single, (username, tag, username, tag, username, tag)).fetchall()]
+                _, canonicalOfRequested, _ = self._expandToMergeGroups(ids)
+                track_sets.append({canonicalOfRequested.get(i, i) for i in ids})
+            canonicals = set.intersection(*track_sets)
+            memberIds, _, _ = self._expandToMergeGroups(sorted(canonicals))
+            return memberIds
 
         # "any": a track matching any tag qualifies, which is exactly the union
         # over all tags - so one query with `tag IN (...)` per branch does it.
@@ -118,7 +160,11 @@ class TagQueries:
             query.format(tags=placeholders),
             (username, *norm_tags, username, *norm_tags, username, *norm_tags),
         ).fetchall()
-        return [r["id"] for r in rows]
+        #< expanded to whole merge groups: the plays filters these ids feed
+        #  (getSongsPage(trackIds=...), the exports) must cover every release's
+        #  plays, or a tagged song's row shows a fraction of its count
+        memberIds, _, _ = self._expandToMergeGroups([r["id"] for r in rows])
+        return memberIds
 
     def getTaggedArtistIds(self, username: str, tags: list[str]) -> list[str]:
         """Artist ids directly tagged with any of `tags` - unlike

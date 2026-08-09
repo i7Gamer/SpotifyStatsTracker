@@ -84,7 +84,8 @@ class GenreQueries:
             f"""
             SELECT g.genre AS genre, COUNT(*) AS plays
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)
             WHERE (? OR g.inherited = 0) AND p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY g.genre
             ORDER BY plays DESC, g.genre ASC{limitClause}
@@ -378,7 +379,8 @@ class GenreQueries:
                    g.genre AS genre,
                    COUNT(*) AS plays
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)
             WHERE (? OR g.inherited = 0) AND g.genre IN ({genrePlaceholders})
               AND p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY bucket, g.genre
@@ -406,7 +408,8 @@ class GenreQueries:
                    COUNT(*) AS plays,
                    COALESCE(SUM(p.time_played), 0) AS total_time
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0) AND g.genre = ?
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY bucket
             ORDER BY bucket
@@ -432,7 +435,8 @@ class GenreQueries:
             f"""
             SELECT g.genre AS genre, COUNT(DISTINCT ar.id) AS artist_count
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0)
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0)
                 AND g.genre IN ({placeholders})
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
@@ -454,7 +458,8 @@ class GenreQueries:
             SELECT COUNT(*) AS plays, COALESCE(SUM(p.time_played), 0) AS listen_ms,
                    MIN(p.played_at) AS first_ts
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)
             WHERE (? OR g.inherited = 0) AND g.genre = ? AND p.username = ? AND p.is_skip = 0{rangeClause}
             """,
             params,
@@ -494,7 +499,8 @@ class GenreQueries:
             SELECT ar.id AS id, ar.name AS name, ar.image_id AS image_id,
                    COUNT(DISTINCT p.id) AS play_count
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0) AND g.genre = ?
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}
@@ -521,8 +527,11 @@ class GenreQueries:
             SELECT t.id AS id, t.name AS name, t.image_id AS image_id,
                    ar.name AS artist_name, COUNT(p.id) AS play_count
             FROM plays p
-            JOIN track_genres g ON g.track_id = p.track_id AND (? OR g.inherited = 0) AND g.genre = ?
-            JOIN tracks t ON t.id = p.track_id
+            JOIN tracks trk ON trk.id = p.track_id
+            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0) AND g.genre = ?
+            -- the CANONICAL row: this is a global list, so a song split across
+            -- releases is one row with the group's whole count
+            JOIN tracks t ON t.id = COALESCE(trk.canonical_id, trk.id)
             LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}

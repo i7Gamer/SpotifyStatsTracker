@@ -114,16 +114,24 @@ class TestDetailPagesKeepTheirOwnRows(TrackMergeReadPathTestCase):
 
         self.assertEqual(sorted(s["id"] for s in songs), sorted([SINGLE, ALBUM_CUT]))
 
-    def test_asking_for_one_track_answers_about_that_track(self):
-        """The song detail page asks by id; resolving a merged id to its
-        canonical is Phase 6's job, not something to do silently here."""
+    def test_asking_for_one_track_answers_about_its_whole_song(self):
+        """Changed deliberately by the coverage audit. The trackId lookup is
+        the song detail page's own query, and that page is the canonical's
+        page - the row every merged global list links to. It used to answer
+        per-release, which was the audit's central contradiction: a hero
+        saying 3 plays under a caption promising "plays across all of them
+        are counted together" while Top Songs said 12. Asking by EITHER end
+        of the merge now returns the one canonical row with the group total;
+        the route redirects when the answered id differs from the asked one."""
         db = self._seed(self._makeDb({}, []))
 
-        songs = self._songs(db, trackId=SINGLE)
+        for askedId in (SINGLE, ALBUM_CUT):
+            with self.subTest(asked=askedId):
+                songs = self._songs(db, trackId=askedId)
 
-        self.assertEqual(len(songs), 1)
-        self.assertEqual(songs[0]["id"], SINGLE)
-        self.assertEqual(songs[0]["plays"], 3)
+                self.assertEqual(len(songs), 1)
+                self.assertEqual(songs[0]["id"], ALBUM_CUT)
+                self.assertEqual(songs[0]["plays"], 12)
 
 
 class TestTheOtherGlobalCounts(TrackMergeReadPathTestCase):

@@ -99,7 +99,11 @@ class TestTheSongPageRedirectsAMergedId(unittest.TestCase):
         self.addCleanup(case.tearDown)
         dash = case._makeApp()
         db = MagicMock()
-        db.getSong.return_value = {"id": SINGLE, "name": "Shared Song", "canonicalId": canonicalId,
+        #< getSong answers about the whole group now: for a merged id it
+        #  returns the CANONICAL row, and the route redirects on the mismatch
+        #  between the id asked for and the id answered with
+        db.getSong.return_value = {"id": canonicalId or SINGLE, "name": "Shared Song",
+                                   "canonicalId": None,
                                    "artists": [], "album": {"id": "alb", "name": "A"}}
         client = dash.app.test_client()
         with patch.object(dash, "is_user_logged_in", return_value=True), \

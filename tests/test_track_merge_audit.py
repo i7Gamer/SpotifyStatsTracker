@@ -1,0 +1,229 @@
+"""The coverage audit's findings, pinned: every surface that answers about a
+SONG spans its whole merge group.
+
+The audit swept every track-keyed read in the app and classified it. These
+tests cover the fixes it demanded - each one names the user-visible symptom it
+prevents, because that is what a regression here costs.
+"""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from conftest import DatabaseTestCase
+
+SINGLE = "A" * 22
+ALBUM_CUT = "B" * 22
+OTHER = "C" * 22
+
+
+class MergedPairTestCase(DatabaseTestCase):
+    def _db(self, singlePlays=3, albumPlays=9):
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO users (username, created_at) VALUES ('alice', 0)")
+            conn.execute("INSERT OR IGNORE INTO albums (id, name, url) VALUES ('alb', 'A', '')")
+            conn.execute("INSERT OR IGNORE INTO artists (id, name, url) VALUES ('art1', 'Artist', '')")
+            for trackId, plays in ((SINGLE, singlePlays), (ALBUM_CUT, albumPlays)):
+                conn.execute("INSERT INTO tracks (id, name, url, album_id, duration_ms) "
+                             "VALUES (?, 'Shared Song', '', 'alb', 200000)", (trackId,))
+                conn.execute("INSERT INTO track_artists (track_id, artist_id, position) "
+                             "VALUES (?, 'art1', 0)", (trackId,))
+                for i in range(plays):
+                    conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                                 "VALUES ('alice', ?, ?, 200000)",
+                                 (trackId, 1e9 + (0 if trackId == SINGLE else 5e5) + i))
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (ALBUM_CUT, SINGLE))
+        return db
+
+
+class TestPlayedFlagsSpanTheGroup(MergedPairTestCase):
+    def test_a_viewer_who_played_only_the_sibling_still_counts(self):
+        """The flag decides internal-link vs open.spotify.com, and the page an
+        internal link lands on is the canonical's - which HAS this viewer's
+        plays, on the other release. Linking them out is wrong for every
+        surface this feeds: Now Playing, the friends strip, Compare."""
+        db = self._db(singlePlays=3, albumPlays=0)
+
+        #< asked about the ALBUM CUT, which the viewer never played directly
+        self.assertEqual(db.repo.getPlayedTrackIds("alice", [ALBUM_CUT]), {ALBUM_CUT})
+
+    def test_asked_about_the_member_it_also_answers_yes(self):
+        db = self._db(singlePlays=0, albumPlays=9)
+
+        self.assertEqual(db.repo.getPlayedTrackIds("alice", [SINGLE]), {SINGLE})
+
+    def test_a_song_nobody_played_stays_unplayed(self):
+        db = self._db(singlePlays=0, albumPlays=0)
+
+        self.assertEqual(db.repo.getPlayedTrackIds("alice", [SINGLE, ALBUM_CUT]), set())
+
+    def test_unknown_ids_still_answer_no(self):
+        db = self._db()
+
+        self.assertEqual(db.repo.getPlayedTrackIds("alice", ["Z" * 22]), set())
+
+
+class TestRankMovementSeesTheWholeGroup(MergedPairTestCase):
+    def test_a_group_played_only_via_its_member_is_not_new(self):
+        """The 'new' badge on the Top lists: the entry id is canonical, the
+        previous period's plays sat on the single, and 'new' must not lie."""
+        db = self._db(singlePlays=3, albumPlays=0)
+
+        played = db.repo.getEntitiesPlayedInRange("alice", "track", [ALBUM_CUT], 0, 2e9)
+
+        self.assertEqual(played, [ALBUM_CUT])
+
+    def test_an_unplayed_group_is_still_new(self):
+        db = self._db(singlePlays=0, albumPlays=0)
+
+        self.assertEqual(db.repo.getEntitiesPlayedInRange("alice", "track", [ALBUM_CUT], 0, 2e9), [])
+
+
+class TestTheSongPageSpansTheGroup(MergedPairTestCase):
+    def test_the_play_log_and_its_pager_cover_both_releases(self):
+        """The canonical page's timeline: 12 entries and a pager sized 12, not
+        the 9 the canonical release alone recorded."""
+        db = self._db()
+
+        self.assertEqual(db.repo.getPlaysCount("alice", trackId=ALBUM_CUT), 12)
+        self.assertEqual(len(db.repo.getPlaysNewestFirst("alice", trackId=ALBUM_CUT, count=50)), 12)
+
+    def test_asked_via_the_merged_member_the_log_is_the_same(self):
+        db = self._db()
+
+        self.assertEqual(db.repo.getPlaysCount("alice", trackId=SINGLE), 12)
+
+    def test_the_bucketed_chart_covers_both_releases(self):
+        db = self._db()
+
+        buckets = db.repo.getBucketedPlayTotals("alice", trackId=ALBUM_CUT)
+
+        self.assertEqual(sum(b["plays"] for b in buckets), 12)
+
+
+class TestOnThisDayCountsTheSongOnce(MergedPairTestCase):
+    def test_the_winner_is_the_merged_song_not_a_lesser_track(self):
+        """3 plays of the single + 2 of the album cut on the same day is 5
+        plays of one song; a 4-play other track must not win the year card."""
+        import time as _time
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        dayTs = _time.time() - 365 * 86400   #< this day last year
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO albums (id, name, url) VALUES ('alb', 'A', '')")
+            for trackId, name in ((SINGLE, 'Shared Song'), (ALBUM_CUT, 'Shared Song'), (OTHER, 'Other Song')):
+                conn.execute("INSERT INTO tracks (id, name, url, album_id, duration_ms) "
+                             "VALUES (?, ?, '', 'alb', 200000)", (trackId, name))
+            #< under the db's OWN user: getOnThisDay reads self.user
+            for trackId, plays in ((SINGLE, 3), (ALBUM_CUT, 2), (OTHER, 4)):
+                for i in range(plays):
+                    conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                                 "VALUES (?, ?, ?, 200000)", (db.user, trackId, dayTs + i * 60))
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (ALBUM_CUT, SINGLE))
+
+        entries = db.getOnThisDay()
+
+        self.assertTrue(entries, "expected an on-this-day entry")
+        self.assertEqual(entries[0]["trackId"], ALBUM_CUT)
+        self.assertEqual(entries[0]["playCount"], 5)
+
+
+class TestGenresFollowTheCanonical(MergedPairTestCase):
+    def _tagCanonical(self, db, genre="rock"):
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO track_genres (track_id, genre, position, inherited) "
+                         "VALUES (?, ?, 0, 0)", (ALBUM_CUT, genre))
+
+    def test_plays_on_the_untagged_member_still_count_for_the_genre(self):
+        """The single's Last.fm lookup failed; the canonical is tagged rock.
+        The song's genre is a property of the SONG, so all 12 plays are rock -
+        not 9 rock and 3 nowhere."""
+        db = self._db()
+        self._tagCanonical(db)
+
+        counts = db.repo.getGenrePlayCounts("alice", inherited=1)
+
+        self.assertEqual({c["genre"]: c["plays"] for c in counts}.get("rock"), 12)
+
+    def test_the_genre_top_tracks_list_shows_one_row(self):
+        db = self._db()
+        self._tagCanonical(db)
+
+        rows = db.repo.getTopTracksForGenre("alice", "rock", includeInherited=1, limit=10)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], ALBUM_CUT)
+        self.assertEqual(rows[0]["playCount"], 12)
+
+
+class TestTagsAreSongLevel(MergedPairTestCase):
+    def test_a_tag_added_via_the_member_lands_on_the_canonical(self):
+        db = self._db()
+
+        db.repo.addTag("alice", "favs", "track", SINGLE)
+
+        row = db.repo._conn().execute(
+            "SELECT entity_id FROM user_tags WHERE tag='favs'").fetchone()
+        self.assertEqual(row["entity_id"], ALBUM_CUT)
+
+    def test_a_pre_merge_tag_on_the_member_shows_on_the_canonical(self):
+        db = self._db()
+        conn = db.repo._conn()
+        with conn:   #< written raw, the way a pre-merge row would exist
+            conn.execute("INSERT INTO user_tags (username, tag, entity_type, entity_id, created_at) "
+                         "VALUES ('alice', 'oldtag', 'track', ?, 1)", (SINGLE,))
+
+        self.assertIn("oldtag", db.repo.getTagsForEntity("alice", "track", ALBUM_CUT))
+
+    def test_removing_from_the_canonical_removes_the_legacy_row_too(self):
+        """Without the group-wide delete the union-read resurrects the tag
+        immediately - an unremovable tag, which reads as a broken button."""
+        db = self._db()
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO user_tags (username, tag, entity_type, entity_id, created_at) "
+                         "VALUES ('alice', 'oldtag', 'track', ?, 1)", (SINGLE,))
+
+        self.assertTrue(db.repo.removeTag("alice", "oldtag", "track", ALBUM_CUT))
+        self.assertEqual(db.repo.getTagsForEntity("alice", "track", ALBUM_CUT), [])
+
+    def test_a_tag_on_two_releases_counts_one_song(self):
+        db = self._db()
+        conn = db.repo._conn()
+        with conn:
+            for trackId in (SINGLE, ALBUM_CUT):
+                conn.execute("INSERT INTO user_tags (username, tag, entity_type, entity_id, created_at) "
+                             "VALUES ('alice', 'both', 'track', ?, 1)", (trackId,))
+
+        tags = {t["tag"]: t["count"] for t in db.repo.getUserTags("alice")}
+        self.assertEqual(tags["both"], 1)
+
+    def test_tagged_track_ids_cover_the_whole_group(self):
+        """These ids feed the playlist export's play filters: tag the single,
+        and the exported row must still count the album cut's plays."""
+        db = self._db()
+        db.repo.addTag("alice", "favs", "track", SINGLE)
+
+        ids = set(db.repo.getTaggedTrackIds("alice", ["favs"]))
+
+        self.assertEqual(ids, {SINGLE, ALBUM_CUT})
+
+
+class TestArtistSongCountsCountSongs(MergedPairTestCase):
+    def test_unique_songs_counts_the_merged_recording_once(self):
+        """Top Artists' 'unique songs': two releases of one recording are one
+        song, the same statement the global song lists already make."""
+        db = self._db()
+
+        artists = db.repo.getArtistAggregates("alice")
+
+        self.assertEqual(len(artists), 1)
+        self.assertEqual(artists[0]["uniqueSongCount"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

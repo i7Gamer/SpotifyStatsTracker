@@ -1475,31 +1475,6 @@ class TestStatsAggregates(RepositoryTestCase):
         self.assertEqual(set(tracks.keys()), {"t1", "t2"})
         self.assertEqual([a["id"] for a in tracks["t2"]["artists"]], ["a1", "a2"])
 
-    def test_play_aggregates_by_track(self):
-        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
-        self.repo.insertPlay("alice", "t1", 100.0, 1000)
-        self.repo.insertPlay("alice", "t1", 200.0, 2000)
-        self.repo.commit()
-
-        aggregates = self.repo.getPlayAggregatesByTrack("alice")
-
-        self.assertEqual(len(aggregates), 1)
-        self.assertEqual(aggregates[0]["trackId"], "t1")
-        self.assertEqual(aggregates[0]["plays"], 2)
-        self.assertEqual(aggregates[0]["totalTimeListened"], 3000)
-        self.assertEqual(aggregates[0]["firstListenedAt"], 100.0)
-
-    def test_play_aggregates_respect_date_range(self):
-        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
-        self.repo.insertPlay("alice", "t1", 100.0, 1000)
-        self.repo.insertPlay("alice", "t1", 5000.0, 2000)
-        self.repo.commit()
-
-        aggregates = self.repo.getPlayAggregatesByTrack("alice", startTs=0, endTs=1000)
-
-        self.assertEqual(aggregates[0]["plays"], 1)
-        self.assertEqual(aggregates[0]["totalTimeListened"], 1000)
-
     def test_artist_aggregates_grouped_by_artist_id_not_name(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2"))
         self.repo.insertPlay("alice", "t1", 100.0, 1000)

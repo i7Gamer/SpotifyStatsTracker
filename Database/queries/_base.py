@@ -488,6 +488,52 @@ class SqlFragments:
         placeholders = ",".join("?" for _ in ids)
         return f" AND {playsColumn} IN ({subquery.format(placeholders=placeholders)})"
 
+    def _mergeGroupClause(self, params: list, trackId: str, column: str = "track_id") -> str:
+        """Membership filter for the WHOLE merge group of `trackId`.
+
+        `AND track_id = ?` on a song-page query answers about one release; the
+        page is about the recording. This expands either end of a merge - hand
+        it a merged member and it resolves the canonical first - to `IN (the
+        group's ids)`, which stays seekable on idx_plays_user_track per id.
+        For an unmerged track the subquery yields exactly the one id, so the
+        clause degrades to what it replaced."""
+        canonical = self.resolveCanonicalTrackId(trackId)
+        params += [canonical, canonical]
+        return f" AND {column} IN (SELECT id FROM tracks WHERE id = ? OR canonical_id = ?)"
+
+    def _expandToMergeGroups(self, ids: list[str]) -> tuple[list[str], dict, dict]:
+        """(memberIds, canonicalOfRequested, canonicalOfMember) for a set of
+        track ids - the Python half of group-aware membership tests.
+
+        Queries that ask "did the user play THESE?" (played-flags, the rank
+        movement badge) receive arbitrary release ids while the user's plays
+        may sit on siblings. Expanding in Python keeps the plays query itself
+        the same seekable IN it always was; the two catalog lookups are PK
+        probes over a handful of ids. Unknown ids map to themselves, so a
+        caller about to 404 still gets its miss."""
+        if not ids:
+            return [], {}, {}
+        conn = self._conn()
+        marks = ",".join("?" for _ in ids)
+        canonicalOfRequested = {
+            row["id"]: row["canon"]
+            for row in conn.execute(
+                f"SELECT id, COALESCE(canonical_id, id) AS canon FROM tracks WHERE id IN ({marks})",
+                list(ids))
+        }
+        canonicals = sorted({canonicalOfRequested.get(i, i) for i in ids})
+        cMarks = ",".join("?" for _ in canonicals)
+        canonicalOfMember = {
+            row["id"]: row["canon"]
+            for row in conn.execute(
+                f"SELECT id, COALESCE(canonical_id, id) AS canon FROM tracks "
+                f"WHERE id IN ({cMarks}) OR canonical_id IN ({cMarks})",
+                canonicals + canonicals)
+        }
+        for i in ids:   #< unknown ids stay queryable and map to themselves
+            canonicalOfMember.setdefault(i, canonicalOfRequested.get(i, i))
+        return list(canonicalOfMember.keys()), canonicalOfRequested, canonicalOfMember
+
     @staticmethod
     def _mergesCanonically(trackId=None, artistId=None, albumId=None) -> bool:
         """Whether this query is a GLOBAL one, and so counts a merged song once.
@@ -497,10 +543,16 @@ class SqlFragments:
         asks "what is on this album", and the canonical belongs to exactly one
         release, so merging there would hand an album a row whose title, cover
         and link belong to a different one. Same for an artist's own song list.
-        A query narrowed to one track is answering about that track; resolving a
-        merged id to its canonical is the detail page's job, not a silent
-        rewrite here."""
-        return trackId is None and artistId is None and albumId is None
+
+        A trackId lookup DOES merge: it is the song detail page's own query,
+        and that page is the canonical's page - the row every merged global
+        list links to. Answering per-release there is the central
+        contradiction the audit found: the hero saying 9 plays under a caption
+        promising "plays across all of them are counted together" while Top
+        Songs says 12. (`trackId` is accepted and ignored so call sites read
+        uniformly; only the entity narrowings decide.)"""
+        del trackId   #< deliberate - see above
+        return artistId is None and albumId is None
 
     @staticmethod
     def _canonicalTrackJoin(trackAlias: str = "t", canonicalAlias: str = "c") -> str:

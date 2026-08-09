@@ -471,6 +471,18 @@ class PlayQueries:
         ]
 
     def getPlayedTrackIds(self, username: str, trackIds: list[str]) -> set[str]:
+        """Which of `trackIds` the user has really played - where "played" spans
+        each id's whole MERGE GROUP. The callers decide whether a link points at
+        our own song page or out to Spotify, and the page they would link to is
+        the canonical's, which shows the group: a viewer whose plays sit on the
+        sibling release must get the internal link. Expanded in Python so the
+        plays query stays the plain seekable IN it always was."""
+        memberIds, canonicalOfRequested, canonicalOfMember = self._expandToMergeGroups(trackIds)
+        playedMembers = self._playedTrackIdsRaw(username, memberIds)
+        playedCanonicals = {canonicalOfMember[m] for m in playedMembers}
+        return {i for i in trackIds if canonicalOfRequested.get(i, i) in playedCanonicals}
+
+    def _playedTrackIdsRaw(self, username: str, trackIds: list[str]) -> set[str]:
         """The subset of `trackIds` this user has at least one play of - the
         Compare page's "does the viewer have their own data for this
         counterpart item" check (see app.py's comparePage), so a counterpart
@@ -660,6 +672,10 @@ class PlayQueries:
     # for getEntitiesPlayedInRange. Entity-first on purpose - see its docstring.
     _PLAYED_IN_RANGE_KINDS = {
         "track": ("tracks e", "e.id", "e.id"),
+        #< the internal recursion target for kind="track" after its merge-group
+        #  expansion: same driver, but the ids are MEMBER releases and must be
+        #  tested raw rather than re-expanded
+        "_track_raw": ("tracks e", "e.id", "e.id"),
         "artist": ("track_artists e", "e.artist_id", "e.track_id"),
         "album": ("tracks e", "e.album_id", "e.id"),
     }
@@ -695,6 +711,16 @@ class PlayQueries:
             raise ValueError(f"Unknown kind: {kind!r}")
         if not ids:
             return []   #< an empty page asks nothing, rather than everything
+        if kind == "track":
+            # The ids are CANONICAL (the global lists merged them), but the
+            # previous period's plays may sit on member releases. A group played
+            # only via its single last month was still played, and "new" must
+            # not say otherwise. Expand, ask about the members, map back.
+            memberIds, canonicalOfRequested, canonicalOfMember = self._expandToMergeGroups(ids)
+            playedMembers = self.getEntitiesPlayedInRange(
+                username, "_track_raw", memberIds, startTs, endTs, fullPlaysOnly)
+            playedCanonicals = {canonicalOfMember[m] for m in playedMembers}
+            return [i for i in ids if canonicalOfRequested.get(i, i) in playedCanonicals]
         driver, idColumn, trackColumn = self._PLAYED_IN_RANGE_KINDS[kind]
 
         conn = self._conn()
@@ -721,27 +747,6 @@ class PlayQueries:
             params,
         ).fetchall()
         return [row["id"] for row in rows]
-
-    def getPlayAggregatesByTrack(self, username: str, startTs: float | None = None,
-                                  endTs: float | None = None) -> list[dict]:
-        conn = self._conn()
-        params = [username]
-        rangeClause = self._dateRangeClause(params, startTs, endTs)
-        rows = conn.execute(
-            f"""
-            SELECT track_id, COUNT(*) AS plays, SUM(time_played) AS total_time_listened,
-                   MIN(played_at) AS first_listened_at
-            FROM plays
-            WHERE username = ? AND is_skip=0{rangeClause}
-            GROUP BY track_id
-            """,
-            params,
-        ).fetchall()
-        return [
-            {"trackId": r["track_id"], "plays": r["plays"], "totalTimeListened": r["total_time_listened"],
-             "firstListenedAt": r["first_listened_at"]}
-            for r in rows
-        ]
 
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
@@ -805,9 +810,11 @@ class PlayQueries:
             WITH agg AS (
                 SELECT ta.artist_id AS artist_id,
                        COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
-                       MIN(p.played_at) AS first_listened_at, COUNT(DISTINCT p.track_id) AS unique_song_count
+                       MIN(p.played_at) AS first_listened_at,
+                       COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id{aggJoin}
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN tracks tsong ON tsong.id = p.track_id{aggJoin}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{aggFilter}
                 GROUP BY ta.artist_id
             )
@@ -894,10 +901,12 @@ class PlayQueries:
                    COALESCE(SUM(unique_song_count), 0) AS total_unique,
                    COALESCE(SUM(total_time_listened), 0) AS total_time_listened
             FROM (
-                SELECT COUNT(*) AS plays, COUNT(DISTINCT p.track_id) AS unique_song_count,
+                SELECT COUNT(*) AS plays,
+                       COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count,
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id{joinClause}
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN tracks tsong ON tsong.id = p.track_id{joinClause}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{artistFilter}{fullPlaysClause}
                 GROUP BY ta.artist_id
             )
@@ -950,12 +959,24 @@ class PlayQueries:
         limitValue = -1 if limit is None else limit
 
         conn = self._conn()
+        # Decided before the filters because the trackId one depends on it: a
+        # merged song is ONE song on a global list AND on its own page - see
+        # _mergesCanonically. `e` is whichever track the row is really about.
+        canonicalJoin = ""
+        e = "t"
+        if self._mergesCanonically(trackId, artistId, albumId):
+            canonicalJoin = self._canonicalTrackJoin()
+            e = "c"
+
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         extraClauses = ""
         if trackId is not None:
-            extraClauses += " AND t.id = ?"
-            params.append(trackId)
+            #< the group's canonical, so asking by EITHER end of a merge returns
+            #  the one canonical row with the group's totals. The route redirects
+            #  when the answer's id differs from the asked id.
+            extraClauses += f" AND {e}.id = ?"
+            params.append(self.resolveCanonicalTrackId(trackId) if e == "c" else trackId)
         if artistId is not None:
             # The EXISTS decides membership; _trackSetClause below adds the
             # seekable twin (see its docstring - this one measured ~985ms
@@ -974,15 +995,6 @@ class PlayQueries:
         if fullPlaysOnly:
             extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
-
-        # A merged song is ONE song on a global list, and its own row on an
-        # album or artist page - see _mergesCanonically. `e` is whichever track
-        # this query is really about: the played row, or the one it merged into.
-        canonicalJoin = ""
-        e = "t"
-        if self._mergesCanonically(trackId, artistId, albumId):
-            canonicalJoin = self._canonicalTrackJoin()
-            e = "c"
 
         rows = conn.execute(
             f"""
@@ -1484,8 +1496,9 @@ class PlayQueries:
         joins = ""
         where = ""
         if trackId is not None:
-            where += " AND p.track_id = ?"
-            params.append(trackId)
+            #< the group, for the same reason as _itemFilterClauses: the only
+            #  trackId caller is getSong's skip-only fallback, i.e. the page
+            where += self._mergeGroupClause(params, trackId, column="p.track_id")
         where += self._idSetClause(params, "p.track_id", trackIds)
         # The artist filter is the track-set clause outright (there is no other
         # artist predicate here to decide membership); the album one still
@@ -1720,9 +1733,10 @@ class PlayQueries:
                        COUNT(*) AS encounters,
                        COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
                        COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
-                       COUNT(DISTINCT p.track_id) AS unique_song_count
+                       COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
+                JOIN tracks tsong ON tsong.id = p.track_id
                 JOIN artists ar ON ar.id = ta.artist_id{joins}
                 WHERE p.username = ?{rangeClause}{filterClause}
                 GROUP BY ar.id
@@ -1891,8 +1905,10 @@ class PlayQueries:
         pins that, and that the two forms select the same plays."""
         extraClauses = ""
         if trackId is not None:
-            extraClauses += " AND track_id = ?"
-            params.append(trackId)
+            #< the whole merge group, not the one release: every trackId caller
+            #  of this seam is the song detail page (play log, pager, chart,
+            #  heatmap, skip summary, bucket span), and that page is global
+            extraClauses += self._mergeGroupClause(params, trackId)
         if artistId is not None:
             extraClauses += " AND plays.track_id IN (SELECT ta.track_id FROM track_artists ta WHERE ta.artist_id = ?)"
             params.append(artistId)
@@ -1947,7 +1963,10 @@ class PlayQueries:
 
     def getPlaysInTimeWindows(self, username: str, windows: list[tuple[float, float]]) -> list[dict]:
         """Raw plays falling in any of the given [startTs, endTs) windows, each
-        with its track name and primary (position-0) artist name.
+        with its track name and primary (position-0) artist name - the
+        CANONICAL's, so the caller's per-(year, track) aggregation counts a
+        merged recording once instead of splitting it across releases and
+        letting a lesser track win the year's "played most" card.
 
         The windows are half-open ranges on played_at, so idx_plays_user_time
         drives one index range scan per window. The previous form matched on
@@ -1967,11 +1986,12 @@ class PlayQueries:
             params.extend((startTs, endTs))
         rows = conn.execute(
             f"""
-            SELECT p.played_at AS played_at, p.track_id AS track_id,
-                   t.name AS track_name, ar.name AS artist_name
+            SELECT p.played_at AS played_at, c.id AS track_id,
+                   c.name AS track_name, ar.name AS artist_name
             FROM plays p
             JOIN tracks t ON t.id = p.track_id
-            LEFT JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            JOIN tracks c ON c.id = COALESCE(t.canonical_id, t.id)
+            LEFT JOIN track_artists ta ON ta.track_id = c.id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? AND p.is_skip=0 AND ({rangeClauses})
             """,

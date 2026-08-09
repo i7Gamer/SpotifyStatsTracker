@@ -1390,14 +1390,16 @@ def register(app, dashboard):
         if song is None:
             return _missingEntityResponse("topSongsPage")
 
-        #< off the row already loaded, rather than asking the database a second
-        #  time on every song page to be told "no": a merged track is a few
-        #  hundred rows in a catalog of tens of thousands
-        canonicalId = song.get("canonicalId")
-        if (canonicalId and canonicalId != track_id
+        #< getSong answers about the whole merge group now, keyed on the
+        #  canonical - so "the row that came back is not the row asked for" IS
+        #  the merged-id signal, off data already loaded. (The canonical row's
+        #  own canonicalId is None, which is why the old key stopped working the
+        #  moment the lookup became group-wide.)
+        answeredId = song.get("id")
+        if (answeredId and answeredId != track_id
                 and not request.headers.get("HX-Request")
                 and request.args.get("ajax") != "true"):
-            return redirect(url_for("songDetailPage", track_id=canonicalId, **request.args))
+            return redirect(url_for("songDetailPage", track_id=answeredId, **request.args))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         # Four modes share this route, and the marker differs by kind. The one
