@@ -775,8 +775,15 @@ class TrackQueries:
            review queue pointless and the disagreement invisible.
         2. An existing canonical is STICKY. Re-electing every pass would move
            the canonical - and every link to it - as play counts drift.
-        3. Never a chain. Every merged track points at a track that is itself
-           canonical, so no reader ever walks a linked list of unknown depth.
+        3. Never a chain, and this one is an invariant rather than a step. A
+           canonical is only ever a track with no pointer of its own: either it
+           was elected from members that all had none, or it is the single value
+           already agreed on - and if THAT track pointed anywhere, its target
+           would be a second value in `existing` and the group would have been
+           skipped by the conflict branch. So no reader ever walks a linked list
+           of unknown depth. (An earlier version also NULLed the canonical's own
+           pointer "to be safe"; mutation testing showed the line could not be
+           reached, which is how the invariant above got noticed at all.)
 
         Idempotent: a second run merges nothing and rewrites nothing. Returns
         {"groups", "merged"} - groups considered, tracks newly pointed."""
@@ -853,9 +860,6 @@ class TrackQueries:
                         (member["id"], canonicalId, isrc, now),
                     )
                     merged += 1
-                #< the elected canonical must not still point somewhere itself
-                conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (canonicalId,))
-                conn.execute("DELETE FROM track_merge_decisions WHERE track_id=?", (canonicalId,))
 
         return {"groups": len(byIsrc), "merged": merged}
 
