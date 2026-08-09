@@ -9,7 +9,8 @@ from conftest import DatabaseTestCase, normalizeTrackForTest
 from Database.database import Database
 from Database.repository import TRACK_ISRC_RETRY_SECONDS
 from Database.workers.metadata_backfiller import (
-    CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT, TRACK_BATCH_SIZE,
+    CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT, ISRC_QUOTA_BACKOFF_SECONDS,
+    TRACK_BATCH_SIZE,
 )
 
 # A 22-character alphanumeric id is what looksLikeSpotifyTrackId accepts; the
@@ -247,6 +248,102 @@ class TestPerIdIsrcLookups(DatabaseTestCase):
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertIsNone(self._attempted(conn, REAL_ID))
+
+    def _rateLimited(self, retryAfter=None):
+        response = MagicMock()
+        response.status_code = 429
+        response.text = '{"error":{"status":429,"message":"Too many requests","reason":"QUOTA_EXCEEDED"}}'
+        response.headers = {"Retry-After": retryAfter} if retryAfter is not None else {}
+        return response
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_quota_refusal_stands_the_step_down_across_cycles(self, mock_get, mock_logger):
+        """Breaking the batch is not enough - the next cycle starts five minutes
+        later and asks again.
+
+        Measured on the live instance: Spotify answered QUOTA_EXCEEDED at 16:24
+        and was still answering it 15.5 hours and 557 requests later, because
+        every cycle walked straight back into it. A quota window is not a burst
+        limit that clears in seconds, and retrying inside one is what keeps you
+        in it."""
+        db = self._db()
+        conn = db.repo._conn()
+        for i in range(10):
+            _insertTrack(conn, f"{i:022d}")
+        mock_get.return_value = self._rateLimited()
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+        callsAfterFirstCycle = mock_get.call_count
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(mock_get.call_count, callsAfterFirstCycle,
+                         "the second cycle asked again while still quota-limited")
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_the_stand_down_lifts_when_the_window_passes(self, mock_get, mock_logger):
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._rateLimited(retryAfter="1")
+
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+        mock_get.return_value = self._response(trackId=REAL_ID)
+
+        #< the window elapses; nothing about this test depends on real time
+        db._isrcBackoffUntil = 0.0
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(self._isrc(conn, REAL_ID), "USRC12345678")
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_spotifys_own_retry_after_is_honoured_over_the_default(self, mock_get, mock_logger):
+        """It is Spotify's window, not ours to guess at."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._rateLimited(retryAfter="120")
+
+        before = time.time()
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertGreaterEqual(db._isrcBackoffUntil, before + 120)
+        self.assertLess(db._isrcBackoffUntil, before + 120 + 60)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_missing_retry_after_falls_back_to_the_default_stand_down(self, mock_get, mock_logger):
+        """Spotify does not always send one, and "no header" must not read as
+        "retry immediately"."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._rateLimited()
+
+        before = time.time()
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertGreaterEqual(db._isrcBackoffUntil, before + ISRC_QUOTA_BACKOFF_SECONDS)
+
+    @patch("Database.database.logger")
+    @patch("requests.get")
+    def test_a_stood_down_step_mints_no_token(self, mock_get, mock_logger):
+        """Standing down has to happen before the token, or a quota wall still
+        costs a refresh round-trip every five minutes for as long as it lasts."""
+        db = self._db()
+        conn = db.repo._conn()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._rateLimited()
+        db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
+
+        minted = []
+        db._backfillTrackIsrcs(lambda: minted.append(1) or "mock_token",
+                               MagicMock(is_set=MagicMock(return_value=False)))
+
+        self.assertEqual(minted, [])
 
     @patch("Database.database.logger")
     @patch("requests.get")

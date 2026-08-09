@@ -73,6 +73,37 @@ TOKEN_REFRESH_REAUTH_THRESHOLD = 3
 # because it is the one that says stopping now helps.
 SPOTIFY_RATE_LIMIT_STATUS = 429
 
+# How long to stand the ISRC step down when Spotify answers 429 without saying
+# for how long.
+#
+# Measured, not chosen: the live instance drew QUOTA_EXCEEDED at 16:24 on
+# 2026-08-08 and was still drawing it 15.5 hours and 557 requests later, because
+# breaking the BATCH left the next cycle free to walk back into the wall five
+# minutes on. A quota window is not a burst limit that clears in seconds, and
+# retrying inside one is part of what keeps you in it.
+#
+# An hour is the compromise: short enough that a window which has quietly
+# reopened is noticed the same day, long enough that a closed one costs 24
+# requests rather than 288.
+ISRC_QUOTA_BACKOFF_SECONDS = 3600
+# A malformed or absurd Retry-After must not park the queue for a week.
+ISRC_QUOTA_BACKOFF_MAX_SECONDS = 24 * 3600
+
+
+def _retryAfterSeconds(resp) -> float:
+    """How long Spotify asked us to wait, or the default stand-down.
+
+    Honoured rather than guessed at wherever it is offered: the window belongs
+    to Spotify, and a retry inside it is worse than useless. Capped both ways -
+    a missing or unparseable header is not "retry immediately", and an absurd
+    one is not "stop for a week"."""
+    header = (getattr(resp, "headers", None) or {}).get("Retry-After")
+    try:
+        seconds = float(header)
+    except (TypeError, ValueError):
+        return ISRC_QUOTA_BACKOFF_SECONDS
+    return max(0.0, min(seconds, ISRC_QUOTA_BACKOFF_MAX_SECONDS))
+
 
 def _responseDetail(resp) -> str:
     """`status <code>: <body>` for a log line - on one line, and bounded.
@@ -258,6 +289,12 @@ class MetadataBackfillMixin:
         if stop_event.is_set():
             return
 
+        #< before the queue read and before the token: a quota wall that lasts
+        #  hours must not cost a refresh round-trip every five minutes while it
+        #  does. See ISRC_QUOTA_BACKOFF_SECONDS for what standing down is worth.
+        if _dbmod.time.time() < getattr(self, "_isrcBackoffUntil", 0.0):
+            return
+
         import requests
 
         target_ids = []
@@ -332,9 +369,16 @@ class MetadataBackfillMixin:
                             firstFailure = _responseDetail(resp)
                         failures += 1
                         consecutiveFailures += 1
-                        #< the API asking for less; the rest of the batch waits
-                        #  for the next cycle rather than being spent proving it
+                        #< the API asking for less. The rest of the batch stops,
+                        #  and so do the cycles after it - a quota window
+                        #  outlasts the five minutes until the next one
                         rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
+                        if rateLimited:
+                            standDown = _retryAfterSeconds(resp)
+                            self._isrcBackoffUntil = _dbmod.time.time() + standDown
+                            _dbmod.logger.warning(
+                                "[Backfiller-%s] Spotify refused on quota; standing the ISRC "
+                                "backfill down for %.0f minutes", self.user, standDown / 60)
                 except Exception as e:
                     #< caught HERE, per track, and not by the batch's handler
                     #  below: one reset connection used to cost the other
