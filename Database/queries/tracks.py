@@ -787,6 +787,47 @@ class TrackQueries:
 
         Idempotent: a second run merges nothing and rewrites nothing. Returns
         {"groups", "merged"} - groups considered, tracks newly pointed."""
+        plan = self._planIsrcMerges()
+        if not plan["groups"]:
+            return {"groups": 0, "merged": 0}
+
+        conn = self._conn()
+        merged = 0
+        now = time.time()
+        with conn:
+            for group in plan["groups"]:
+                canonicalId = group["canonical"]["trackId"]
+                for member in group["members"]:
+                    conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
+                                 (canonicalId, member["trackId"]))
+                    conn.execute(
+                        """
+                        INSERT INTO track_merge_decisions
+                            (track_id, canonical_id, reason, evidence, decided_at, decided_by)
+                        VALUES (?, ?, 'isrc', ?, ?, NULL)
+                        ON CONFLICT(track_id) DO UPDATE SET
+                            canonical_id=excluded.canonical_id, reason=excluded.reason,
+                            evidence=excluded.evidence, decided_at=excluded.decided_at
+                        """,
+                        (member["trackId"], canonicalId, group["isrc"], now),
+                    )
+                    merged += 1
+        return {"groups": len(plan["groups"]), "merged": merged}
+
+    def previewMergeTracksByIsrc(self) -> dict:
+        """What a run WOULD do, without doing it.
+
+        Same planner, no writes - so the answer on the admin page is the answer,
+        not an estimate of it. A merge is global and moves every account's
+        numbers at once; being able to look first is what makes turning it on a
+        decision rather than a leap."""
+        return self._planIsrcMerges()
+
+    def _planIsrcMerges(self) -> dict:
+        """The groups a run would act on, and which track each would fold into.
+
+        Split out so the preview and the run cannot drift: one of them being
+        wrong is worse than neither existing."""
         conn = self._conn()
         # Only ISRCs that more than one track carries; a group of one is nothing
         # to decide. Fabricated ids are already excluded by getTracksMissingIsrc
@@ -804,64 +845,102 @@ class TrackQueries:
             """
         ).fetchall()
         if not rows:
-            return {"groups": 0, "merged": 0}
+            return {"groups": [], "merged": 0}
 
         pinned = {row["track_id"] for row in conn.execute(
             "SELECT track_id FROM track_merge_decisions WHERE decided_by IS NOT NULL")}
+        names = dict(conn.execute(
+            "SELECT t.id, t.name FROM tracks t WHERE t.isrc IS NOT NULL AND t.isrc <> ''"))
 
         byIsrc = {}
         for row in rows:
             byIsrc.setdefault(row["isrc"], []).append(row)
 
-        merged = 0
-        now = time.time()
+        groups = []
+        for isrc, members in byIsrc.items():
+            #< rule 1: a pinned track takes no part at all - neither merged
+            #  nor elected, since electing it would move others onto a track
+            #  a person has said is not the same recording
+            members = [m for m in members if m["id"] not in pinned]
+            if len(members) < 2:
+                continue
+
+            #< rule 2: whatever this group already agreed on wins. Any member
+            #  already pointing somewhere names the canonical; otherwise
+            #  elect the most-played, tie-broken by first-seen then id so the
+            #  answer is deterministic rather than whatever SQLite returned
+            existing = {m["canonical_id"] for m in members if m["canonical_id"]}
+            if len(existing) == 1:
+                canonicalId = existing.pop()
+            elif existing:
+                #< two canonicals for one recording: a merge from before this
+                #  ran, or a hand edit. Left alone rather than guessed at
+                continue
+            else:
+                canonicalId = max(
+                    members,
+                    key=lambda m: (m["play_count"], -(m["created_at"] or 0), m["id"]),
+                )["id"]
+
+            toMerge = [m for m in members
+                       if m["id"] != canonicalId and m["canonical_id"] != canonicalId]
+            if not toMerge:
+                continue   #< everything already points where it should
+            groups.append({
+                "isrc": isrc,
+                "canonical": {"trackId": canonicalId, "name": names.get(canonicalId, "")},
+                "members": [{"trackId": m["id"], "name": names.get(m["id"], ""),
+                             "plays": m["play_count"]} for m in toMerge],
+                "plays": sum(m["play_count"] for m in toMerge),
+            })
+
+        #< biggest first, so the admin preview leads with what matters
+        groups.sort(key=lambda g: -g["plays"])
+        return {"groups": groups, "merged": sum(len(g["members"]) for g in groups)}
+
+    def unmergeTrack(self, trackId: str, decidedBy: str) -> None:
+        """Take one track back out of its merge, and KEEP it out.
+
+        Both halves matter: clearing canonical_id alone would last exactly until
+        the next matcher pass re-merged it. The decision row flips to a manual
+        "not the same recording" verdict - decided_by names who - which is
+        precisely the row the matcher refuses to overrule."""
+        conn = self._conn()
         with conn:
-            for isrc, members in byIsrc.items():
-                #< rule 1: a pinned track takes no part at all - neither merged
-                #  nor elected, since electing it would move others onto a track
-                #  a person has said is not the same recording
-                members = [m for m in members if m["id"] not in pinned]
-                if len(members) < 2:
-                    continue
+            conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (trackId,))
+            conn.execute(
+                """
+                INSERT INTO track_merge_decisions
+                    (track_id, canonical_id, reason, evidence, decided_at, decided_by)
+                VALUES (?, NULL, 'manual-split', NULL, ?, ?)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    canonical_id=NULL, reason='manual-split', evidence=NULL,
+                    decided_at=excluded.decided_at, decided_by=excluded.decided_by
+                """,
+                (trackId, time.time(), decidedBy),
+            )
 
-                #< rule 2: whatever this group already agreed on wins. Any member
-                #  already pointing somewhere names the canonical; otherwise
-                #  elect the most-played, tie-broken by first-seen then id so the
-                #  answer is deterministic rather than whatever SQLite returned
-                existing = {m["canonical_id"] for m in members if m["canonical_id"]}
-                if len(existing) == 1:
-                    canonicalId = existing.pop()
-                elif existing:
-                    #< two canonicals for one recording: a merge from before this
-                    #  ran, or a hand edit. Left alone rather than guessed at
-                    continue
-                else:
-                    canonicalId = max(
-                        members,
-                        key=lambda m: (m["play_count"], -(m["created_at"] or 0), m["id"]),
-                    )["id"]
+    def unmergeAllIsrcMerges(self) -> int:
+        """Undo everything the MATCHER did, leaving every human verdict alone.
 
-                for member in members:
-                    #< rule 3: the canonical points at nothing, so nothing points
-                    #  through it
-                    if member["id"] == canonicalId or member["canonical_id"] == canonicalId:
-                        continue
-                    conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
-                                 (canonicalId, member["id"]))
-                    conn.execute(
-                        """
-                        INSERT INTO track_merge_decisions
-                            (track_id, canonical_id, reason, evidence, decided_at, decided_by)
-                        VALUES (?, ?, 'isrc', ?, ?, NULL)
-                        ON CONFLICT(track_id) DO UPDATE SET
-                            canonical_id=excluded.canonical_id, reason=excluded.reason,
-                            evidence=excluded.evidence, decided_at=excluded.decided_at
-                        """,
-                        (member["id"], canonicalId, isrc, now),
-                    )
-                    merged += 1
-
-        return {"groups": len(byIsrc), "merged": merged}
+        The full-revert half of reversibility. Nothing a merge writes is
+        destructive - canonical_id is a pointer and the decision rows are
+        additive - so undoing a run is clearing them, not restoring a backup.
+        Manual rows (decided_by set) survive: a revert means "undo what the
+        matcher did", not "forget what anyone decided". Returns rows cleared."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                """
+                UPDATE tracks SET canonical_id=NULL WHERE id IN (
+                    SELECT track_id FROM track_merge_decisions
+                    WHERE decided_by IS NULL AND reason='isrc'
+                )
+                """
+            )
+            conn.execute(
+                "DELETE FROM track_merge_decisions WHERE decided_by IS NULL AND reason='isrc'")
+        return cur.rowcount
 
     def updateTrackIsrcs(self, isrcByTrackId: dict[str, str]) -> None:
         """Store the ISRCs a backfill response carried. Blank values are skipped

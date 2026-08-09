@@ -507,6 +507,19 @@ class MetadataBackfillMixin:
                     # ordering is also why it swallows its own failures.
                     self._backfillTrackIsrcs(getAccessToken, stop_event)
 
+                    # New ISRCs can complete a pair, so each batch that
+                    # recorded any re-runs the matcher - this is what "new
+                    # tracks after the checkbox" means: merges stay current
+                    # without anyone pressing anything. Gated on the toggle,
+                    # idempotent, and a few hundred rows at most; skipped
+                    # entirely while OFF so a disabled feature costs nothing.
+                    if self.repo.isTrackMergeEnabled():
+                        mergeSummary = self.repo.mergeTracksByIsrc()
+                        if mergeSummary["merged"]:
+                            _dbmod.logger.info(
+                                "[Backfiller-%s] ISRC merge: %d track(s) newly merged",
+                                self.user, mergeSummary["merged"])
+
                     #< here AND after the album branch's own use below, because
                     #  either step can be the one that asks for the token first
                     #  (this one has work in the steady state; the album queue

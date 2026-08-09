@@ -123,6 +123,7 @@ FRIENDS_NOW_PLAYING_SETTING_KEY = "friends_now_playing_enabled"
 # clear every structural unknown, not enough to make it the default. Turning it
 # on is deliberate; the poll loop stays underneath as the fallback.
 PUSH_LISTENER_SETTING_KEY = "push_listener_enabled"
+TRACK_MERGE_SETTING_KEY = "track_merge_enabled"
 
 # Instance-wide skip threshold (app_settings). This is the single, admin-tunable
 # boundary between a "skip" and a real listen - it replaced both the old fixed

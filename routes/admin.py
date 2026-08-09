@@ -416,6 +416,9 @@ def register(app, dashboard):
             email_verification_enabled=dashboard.repo.isEmailVerificationEnabled(),
             milestone_recalc_enabled=dashboard.repo.isMilestoneRecalcEnabled(),
             friends_now_playing_enabled=dashboard.repo.isFriendsNowPlayingEnabled(),
+            track_merge_enabled=dashboard.repo.isTrackMergeEnabled(),
+            track_merge_preview=(None if dashboard.repo.isTrackMergeEnabled()
+                                 else dashboard.repo.previewMergeTracksByIsrc()),
             genre_backfill_retry_days=dashboard.repo.getGenreBackfillRetryDays(),
             bio_backfill_retry_days=dashboard.repo.getBioBackfillRetryDays(),
             backfill_retry_min=BACKFILL_RETRY_DAYS_MIN, backfill_retry_max=BACKFILL_RETRY_DAYS_MAX,
@@ -521,7 +524,27 @@ def register(app, dashboard):
         dashboard.repo.setMilestoneRecalcEnabled(request.form.get("milestone_recalc") == "1")
         dashboard.repo.setTagsEnabled(request.form.get("tags") == "1")
         dashboard.repo.setFriendsNowPlayingEnabled(request.form.get("friends_now_playing") == "1")
-        return redirect(url_for("adminPage", tab="settings", message="User settings saved."))
+
+        # The merge toggle acts on its EDGES, which is what makes it a real
+        # undo switch rather than a display filter: on runs the ISRC matcher
+        # now (the backfiller keeps it current afterwards - see
+        # _metadataBackfillLoop), off takes back everything the matcher ever
+        # did, manual verdicts excepted. Both are idempotent and cheap, and
+        # no read path consults the setting - by the time this returns, the
+        # data already says whatever the checkbox now says.
+        mergeWanted = request.form.get("track_merge") == "1"
+        message = "User settings saved."
+        if mergeWanted != dashboard.repo.isTrackMergeEnabled():
+            dashboard.repo.setTrackMergeEnabled(mergeWanted)
+            if mergeWanted:
+                summary = dashboard.repo.mergeTracksByIsrc()
+                message = (f"User settings saved. Track merge enabled: "
+                           f"{summary['merged']} track(s) merged into {len(summary['groups'])} song(s).")
+            else:
+                undone = dashboard.repo.unmergeAllIsrcMerges()
+                message = (f"User settings saved. Track merge disabled: "
+                           f"{undone} track(s) unmerged; manual decisions kept.")
+        return redirect(url_for("adminPage", tab="settings", message=message))
     app.add_url_rule("/admin/user_settings", "adminUserSettings", adminUserSettings, methods=["POST"])
 
     @requiresAdmin

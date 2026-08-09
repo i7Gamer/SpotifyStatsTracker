@@ -425,6 +425,26 @@ class SettingQueries:
         history."""
         return self._isFeatureEnabled(MILESTONES_SETTING_KEY)
 
+    def isTrackMergeEnabled(self) -> bool:
+        """Whether duplicate tracks (same recording, released more than once)
+        are merged in the global stats.
+
+        Defaults OFF like PUSH_LISTENER_SETTING_KEY, and unlike every other
+        feature toggle: a merge moves every account's numbers at once, so it has
+        to be a decision someone made, not a default they inherited.
+
+        The toggle gates the DATA rather than the queries. Turning it on runs
+        the ISRC matcher (and the backfiller keeps re-running it as new ISRCs
+        arrive); turning it off unmerges everything the matcher did, manual
+        verdicts excepted. The read paths honour canonical_id unconditionally -
+        which is safe precisely because it is only ever set while this is on,
+        and it is what makes switching off a genuine, instant, lossless undo
+        rather than a filter."""
+        return self.getAppSetting(TRACK_MERGE_SETTING_KEY, APP_SETTING_FALSE) == APP_SETTING_TRUE
+
+    def setTrackMergeEnabled(self, enabled: bool) -> None:
+        self._setFeatureEnabled(TRACK_MERGE_SETTING_KEY, enabled)
+
     def setMilestonesEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(MILESTONES_SETTING_KEY, enabled)
 

@@ -384,6 +384,13 @@ class TestAdminUserSettingsHints(AdminRouteTestBase):
         "Tags": "tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page",
         "Friends' current track on the dashboard":
             "only between accepted shares; each user can also opt out on their own Profile",
+        #< the mocked repo's isTrackMergeEnabled() returns a truthy MagicMock,
+        #  so the route passes track_merge_preview=None and the hint renders its
+        #  enabled-state wording; the dry-run wording needs a real repo and is
+        #  covered by TestTrackMergeToggle instead
+        "Merge duplicate tracks (same recording released more than once)":
+            "counts a song released on several albums once in the global stats; "
+            "toggling off undoes every automatic merge",
         "Enable email notifications instance-wide":
             "When disabled, outgoing emails are paused and the Notifications section is hidden on user profiles.",
     }

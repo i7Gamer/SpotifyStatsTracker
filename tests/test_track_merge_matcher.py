@@ -255,3 +255,123 @@ class TestTheDecisionTrail(TrackMergeTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEveryMergeCanBeUndone(TrackMergeTestCase):
+    """The guarantee the whole feature rests on: nothing here destroys
+    information, so any merge can be taken back.
+
+    A merge writes canonical_id (a pointer, reversible) and a decision row
+    (additive). It never touches a play, never rewrites a track, never deletes
+    anything. That is what makes "undo" a matter of clearing a column rather
+    than restoring a backup - and it is a property to keep, not a coincidence."""
+
+    def test_a_merge_touches_nothing_that_cannot_be_put_back(self):
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=10)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=2)
+        conn = db.repo._conn()
+        before = {
+            "plays": conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0],
+            "tracks": conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0],
+            "names": sorted(r[0] for r in conn.execute("SELECT name FROM tracks")),
+        }
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0], before["plays"])
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0], before["tracks"])
+        self.assertEqual(sorted(r[0] for r in conn.execute("SELECT name FROM tracks")), before["names"])
+
+    def test_unmerging_one_track_puts_it_back_and_keeps_it_back(self):
+        """Both halves matter. Clearing canonical_id alone would last exactly
+        until the next matcher run re-merged it, which is not an undo."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=10)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=2)
+        db.repo.mergeTracksByIsrc()
+
+        db.repo.unmergeTrack("B" * 22, decidedBy="timorzipa")
+        db.repo.mergeTracksByIsrc()   #< the matcher runs again and must not undo the undo
+
+        self.assertIsNone(self._canonical(db, "B" * 22))
+        self.assertEqual(self._decision(db, "B" * 22)["decided_by"], "timorzipa")
+
+    def test_undoing_the_whole_run_clears_every_automatic_merge(self):
+        db = self._db()
+        for trackId, plays in (("A" * 22, 9), ("B" * 22, 2), ("C" * 22, 1)):
+            self._track(db, trackId, isrc=ISRC_A, plays=plays)
+        db.repo.mergeTracksByIsrc()
+
+        undone = db.repo.unmergeAllIsrcMerges()
+
+        self.assertEqual(undone, 2)
+        for trackId in ("A" * 22, "B" * 22, "C" * 22):
+            self.assertIsNone(self._canonical(db, trackId))
+            self.assertIsNone(self._decision(db, trackId))
+
+    def test_undoing_the_run_leaves_a_persons_decisions_alone(self):
+        """A full revert is "undo what the matcher did", not "forget what anyone
+        decided" - those verdicts are the expensive kind to recreate."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=9)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=2)
+        db.repo.mergeTracksByIsrc()
+        db.repo.unmergeTrack("B" * 22, decidedBy="timorzipa")
+
+        db.repo.unmergeAllIsrcMerges()
+
+        self.assertEqual(self._decision(db, "B" * 22)["decided_by"], "timorzipa")
+
+    def test_a_full_revert_is_repeatable_and_re_mergeable(self):
+        """Undo, then redo: the matcher is the only thing that decides, so a
+        revert cannot be a one-way door either."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=9)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=2)
+        db.repo.mergeTracksByIsrc()
+        db.repo.unmergeAllIsrcMerges()
+
+        self.assertEqual(db.repo.unmergeAllIsrcMerges(), 0)   #< idempotent
+        self.assertEqual(db.repo.mergeTracksByIsrc()["merged"], 1)
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+
+
+class TestThePreview(TrackMergeTestCase):
+    """What the admin page shows before anything is written."""
+
+    def test_it_describes_what_a_run_would_do(self):
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=9, name="Shared Song")
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=2, name="Shared Song")
+
+        preview = db.repo.previewMergeTracksByIsrc()
+
+        self.assertEqual(preview["merged"], 1)
+        self.assertEqual(len(preview["groups"]), 1)
+        group = preview["groups"][0]
+        self.assertEqual(group["canonical"]["trackId"], "A" * 22)
+        self.assertEqual([m["trackId"] for m in group["members"]], ["B" * 22])
+        self.assertEqual(group["isrc"], ISRC_A)
+
+    def test_the_preview_writes_nothing(self):
+        """The whole point: it answers "what would happen" without it happening."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=9)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=2)
+
+        db.repo.previewMergeTracksByIsrc()
+
+        self.assertIsNone(self._canonical(db, "B" * 22))
+        self.assertIsNone(self._decision(db, "B" * 22))
+
+    def test_the_preview_agrees_with_the_run_that_follows(self):
+        """A preview nobody can trust is worse than none."""
+        db = self._db()
+        for trackId, plays in (("A" * 22, 9), ("B" * 22, 2), ("C" * 22, 1)):
+            self._track(db, trackId, isrc=ISRC_A, plays=plays)
+
+        preview = db.repo.previewMergeTracksByIsrc()
+        applied = db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(preview["merged"], applied["merged"])
