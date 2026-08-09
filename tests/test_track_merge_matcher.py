@@ -165,6 +165,45 @@ class TestTheMatcherDoesNotOverreach(TrackMergeTestCase):
 
         self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
 
+    def test_two_canonicals_for_one_recording_are_left_alone(self):
+        """The branch that actually guarantees no chains: if the group cannot
+        agree where it points, the matcher declines rather than picking.
+
+        Reachable only by a hand edit or a merge that predates this, but it is
+        what makes "a canonical never points anywhere itself" true - a member
+        pointing outside the group puts a second value in play, and this is the
+        branch that catches it. Untested until mutation testing showed the
+        belt-and-braces line I had written instead could never run."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=10)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=5)
+        self._track(db, "C" * 22, isrc=ISRC_A, plays=1)
+        conn = db.repo._conn()
+        with conn:   #< two members pointing at different places
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", ("A" * 22, "B" * 22))
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", ("B" * 22, "C" * 22))
+
+        summary = db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(summary["merged"], 0)
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        self.assertEqual(self._canonical(db, "C" * 22), "B" * 22)
+
+    def test_a_canonical_never_points_anywhere_itself(self):
+        """Stated as the property readers depend on, rather than as a step: a
+        merged track's target must be a genuine endpoint."""
+        db = self._db()
+        for trackId, plays in (("A" * 22, 1), ("B" * 22, 50), ("C" * 22, 3)):
+            self._track(db, trackId, isrc=ISRC_A, plays=plays)
+
+        db.repo.mergeTracksByIsrc()
+
+        conn = db.repo._conn()
+        for trackId, in conn.execute("SELECT id FROM tracks WHERE canonical_id IS NOT NULL"):
+            target = self._canonical(db, trackId)
+            self.assertIsNone(self._canonical(db, target),
+                              f"{trackId} points at {target}, which points on again")
+
     def test_running_it_again_changes_nothing(self):
         db = self._db()
         self._track(db, "A" * 22, isrc=ISRC_A, plays=10)
