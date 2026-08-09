@@ -289,9 +289,22 @@ class MetadataBackfillMixin:
         if stop_event.is_set():
             return
 
-        #< before the queue read and before the token: a quota wall that lasts
-        #  hours must not cost a refresh round-trip every five minutes while it
-        #  does. See ISRC_QUOTA_BACKOFF_SECONDS for what standing down is worth.
+        # Before the queue read and before the token: a quota wall that lasts
+        # hours must not cost a refresh round-trip every five minutes while it
+        # does. See ISRC_QUOTA_BACKOFF_SECONDS for what standing down is worth.
+        #
+        # Per USER, and that is correct rather than incidental: Spotify meters
+        # per registered app, and each account here has its own. Measured when
+        # all three hit the wall together on 2026-08-08 - Spotify answered them
+        # 392, 431 and 430 minutes, and a shared budget answers one window to
+        # everyone. They ran out at the same moment because they consume at the
+        # same rate on the same five-minute schedule, not because they share
+        # anything.
+        #
+        # So do NOT "optimise" this into a process-wide stand-down: it would
+        # idle two accounts that still have quota. The one setup where sharing
+        # WOULD be right is every account pointed at a single app - if that ever
+        # happens here, key this on the client_id rather than on the instance.
         if _dbmod.time.time() < getattr(self, "_isrcBackoffUntil", 0.0):
             return
 
