@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Phase 5's open question, measured: what does grouping by canonical track cost?
 
 Three designs for the same answer, on a COPY of the live database with a
@@ -13,13 +15,14 @@ maintain. The eleven _trackSetClause call sites exist specifically to keep these
 scans off the tracks join, so B is the one that has to be proven, not assumed -
 this repo has measured and rejected three plausible indexes on this table.
 """
-# SPDX-FileCopyrightText: 2026 i7Gamer
-# SPDX-License-Identifier: AGPL-3.0-or-later
 import sqlite3
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\Administrator\Documents\Cursor\i7Gamer\SpotifyStatsTracker\tools")
+#< beside this file, not an absolute path: the first committed version carried
+#  the author's own checkout location and ran nowhere else
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from measure_track_merge_candidates import groupsBy, titleKey, load  # noqa: E402
 
 DB = sys.argv[1]
@@ -132,14 +135,34 @@ def main():
         verdict = f"join {tb / ta:.1f}x, denorm {tc / ta:.1f}x"
         print(f"  {label:34} {ta:9.1f}ms {tb:9.1f}ms {tc:9.1f}ms   {verdict}")
 
-    # The write path the last index experiment regressed by 695%.
-    conn = sqlite3.connect(DB)
-    start = time.perf_counter()
-    with conn:
-        conn.execute("UPDATE plays SET is_skip = is_skip WHERE username=?", (user,))
-    print(f"\n  recomputeSkipFlags-shaped write over {plays} rows, WITH the denormalised "
-          f"column+index present: {(time.perf_counter() - start) * 1000:.0f}ms")
-    conn.close()
+    # C's write cost is the per-play INSERT, not a recomputeSkipFlags-shaped
+    # rewrite. The first version of this measured the latter - and measured
+    # nothing, because `UPDATE plays SET is_skip = is_skip` touches neither the
+    # new column nor its index, so SQLite maintains neither.
+    trackId = sqlite3.connect(DB).execute("SELECT track_id FROM plays LIMIT 1").fetchone()[0]
+    print()
+    for label, withColumn in (("without C's column + index", False), ("with C's column + index", True)):
+        conn = sqlite3.connect(DB)
+        with conn:
+            if withColumn:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_plays_user_canonical "
+                             "ON plays(username, canonical_track_id)")
+            else:
+                conn.execute("DROP INDEX IF EXISTS idx_plays_user_canonical")
+        columns = "username, track_id, played_at, time_played, is_skip"
+        values = "?, ?, ?, 1000, 0"
+        if withColumn:
+            columns += ", canonical_track_id"
+            values += ", ?"
+        start = time.perf_counter()
+        with conn:
+            for offset in range(2000):
+                row = (user, trackId, 2e9 + offset) + ((trackId,) if withColumn else ())
+                conn.execute(f"INSERT OR IGNORE INTO plays ({columns}) VALUES ({values})", row)
+        print(f"  2000 inserts {label:30} {(time.perf_counter() - start) * 1000:7.0f}ms")
+        with conn:
+            conn.execute("DELETE FROM plays WHERE played_at >= 2e9 AND played_at < 2e9 + 2000")
+        conn.close()
 
 
 if __name__ == "__main__":
