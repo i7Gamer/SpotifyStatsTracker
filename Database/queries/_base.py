@@ -488,6 +488,22 @@ class SqlFragments:
         placeholders = ",".join("?" for _ in ids)
         return f" AND {playsColumn} IN ({subquery.format(placeholders=placeholders)})"
 
+    def _anyTrackMerges(self) -> bool:
+        """Whether any track is merged at all - the gate that keeps the merge
+        feature free while it is off.
+
+        The per-play canonical hop in the genre and artist aggregates measured
+        +87% and +193% on a real library, which this repo's own standards call
+        unshippable as a constant tax. But the hop buys nothing while
+        canonical_id is NULL everywhere - which is every instance until the
+        admin toggle is flipped - so those queries ask this first and keep
+        their original fast shape until a merge actually exists. With merges
+        present the probe short-circuits on the first hit; without them it is
+        one ~25k-row column scan, ~1ms, against the ~230ms it saves."""
+        row = self._conn().execute(
+            "SELECT 1 FROM tracks WHERE canonical_id IS NOT NULL LIMIT 1").fetchone()
+        return row is not None
+
     def _mergeGroupClause(self, params: list, trackId: str, column: str = "track_id") -> str:
         """Membership filter for the WHOLE merge group of `trackId`.
 

@@ -748,6 +748,19 @@ class PlayQueries:
         ).fetchall()
         return [row["id"] for row in rows]
 
+    def _uniqueSongCountSql(self) -> tuple[str, str]:
+        """(join, COUNT expression) for "unique songs" on the artist lists.
+
+        A merged recording is one song, so the count collapses the group - but
+        the tracks probe that does it measured +193% per query, paid on every
+        play row. Free while nothing is merged (the common state, and every
+        instance with the toggle off), so the join only exists once a merge
+        does. See _anyTrackMerges."""
+        if self._anyTrackMerges():
+            return ("\n                JOIN tracks tsong ON tsong.id = p.track_id",
+                    "COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count")
+        return "", "COUNT(DISTINCT p.track_id) AS unique_song_count"
+
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
                              sortBy: str = "plays", limit: int | None = None, offset: int = 0,
@@ -805,16 +818,16 @@ class PlayQueries:
             outerFilter += " WHERE " + " AND ".join(self._perWordConditions(
                 params, searchQuery, self._ARTIST_NAME_CONDITION, 1))
         params += [limitValue, offset]
+        tsongJoin, uniqueSongCount = self._uniqueSongCountSql()
         rows = conn.execute(
             f"""
             WITH agg AS (
                 SELECT ta.artist_id AS artist_id,
                        COUNT(*) AS plays, SUM(p.time_played) AS total_time_listened,
                        MIN(p.played_at) AS first_listened_at,
-                       COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count
+                       {uniqueSongCount}
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id
-                JOIN tracks tsong ON tsong.id = p.track_id{aggJoin}
+                JOIN track_artists ta ON ta.track_id = p.track_id{tsongJoin}{aggJoin}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{aggFilter}
                 GROUP BY ta.artist_id
             )
@@ -895,6 +908,7 @@ class PlayQueries:
         if fullPlaysOnly:
             joinClause = self._tracksJoin()
             fullPlaysClause = self._fullPlaysClause(params)
+        tsongJoin, uniqueSongCount = self._uniqueSongCountSql()
         row = conn.execute(
             f"""
             SELECT COALESCE(SUM(plays), 0) AS total_plays,
@@ -902,11 +916,10 @@ class PlayQueries:
                    COALESCE(SUM(total_time_listened), 0) AS total_time_listened
             FROM (
                 SELECT COUNT(*) AS plays,
-                       COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count,
+                       {uniqueSongCount},
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id
-                JOIN tracks tsong ON tsong.id = p.track_id{joinClause}
+                JOIN track_artists ta ON ta.track_id = p.track_id{tsongJoin}{joinClause}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{artistFilter}{fullPlaysClause}
                 GROUP BY ta.artist_id
             )
@@ -1723,6 +1736,7 @@ class PlayQueries:
         else:
             orderBy = "skips DESC, artist_id ASC"   #< the same tiebreakers, minus a prior for one row
         params += [limit, offset]
+        tsongJoin, uniqueSongCount = self._uniqueSongCountSql()
         rows = self._conn().execute(
             f"""
             WITH {libCte + "," if libCte else ""}
@@ -1733,10 +1747,9 @@ class PlayQueries:
                        COUNT(*) AS encounters,
                        COALESCE(SUM(CASE WHEN p.is_skip = 0 THEN p.time_played ELSE 0 END), 0) AS total_time_listened,
                        COALESCE(MIN(CASE WHEN p.is_skip = 0 THEN p.played_at END), MIN(p.played_at)) AS first_listened_at,
-                       COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count
+                       {uniqueSongCount}
                 FROM plays p
-                JOIN track_artists ta ON ta.track_id = p.track_id
-                JOIN tracks tsong ON tsong.id = p.track_id
+                JOIN track_artists ta ON ta.track_id = p.track_id{tsongJoin}
                 JOIN artists ar ON ar.id = ta.artist_id{joins}
                 WHERE p.username = ?{rangeClause}{filterClause}
                 GROUP BY ar.id

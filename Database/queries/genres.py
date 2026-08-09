@@ -67,6 +67,19 @@ class GenreQueries:
         ).fetchone()
         return dict(row)
 
+    def _genreMembershipJoin(self) -> str:
+        """The plays->track_genres join, canonical-aware only when it has to be.
+
+        A merged song's genres are the CANONICAL's rows - genre membership is a
+        property of the song - but the tracks hop that implements that costs a
+        PK probe per play row (+87% measured on the distribution query). While
+        no merge exists the two spellings are equivalent, so the fast direct
+        join runs until one does. See _anyTrackMerges."""
+        if self._anyTrackMerges():
+            return ("JOIN tracks trk ON trk.id = p.track_id\n"
+                    "            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)")
+        return "JOIN track_genres g ON g.track_id = p.track_id"
+
     def getGenrePlayCounts(self, username: str, inherited: int, startTs: float | None = None,
                             endTs: float | None = None, limit: int | None = None) -> list[dict]:
         """[{genre, plays}] over the range, most-played first (name breaks ties -
@@ -84,8 +97,7 @@ class GenreQueries:
             f"""
             SELECT g.genre AS genre, COUNT(*) AS plays
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)
+            {self._genreMembershipJoin()}
             WHERE (? OR g.inherited = 0) AND p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY g.genre
             ORDER BY plays DESC, g.genre ASC{limitClause}
@@ -273,7 +285,7 @@ class GenreQueries:
         how many artists were requeued."""
         conn = self._conn()
         rows = conn.execute(
-            """
+            f"""
             SELECT id, name FROM artists
             WHERE lastfm_attempted_at IS NOT NULL
               AND id NOT IN (SELECT DISTINCT artist_id FROM artist_genres)
@@ -379,8 +391,7 @@ class GenreQueries:
                    g.genre AS genre,
                    COUNT(*) AS plays
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)
+            {self._genreMembershipJoin()}
             WHERE (? OR g.inherited = 0) AND g.genre IN ({genrePlaceholders})
               AND p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY bucket, g.genre
@@ -408,8 +419,7 @@ class GenreQueries:
                    COUNT(*) AS plays,
                    COALESCE(SUM(p.time_played), 0) AS total_time
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0) AND g.genre = ?
+            {self._genreMembershipJoin()} AND (? OR g.inherited = 0) AND g.genre = ?
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}
             GROUP BY bucket
             ORDER BY bucket
@@ -435,8 +445,7 @@ class GenreQueries:
             f"""
             SELECT g.genre AS genre, COUNT(DISTINCT ar.id) AS artist_count
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0)
+            {self._genreMembershipJoin()} AND (? OR g.inherited = 0)
                 AND g.genre IN ({placeholders})
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
@@ -458,8 +467,7 @@ class GenreQueries:
             SELECT COUNT(*) AS plays, COALESCE(SUM(p.time_played), 0) AS listen_ms,
                    MIN(p.played_at) AS first_ts
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)
+            {self._genreMembershipJoin()}
             WHERE (? OR g.inherited = 0) AND g.genre = ? AND p.username = ? AND p.is_skip = 0{rangeClause}
             """,
             params,
@@ -499,8 +507,7 @@ class GenreQueries:
             SELECT ar.id AS id, ar.name AS name, ar.image_id AS image_id,
                    COUNT(DISTINCT p.id) AS play_count
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0) AND g.genre = ?
+            {self._genreMembershipJoin()} AND (? OR g.inherited = 0) AND g.genre = ?
             JOIN track_artists ta ON ta.track_id = p.track_id
             JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}
@@ -527,11 +534,10 @@ class GenreQueries:
             SELECT t.id AS id, t.name AS name, t.image_id AS image_id,
                    ar.name AS artist_name, COUNT(p.id) AS play_count
             FROM plays p
-            JOIN tracks trk ON trk.id = p.track_id
-            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) AND (? OR g.inherited = 0) AND g.genre = ?
+            {self._genreMembershipJoin()} AND (? OR g.inherited = 0) AND g.genre = ?
             -- the CANONICAL row: this is a global list, so a song split across
             -- releases is one row with the group's whole count
-            JOIN tracks t ON t.id = COALESCE(trk.canonical_id, trk.id)
+            JOIN tracks t ON t.id = {"COALESCE(trk.canonical_id, trk.id)" if self._anyTrackMerges() else "p.track_id"}
             LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}
@@ -675,7 +681,7 @@ class GenreQueries:
         position-0 artist, the same structural exclusion
         getTracksMissingGenres applies."""
         row = self._conn().execute(
-            """
+            f"""
             SELECT t.id AS id, t.name AS name, t.album_id AS album_id,
                    ar.id AS artist_id, ar.name AS artist_name
             FROM tracks t
@@ -751,7 +757,7 @@ class GenreQueries:
         """Credited artists for a track at 0 < position <= GENRE_BACKFILL_MAX_ARTIST_POSITION
         (positions 1 through 4), ordered by position ASC."""
         rows = self._conn().execute(
-            """
+            f"""
             SELECT ta.artist_id AS artist_id, ar.name AS artist_name, ta.position AS position
             FROM track_artists ta
             JOIN artists ar ON ar.id = ta.artist_id
@@ -767,7 +773,7 @@ class GenreQueries:
         gained slash/plus/credit transformations. Returns how many artists were requeued."""
         conn = self._conn()
         rows = conn.execute(
-            """
+            f"""
             SELECT id, name FROM artists
             WHERE lastfm_attempted_at IS NOT NULL
               AND id NOT IN (SELECT DISTINCT artist_id FROM artist_genres)
