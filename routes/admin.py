@@ -651,9 +651,22 @@ def register(app, dashboard):
         new master with its own ISRC; a fabricated import row has none at all).
         The page proposes, a person rules, and both verdicts write the pinned
         decision rows every automatic pass already honours."""
+        dismissed = dashboard.repo.getDismissedMergeCandidates()
+        #< formatted here rather than in the template, same as the user table's
+        #  created_at: the repo answers with the stored epoch, and the tz is
+        #  the instance's. An unformattable stamp renders blank rather than
+        #  500-ing the whole page over a decoration.
+        for entry in dismissed["entries"]:
+            entry["decidedOn"] = ""
+            try:
+                entry["decidedOn"] = convertToDatetime(
+                    entry["decidedAt"], tz=db.tz).strftime("%Y-%m-%d %H:%M")
+            except Exception:  # noqa: S110 - see above
+                pass
         return render_template(
             "merge_review.html",
             review=dashboard.repo.getMergeReviewCandidates(),
+            dismissed=dismissed,
             track_merge_enabled=dashboard.repo.isTrackMergeEnabled(),
             message=request.args.get("message"),
             error=request.args.get("error"),
@@ -703,6 +716,23 @@ def register(app, dashboard):
                                 message="Kept separate - this release will not be suggested again."))
     app.add_url_rule("/admin/merge_review/reject", "adminMergeReviewReject",
                      adminMergeReviewReject, methods=["POST"])
+
+    @requiresAdmin
+    def adminMergeReviewUndismiss(username, db):
+        """Admin-only: take back a "not the same recording" so the queue may
+        ask about it again. The 400 covers both a junk id and a track whose
+        row is no longer a dismissal - a shared ISRC can have overruled it into
+        an ordinary merge since the page rendered, and that is undone by the
+        toggle or a split rather than from here."""
+        try:
+            dashboard.repo.undismissMergeCandidate(request.form.get("member", ""))
+        except ValueError:
+            abort(400)
+        return redirect(url_for(
+            "adminMergeReview",
+            message="Back in the queue - this release can be suggested again."))
+    app.add_url_rule("/admin/merge_review/undismiss", "adminMergeReviewUndismiss",
+                     adminMergeReviewUndismiss, methods=["POST"])
 
     @requiresAdmin
     def adminSpotifySettings(username, db):

@@ -230,5 +230,68 @@ class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
         self.assertIsNone(self._canonical(dash, "B" * 22))
 
 
+class TestTheDismissalLog(MergeReviewRouteTestCase):
+    """"Both answers are remembered" was only half true on the page: the merge
+    is visible on the song and splittable there, while the "no" removed a pair
+    from the queue with nothing left to look at."""
+
+    def test_a_dismissal_is_listed_with_a_way_to_take_it_back(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+        dash.repo.dismissMergeCandidate("B" * 22, decidedBy="alice")
+
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+
+        self.assertIn("Kept separate", body)
+        self.assertIn("Psycho Killer - 2005 Remaster", body)
+        self.assertIn("/admin/merge_review/undismiss", body)
+        #< who ruled and when, so a shared instance can tell two admins apart
+        self.assertIn("alice", body)
+
+    def test_the_log_stays_out_of_the_way_until_there_is_something_in_it(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+
+        self.assertNotIn("Kept separate", body)
+
+    def test_an_undismissal_writes_through_and_reports_back(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+        dash.repo.dismissMergeCandidate("B" * 22, decidedBy="alice")
+
+        resp = self._request(dash, "POST", "/admin/merge_review/undismiss",
+                             data={"member": "B" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/admin/merge-review", resp.headers["Location"])
+        self.assertIn("suggested again", unquote_plus(resp.headers["Location"]))
+        #< and the pair is back in the queue the redirect lands on
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+        self.assertIn("Same recording", body)
+        self.assertNotIn("Kept separate", body)
+
+    def test_undismissing_something_nobody_dismissed_is_a_400(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        for member in ("B" * 22, "Z" * 22):
+            self.assertEqual(
+                self._request(dash, "POST", "/admin/merge_review/undismiss",
+                              data={"member": member}).status_code, 400)
+
+    def test_undismissing_is_admin_only(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+        dash.repo.dismissMergeCandidate("B" * 22, decidedBy="alice")
+
+        resp = self._request(dash, "POST", "/admin/merge_review/undismiss",
+                             data={"member": "B" * 22}, isAdmin=False)
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(dash.repo.getDismissedMergeCandidates()["total"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

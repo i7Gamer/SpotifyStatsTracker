@@ -5096,6 +5096,10 @@ html.theme-red {
 .merge-release-label { flex: 1; min-width: 14rem; cursor: pointer; }
 .merge-release-meta { color: var(--muted); }
 .merge-main-badge { color: var(--muted); font-size: 0.9rem; }
+/* Same muted trailing note, on the "Kept separate" log's rows: who ruled and
+   when. Its own name because it is not the badge - a row can never wear both,
+   and one class meaning two things is how a later restyle breaks the other. */
+.merge-decided-by { color: var(--muted); font-size: 0.9rem; }
 .merge-release-actions { display: flex; gap: 0.6rem; }
 /* display:flex above beats the [hidden] attribute's UA display:none, and the
    picker hides this block on whichever row is currently the main version. */

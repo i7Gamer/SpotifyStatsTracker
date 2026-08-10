@@ -15,6 +15,10 @@ from Database.queries._base import *  # noqa: F401,F403 - shared constants/db he
 MERGE_REVIEW_DURATION_TOLERANCE_MS = 3000
 #< display cap only - the returned totals always count the full queue
 MERGE_REVIEW_PAGE_LIMIT = 50
+#< same, for the list of dismissals underneath it. Its own constant because it
+#  is a decision LOG rather than a work queue: nothing in it needs answering,
+#  so it can be trimmed harder if it ever grows past reading.
+MERGE_DISMISSED_PAGE_LIMIT = 50
 
 # A trailing " - X" or "(X)" title segment is a version marker - packaging,
 # not identity - when it contains one of these. "live" is deliberately NOT
@@ -1383,6 +1387,77 @@ class TrackQueries:
                     decided_at=excluded.decided_at, decided_by=excluded.decided_by
                 """,
                 (trackId, time.time(), decidedBy))
+
+    def getDismissedMergeCandidates(self) -> dict:
+        """Every "not the same recording" a person has recorded, newest first.
+
+        The dismissal is the only verdict with nowhere to look at it. A merge
+        shows on the song's page and can be split from there; a split shows as
+        the song standing on its own. A "no" just makes a pair vanish out of
+        the review queue - deliberately, so the queue stops nagging - which
+        also means the page offered no way to find one again, and a decision
+        you cannot find is one you cannot change your mind about.
+
+        Reads only the person's own rows (reason 'manual-reject'). A dismissal
+        that a later shared ISRC overruled is no longer one: mergeTracksByIsrc
+        rewrites it to an ordinary matcher merge, and that is undone by the
+        toggle or a split, not from here.
+
+        Note what it CANNOT show: the row records the release ruled on, not
+        what it was ruled against, because "not the same as anything with this
+        title" is what the verdict means - it is not proposed again against any
+        of them. Returns {"entries" (capped at MERGE_DISMISSED_PAGE_LIMIT),
+        "total"} - the total counts the whole list, not the page."""
+        conn = self._conn()
+        rows = conn.execute(
+            f"""
+            SELECT t.id, t.name, t.duration_ms, d.decided_at, d.decided_by,
+                   al.name AS album_name, COALESCE(pc.play_count, 0) AS play_count
+            FROM track_merge_decisions d
+            JOIN tracks t ON t.id = d.track_id
+            LEFT JOIN albums al ON al.id = t.album_id
+            {self._PLAY_TALLY_JOIN}
+            WHERE d.reason = 'manual-reject'
+            ORDER BY d.decided_at DESC, t.id
+            """
+        ).fetchall()
+        return {
+            "entries": [{"trackId": row["id"], "name": row["name"],
+                         "album": row["album_name"], "plays": row["play_count"],
+                         "durationMs": row["duration_ms"] or 0,
+                         "decidedAt": row["decided_at"],
+                         "decidedBy": row["decided_by"]}
+                        for row in rows[:MERGE_DISMISSED_PAGE_LIMIT]],
+            "total": len(rows),
+        }
+
+    def undismissMergeCandidate(self, trackId: str) -> None:
+        """Take back a "not the same recording": the pair can be asked again.
+
+        Deleting the row rather than writing a third verdict is the point. The
+        queue skips anything a person has answered, so the state that lets it
+        propose the pair again is the one where nobody has - there is no row
+        meaning "un-rejected", and inventing one would be a decision the
+        matcher's rules have never heard of.
+
+        Refuses anything that is not a dismissal. The four verdicts differ by
+        one column each, so an unfiltered DELETE here would silently unpin a
+        merge or a split - the two rows that exist precisely to survive every
+        automatic pass - or erase a matcher decision the toggle owns. Raises
+        ValueError for those, and for a track nobody dismissed.
+
+        No pointer moves and no play changes group, so this drops no Wrapped
+        caches, exactly like the dismissal it undoes."""
+        conn = self._conn()
+        with conn:
+            #< inside the write's own transaction: the row it checks is the row
+            #  it deletes, so a matcher pass landing between the two cannot
+            #  turn this into the deletion of a merge
+            cur = conn.execute(
+                "DELETE FROM track_merge_decisions "
+                "WHERE track_id=? AND reason='manual-reject'", (trackId,))
+            if not cur.rowcount:
+                raise ValueError(f"not a dismissed track: {trackId}")
 
     def updateTrackIsrcs(self, isrcByTrackId: dict[str, str]) -> None:
         """Store the ISRCs a backfill response carried. Blank values are skipped

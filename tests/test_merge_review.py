@@ -574,5 +574,153 @@ class TestDismissal(MergeReviewTestCase):
         self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-merge")
 
 
+class TestSeeingAndUndoingDismissals(MergeReviewTestCase):
+    """The other half of "both answers are remembered": a remembered answer
+    you cannot find is one you cannot change your mind about.
+
+    A dismissal is the only verdict with no surface anywhere - a merge shows on
+    the song's page and can be split there, but "not the same" just removes the
+    pair from the queue forever, and nothing lists what was removed. Undoing it
+    deletes the row outright rather than writing a third verdict: the pair goes
+    back to never-having-been-asked, which is exactly the state that lets the
+    queue propose it again."""
+
+    def _dismissedIds(self, db):
+        return [entry["trackId"]
+                for entry in db.repo.getDismissedMergeCandidates()["entries"]]
+
+    def test_a_dismissal_is_listed_with_what_it_was_and_who_said_so(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", album="The Best Of", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        listing = db.repo.getDismissedMergeCandidates()
+
+        self.assertEqual(listing["total"], 1)
+        entry = listing["entries"][0]
+        self.assertEqual(entry["trackId"], "B" * 22)
+        self.assertEqual(entry["name"], "Song")
+        self.assertEqual(entry["album"], "The Best Of")
+        self.assertEqual(entry["plays"], 2)
+        self.assertEqual(entry["decidedBy"], "timorzipa")
+        self.assertGreater(entry["decidedAt"], 0)
+
+    def test_only_dismissals_are_listed_not_the_other_verdicts(self):
+        """A merge and a split both have their own surface already - the song's
+        own page - and neither is undone by putting a pair back in the queue."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Song", plays=1)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        db.repo.mergeTrackManually("C" * 22, "A" * 22, decidedBy="timorzipa")
+        db.repo.unmergeTrack("C" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._dismissedIds(db), ["B" * 22])
+
+    def test_the_newest_decision_is_listed_first(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song One", plays=5)
+        self._track(db, "B" * 22, "Song One", plays=2)
+        self._track(db, "C" * 22, "Song Two", plays=5)
+        self._track(db, "D" * 22, "Song Two", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        with patch("Database.queries.tracks.time.time", return_value=2e9):
+            db.repo.dismissMergeCandidate("D" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._dismissedIds(db), ["D" * 22, "B" * 22])
+
+    def test_the_page_cap_reports_what_it_cut(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song One", plays=5)
+        self._track(db, "B" * 22, "Song One", plays=2)
+        self._track(db, "C" * 22, "Song Two", plays=5)
+        self._track(db, "D" * 22, "Song Two", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        db.repo.dismissMergeCandidate("D" * 22, decidedBy="timorzipa")
+
+        with patch("Database.queries.tracks.MERGE_DISMISSED_PAGE_LIMIT", 1):
+            listing = db.repo.getDismissedMergeCandidates()
+
+        self.assertEqual(len(listing["entries"]), 1)
+        self.assertEqual(listing["total"], 2)
+
+    def test_undoing_a_dismissal_puts_the_pair_back_in_the_queue(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
+
+        db.repo.undismissMergeCandidate("B" * 22)
+
+        self.assertIsNone(self._decision(db, "B" * 22))
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 1)
+        self.assertEqual(db.repo.getDismissedMergeCandidates()["total"], 0)
+
+    def test_undoing_moves_no_numbers_so_it_drops_no_caches(self):
+        """Same reasoning as the dismissal it undoes: no pointer moves, so
+        nothing frozen in a cached year changed."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        conn = db.repo._conn()
+        with conn:
+            conn.execute(
+                "INSERT INTO user_wrapped (username, year, calculated_at, max_played_at,"
+                " total_plays, total_ms, longest_streak, unique_songs, unique_artists,"
+                " discovered_songs, discovered_artists, time_series_day, time_series_week,"
+                " time_series_month, top_songs, top_artists, top_albums,"
+                " discovered_songs_list, discovered_artists_list, discovered_albums_list)"
+                " VALUES ('alice', 2025, 1, 1, 1, 1, 1, 1, 1, 1, 1, '[]', '[]', '[]', '[]',"
+                " '[]', '[]', '[]', '[]', '[]')")
+
+        db.repo.undismissMergeCandidate("B" * 22)
+
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0], 1)
+
+    def test_a_placement_is_not_something_this_can_delete(self):
+        """The row shapes differ by one column, so an unfiltered DELETE here
+        would quietly unpin a merge or a split - the two verdicts that exist
+        precisely to survive every automatic pass."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        with self.assertRaises(ValueError):
+            db.repo.undismissMergeCandidate("B" * 22)
+
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-merge")
+
+    def test_a_dismissal_a_shared_isrc_already_overruled_is_not_one_to_undo(self):
+        """It stopped being the person's verdict when the fact arrived: the
+        row is now an ordinary matcher merge, and the way back is the toggle's
+        off edge or a split, both of which say so out loud."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
+        db.repo.mergeTracksByIsrc()
+
+        with self.assertRaises(ValueError):
+            db.repo.undismissMergeCandidate("B" * 22)
+
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+
+    def test_undoing_something_nobody_dismissed_is_refused(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+
+        for trackId in ("A" * 22, "Z" * 22):
+            with self.assertRaises(ValueError):
+                db.repo.undismissMergeCandidate(trackId)
+
+
 if __name__ == "__main__":
     unittest.main()

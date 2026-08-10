@@ -100,6 +100,39 @@
   {% endif %}
 </section>
 
+{#- The decision log. Only rendered once there is something in it: nothing
+    here needs answering, so an empty card would be a permanent reminder of a
+    thing that has never happened. -#}
+{% if dismissed.entries %}
+<section class="card card-static" style="padding: 1.25rem 1.5rem;">
+  <h2 style="margin: 0 0 0.4rem; font-size: 1.1rem;">Kept separate</h2>
+  <p style="color: var(--muted); margin: 0 0 1rem;">
+    {{ dismissed.total }} release(s) you have ruled &quot;not the same recording&quot;
+    {%- if dismissed.total > (dismissed.entries | length) %}, showing the
+    {{ dismissed.entries | length }} most recent{% endif %}.
+    None of them is suggested again while it is listed here. Putting one back
+    does not merge anything &mdash; it only lets the queue ask about it again.
+  </p>
+  {% for entry in dismissed.entries %}
+  <div class="merge-release">
+    <span class="merge-release-label">{{ entry.name }}
+      <span class="merge-release-meta">&mdash; {{ entry.album }},
+        {{ trackLength(entry.durationMs) }}, {{ entry.plays }} play(s)</span>
+    </span>
+    <span class="merge-decided-by">{{ entry.decidedBy }}{% if entry.decidedOn %},
+      {{ entry.decidedOn }}{% endif %}</span>
+    <div class="merge-release-actions">
+      <form method="post" action="{{ url_for('adminMergeReviewUndismiss') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="member" value="{{ entry.trackId }}"/>
+        <button type="submit" class="button button-small">Put back in the queue</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
 <script src="{{ url_for('static', filename='js/merge-review.js') }}"></script>
 
 {% endblock %}
