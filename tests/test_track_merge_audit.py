@@ -213,16 +213,48 @@ class TestTagsAreSongLevel(MergedPairTestCase):
         self.assertEqual(ids, {SINGLE, ALBUM_CUT})
 
 
-class TestArtistSongCountsCountSongs(MergedPairTestCase):
-    def test_unique_songs_counts_the_merged_recording_once(self):
-        """Top Artists' 'unique songs': two releases of one recording are one
-        song, the same statement the global song lists already make."""
+class TestEntitySongCountsMatchTheListBesideThem(MergedPairTestCase):
+    """"Unique Songs Listened" counts what the page below it lists.
+
+    This one used to collapse the merge group, which reads as the same
+    statement the global lists make - but the list it captions does NOT merge
+    (_mergesCanonically keeps per-release rows on an entity page, so an album
+    is never handed a row belonging to a different release). The hero then
+    said 1 over two visible rows of the same song, which is the very shape the
+    merge audit called a defect: a number nobody can reconcile with what is on
+    screen is indistinguishable from a wrong one, whether it spans more than
+    the list or less.
+
+    The global counts are where "a song is a song" stays observable - Top
+    Songs' own Unique Songs, discovered songs, Wrapped - and those still
+    merge, because the lists they caption merge too."""
+
+    def test_the_artist_count_matches_its_own_song_list(self):
         db = self._db()
 
         artists = db.repo.getArtistAggregates("alice")
+        songs = db.repo.getSongsPage("alice", artistId="art1")
 
         self.assertEqual(len(artists), 1)
-        self.assertEqual(artists[0]["uniqueSongCount"], 1)
+        self.assertEqual(artists[0]["uniqueSongCount"], len(songs))
+        self.assertEqual(artists[0]["uniqueSongCount"], 2)
+
+    def test_the_album_count_matches_its_own_song_list(self):
+        db = self._db()
+
+        albums = db.repo.getAlbumsPage("alice", albumId="alb")
+        songs = db.repo.getSongsPage("alice", albumId="alb")
+
+        self.assertEqual(albums[0]["uniqueSongCount"], len(songs))
+        self.assertEqual(albums[0]["uniqueSongCount"], 2)
+
+    def test_the_global_song_count_still_merges(self):
+        """The counterpart, and the reason this is a scoping fix rather than a
+        revert: Top Songs' own Unique Songs captions a list that DOES merge."""
+        db = self._db()
+
+        self.assertEqual(db.repo.getSongsCount("alice"), 1)
+        self.assertEqual(len(db.repo.getSongsPage("alice")), 1)
 
 
 if __name__ == "__main__":

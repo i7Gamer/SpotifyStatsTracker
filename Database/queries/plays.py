@@ -749,16 +749,31 @@ class PlayQueries:
         return [row["id"] for row in rows]
 
     def _uniqueSongCountSql(self) -> tuple[str, str]:
-        """(join, COUNT expression) for "unique songs" on the artist lists.
+        """(join, COUNT expression) for "unique songs" on the artist surfaces.
 
-        A merged recording is one song, so the count collapses the group - but
-        the tracks probe that does it measured +193% per query, paid on every
-        play row. Free while nothing is merged (the common state, and every
-        instance with the toggle off), so the join only exists once a merge
-        does. See _anyTrackMerges."""
-        if self._anyTrackMerges():
-            return ("\n                JOIN tracks tsong ON tsong.id = p.track_id",
-                    "COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count")
+        Deliberately does NOT collapse a merge group, though "two releases of
+        one recording are one song" is exactly what the global lists say. This
+        number captions a list that does not merge: _mergesCanonically keeps
+        per-release rows on an entity page, so an artist's own song list shows
+        both releases. Collapsing here put "Unique Songs Listened: 1" above two
+        visible rows of the same song - the shape the merge audit called a
+        defect in the first place, since a number nobody can reconcile with
+        what is on screen is indistinguishable from a wrong one, whether it
+        spans more than the list or less.
+
+        Artist surfaces only, which is the whole blast radius: the album
+        aggregates count DISTINCT p.track_id inline and never collapsed, so
+        the album History tab's singleTrackTimeline flag (routes/charts.py)
+        was always reading a per-release number and is untouched here.
+
+        The counterpart, and why this is a scoping rule rather than a retreat:
+        every count whose own list merges still merges - getSongsCount, the
+        discovered-song counts, Wrapped. tests/test_track_merge_audit.py's
+        TestEntitySongCountsMatchTheListBesideThem pins both halves.
+
+        Kept as a seam rather than inlined so the pairing stays one decision
+        across all three artist queries; it also costs nothing now, the join
+        it used to need having gone with the collapse."""
         return "", "COUNT(DISTINCT p.track_id) AS unique_song_count"
 
     def getArtistAggregates(self, username: str, startTs: float | None = None,
