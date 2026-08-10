@@ -23,7 +23,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
-from Database.queries.tracks import normalizeTrackTitle
+from Database.queries.tracks import isPlainTitle, normalizeTrackTitle
 
 ISRC_A = "USRC12345678"
 ISRC_B = "GBAYE0000001"
@@ -109,6 +109,39 @@ class TestTitleNormalization(unittest.TestCase):
         self.assertEqual(normalizeTrackTitle("Remastered"), "remastered")
 
 
+class TestPlainTitle(unittest.TestCase):
+    """Which release READS as the song itself: the one whose title is nothing
+    but the song's name. It is the same marker list normalizeTrackTitle groups
+    by, asked the other way round, so "plainest" and "same song" can never
+    drift apart."""
+
+    def test_a_bare_title_is_plain(self):
+        self.assertTrue(isPlainTitle("Psycho Killer"))
+
+    def test_a_version_marker_makes_it_packaging(self):
+        for raw in ("Psycho Killer - 2005 Remaster",
+                    "Psycho Killer (Remastered 2019)",
+                    "Psycho Killer - Mono",
+                    "Psycho Killer (Deluxe Edition)",
+                    "Psycho Killer (feat. Someone)"):
+            self.assertFalse(isPlainTitle(raw), raw)
+
+    def test_it_reads_the_same_markers_as_the_grouping(self):
+        """A live cut or a remix is NOT a version marker (a different
+        performance is a different recording), so those titles are plain -
+        which is right: they are the song's name as that release ships it."""
+        for raw in ("Song (Live)", "Song - Remix"):
+            self.assertTrue(isPlainTitle(raw), raw)
+
+    def test_a_title_that_is_only_a_marker_is_plain(self):
+        """Nothing was stripped, because stripping it would leave nothing -
+        so "Remastered" is that song's own name."""
+        self.assertTrue(isPlainTitle("Remastered"))
+
+    def test_case_and_padding_are_not_packaging(self):
+        self.assertTrue(isPlainTitle("  PSYCHO KILLER  "))
+
+
 class TestReviewCandidates(MergeReviewTestCase):
     def test_a_remaster_pair_is_proposed_with_the_most_played_as_canonical(self):
         db = self._db()
@@ -122,6 +155,43 @@ class TestReviewCandidates(MergeReviewTestCase):
         group = review["groups"][0]
         self.assertEqual(group["canonical"]["trackId"], "A" * 22)
         self.assertEqual(group["members"][0]["trackId"], "B" * 22)
+
+    def test_the_plain_release_is_suggested_even_when_it_is_played_less(self):
+        """The point of the suggestion: whichever release you keep becomes the
+        song's page, and a page titled "- 2005 Remaster" reads as a different
+        song from the one you played. Plays used to decide alone, so a
+        well-seeded remaster took the page from the original."""
+        db = self._db()
+        self._track(db, "A" * 22, "Psycho Killer - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, "Psycho Killer", plays=13)
+
+        group = db.repo.getMergeReviewCandidates()["groups"][0]
+
+        self.assertEqual(group["canonical"]["trackId"], "B" * 22)
+        self.assertEqual([m["trackId"] for m in group["members"]], ["A" * 22])
+
+    def test_the_least_packaged_title_wins_when_no_release_is_plain(self):
+        """Nothing in the group is the bare song, so "normal" falls back to
+        what the user described it as: the shortest of the names."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song - Mono - 2009 Remaster", plays=70)
+        self._track(db, "B" * 22, "Song - 2009 Remaster", plays=3)
+
+        self.assertEqual(
+            db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"],
+            "B" * 22)
+
+    def test_plays_still_decide_between_two_equally_plain_releases(self):
+        """The old rule is not gone, it moved down: title plainness only
+        separates a release from its own packaging. Two copies of the bare
+        title are the case it says nothing about."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", album="Single", plays=3)
+        self._track(db, "B" * 22, "Song", album="The Best Of", plays=70)
+
+        self.assertEqual(
+            db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"],
+            "B" * 22)
 
     def test_matching_is_case_insensitive(self):
         db = self._db()
@@ -179,6 +249,36 @@ class TestReviewCandidates(MergeReviewTestCase):
         #< the last tie-break is the id under max(), so the HIGHEST wins. Which
         #  direction is arbitrary - only that both tiers pick the same one
         #  matters - but it is asserted so a rewrite has to say it moved
+        self.assertEqual(anchor, "B" * 22)
+
+    def test_a_nameless_release_can_never_take_the_songs_page(self):
+        """The trap in measuring "plainest" as "nothing was stripped": a
+        blanked row normalizes to "" untouched, which reads as the plainest
+        title there is AND the shortest. The review queue filters nameless
+        rows out in SQL, but the ISRC tier does not - so this is asserted
+        where the election is shared, through the tier that can reach it."""
+        db = self._db()
+        self._track(db, "A" * 22, "", isrc=ISRC_A, plays=70)
+        self._track(db, "B" * 22, "Song", isrc=ISRC_A, plays=2)
+
+        canonical = db.repo.previewMergeTracksByIsrc()["groups"][0]["canonical"]
+
+        self.assertEqual(canonical["trackId"], "B" * 22)
+
+    def test_both_tiers_agree_about_the_plain_title_too(self):
+        """The title rule is the newest key in the shared election, so it is
+        the one most likely to be added to only the tier that asked for it.
+        Same-ISRC releases can differ by name (a single and a deluxe reissue
+        of one master), so the ISRC tier has the same question to answer."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song (Deluxe Edition)", plays=70)
+        self._track(db, "B" * 22, "Song", plays=3)
+
+        anchor = db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"]
+        db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
+        canonical = db.repo.previewMergeTracksByIsrc()["groups"][0]["canonical"]["trackId"]
+
+        self.assertEqual(anchor, canonical)
         self.assertEqual(anchor, "B" * 22)
 
     def test_a_pair_sharing_an_isrc_belongs_to_the_automatic_tier(self):

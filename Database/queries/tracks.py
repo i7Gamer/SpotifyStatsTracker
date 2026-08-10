@@ -57,6 +57,22 @@ def normalizeTrackTitle(name: str) -> str:
     return title or (name or "").strip().lower()
 
 
+def isPlainTitle(name: str) -> bool:
+    """Whether this title IS the song's name, with no packaging behind it.
+
+    The same marker list normalizeTrackTitle groups by, asked the other way
+    round: a title that survives normalization untouched carries no deluxe,
+    feat., remaster or mono suffix, so it is the release a person means when
+    they name the song. Deriving it from the same function is the point -
+    "these are the same song" and "this one is the normal version of it" must
+    never be able to disagree about what a marker is.
+
+    What is NOT a marker stays not one here either: a live cut or a remix is a
+    different performance, so those titles read as plain - which is correct,
+    since that IS the song's name on that release."""
+    return normalizeTrackTitle(name) == (name or "").strip().lower()
+
+
 class TrackQueries:
     """TrackQueries: tracks data-access methods, mixed into Repository."""
 
@@ -760,8 +776,21 @@ class TrackQueries:
 
     @staticmethod
     def _electCanonical(candidates: list):
-        """Which release of a group the others fold into: most played, then
-        first seen, then id.
+        """Which release of a group the others fold into: a named release over
+        a blank one, then the plainest title, then the shortest, then most
+        played, then first seen, then id.
+
+        The title leads because the winner becomes the song's PAGE. Plays
+        alone used to decide, which handed the page to whichever pressing
+        happened to be seeded best - a song listed as "Psycho Killer - 2005
+        Remaster" everywhere reads as a different song from the one a person
+        played, even though the number underneath is right. isPlainTitle finds
+        the release that is just the song's name; where a group has no such
+        release ("- Mono - 2009 Remaster" against "- 2009 Remaster") the
+        shortest name is the least packaged of what is on offer. Plays did not
+        go away, they moved below a question they were never answering: two
+        copies of the bare title are exactly the case the title rule is silent
+        about, and there the most played still wins.
 
         One rule, two tiers. The ISRC matcher elects from a group's unpinned
         members and the review queue elects the anchor it proposes merging
@@ -771,11 +800,20 @@ class TrackQueries:
         prose while spelling the tuple twice; this is the same reason
         _planIsrcMerges exists as a seam between the preview and the run.
 
-        Rows need play_count, created_at and id. The last two are pure
+        Rows need name, play_count, created_at and id. The last two are pure
         tie-breakers, there so the answer is deterministic rather than
         whatever order SQLite happened to return."""
-        return max(candidates,
-                   key=lambda row: (row["play_count"], -(row["created_at"] or 0), row["id"]))
+        def rank(row):
+            name = (row["name"] or "").strip()
+            #< a nameless row - a blanked or fallback record - would otherwise
+            #  sweep the title keys outright: "" survives normalization
+            #  untouched, so it reads as the plainest title there is, and it is
+            #  the shortest. The review queue filters those out in SQL; the
+            #  ISRC tier does not, and the whole point of this rule is that the
+            #  winner becomes a page a person can read
+            return (bool(name), bool(name) and isPlainTitle(name), -len(name),
+                    row["play_count"], -(row["created_at"] or 0), row["id"])
+        return max(candidates, key=rank)
 
     def resolveCanonicalTrackId(self, trackId: str) -> str:
         """The track a merged id should be read as, or the id itself.
@@ -952,9 +990,13 @@ class TrackQueries:
         # to decide. Fabricated ids are already excluded by getTracksMissingIsrc
         # never filling them, but the length test costs nothing and keeps this
         # honest if an ISRC ever arrives by another route.
+        #< t.name is here for two readers: _electCanonical's title rule, and the
+        #  group descriptions below. It used to be a second query over the same
+        #  WHERE clause, which is one scan of the duplicate set per planner run
+        #  - and this runs every backfill cycle while the toggle is on.
         rows = conn.execute(
             f"""
-            SELECT t.id, t.isrc, t.canonical_id, t.created_at,
+            SELECT t.id, t.name, t.isrc, t.canonical_id, t.created_at,
                    COALESCE(pc.play_count, 0) AS play_count
             FROM tracks t
             {self._PLAY_TALLY_JOIN}
@@ -978,16 +1020,10 @@ class TrackQueries:
         pinned = {row["track_id"] for row in conn.execute(
             "SELECT track_id FROM track_merge_decisions "
             "WHERE decided_by IS NOT NULL AND reason != 'manual-reject'")}
-        #< names only for the duplicate groups under consideration - the whole
-        #  ISRC-carrying catalog is ~25k rows once the backfill completes, and
-        #  this planner runs every backfill cycle while the toggle is on
-        names = dict(conn.execute(
-            """
-            SELECT t.id, t.name FROM tracks t
-            WHERE t.isrc IN (SELECT isrc FROM tracks
-                             WHERE isrc IS NOT NULL AND isrc <> ''
-                             GROUP BY isrc HAVING COUNT(*) > 1)
-            """))
+        #< a canonical named by an EXISTING pointer can sit outside the
+        #  duplicate set entirely, which is why the lookups below tolerate a
+        #  miss rather than indexing
+        names = {row["id"]: row["name"] for row in rows}
 
         byIsrc = {}
         for row in rows:

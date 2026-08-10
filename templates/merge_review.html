@@ -46,40 +46,60 @@
     {%- if review.totalGroups > (review.groups | length) %}, showing the
     {{ review.groups | length }} with the most plays{% endif %}.
     Merging counts them as one song everywhere; a merge can be split back apart
-    from the song&#39;s own page.
+    from the song&#39;s own page. The release marked below keeps the song&#39;s page &mdash;
+    the plainest title is suggested, and you can pick another.
   </p>
 
   {% for group in review.groups %}
-  <article style="border-top: 1px solid var(--border, #333); padding: 0.9rem 0;">
-    <p style="margin: 0 0 0.35rem;">
+  {% set groupIndex = loop.index %}
+  <article class="merge-group" data-merge-group>
+    <p class="merge-group-title">
       <strong>{{ group.canonical.name }}</strong>
-      <span style="color: var(--muted);">&mdash; {{ group.canonical.album }},
-        {{ trackLength(group.canonical.durationMs) }}, {{ group.canonical.plays }} play(s)
-        &middot; kept as the song&#39;s page</span>
+      <span class="merge-group-count">&mdash; {{ group.members | length + 1 }} releases</span>
     </p>
-    {% for member in group.members %}
-    <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.25rem 0 0.25rem 1rem;">
-      <span style="flex: 1; min-width: 14rem;">{{ member.name }}
-        <span style="color: var(--muted);">&mdash; {{ member.album }},
-          {{ trackLength(member.durationMs) }}, {{ member.plays }} play(s)</span>
-      </span>
-      <form method="post" action="{{ url_for('adminMergeReviewMerge') }}" style="margin: 0;"
-            onsubmit="return confirm('Merge these releases into one song? This changes every account and can be split back apart later.');">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <input type="hidden" name="member" value="{{ member.trackId }}"/>
-        <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
-        <button type="submit" class="primary-button button-small">Same recording &mdash; merge</button>
-      </form>
-      <form method="post" action="{{ url_for('adminMergeReviewReject') }}" style="margin: 0;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <input type="hidden" name="member" value="{{ member.trackId }}"/>
-        <button type="submit" class="button button-small">Not the same</button>
-      </form>
+    {#- The suggested main first, then everything offered against it. Every row
+        is the same shape: the one that is currently main just wears the badge
+        where the others wear their two verdict buttons, so picking a different
+        one is a swap rather than a re-render (static/js/merge-review.js). -#}
+    {% for release in [group.canonical] + group.members %}
+    {% set radioId = "merge-main-%d-%d" % (groupIndex, loop.index) %}
+    <div class="merge-release" data-merge-release data-track-id="{{ release.trackId }}">
+      {#- aria-label rather than leaning on the <label> beside it: that label
+          names the release, and a radio announced as "Psycho Killer, radio
+          button" never says what choosing it DOES. The label still owns the
+          click target. -#}
+      <input type="radio" data-merge-main-radio id="{{ radioId }}"
+             name="merge-main-{{ groupIndex }}" value="{{ release.trackId }}"
+             title="Keep this release as the song&#39;s page"
+             aria-label="Keep {{ release.name }} ({{ release.album }}) as the song&#39;s page"
+             {% if loop.first %}checked{% endif %}/>
+      <label class="merge-release-label" for="{{ radioId }}">{{ release.name }}
+        <span class="merge-release-meta">&mdash; {{ release.album }},
+          {{ trackLength(release.durationMs) }}, {{ release.plays }} play(s)</span>
+      </label>
+      <span class="merge-main-badge" data-merge-main-badge
+            {% if not loop.first %}hidden{% endif %}>kept as the song&#39;s page</span>
+      <div class="merge-release-actions" data-merge-actions {% if loop.first %}hidden{% endif %}>
+        <form method="post" action="{{ url_for('adminMergeReviewMerge') }}"
+              onsubmit="return confirm('Merge these releases into one song? This changes every account and can be split back apart later.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+          <input type="hidden" name="member" value="{{ release.trackId }}"/>
+          <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
+          <button type="submit" class="primary-button button-small">Same recording &mdash; merge</button>
+        </form>
+        <form method="post" action="{{ url_for('adminMergeReviewReject') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+          <input type="hidden" name="member" value="{{ release.trackId }}"/>
+          <button type="submit" class="button button-small">Not the same</button>
+        </form>
+      </div>
     </div>
     {% endfor %}
   </article>
   {% endfor %}
   {% endif %}
 </section>
+
+<script src="{{ url_for('static', filename='js/merge-review.js') }}"></script>
 
 {% endblock %}

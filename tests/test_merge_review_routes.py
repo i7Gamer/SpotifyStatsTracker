@@ -5,6 +5,7 @@ test_merge_review.py; this file covers the surface - the page renders the real
 planner's groups, the two POST verbs write through the real repo, and none of
 it is reachable without admin."""
 import os
+import re
 import sys
 import unittest
 from unittest.mock import patch, MagicMock
@@ -16,10 +17,15 @@ from _app_factory import AppTestCase
 
 DURATION_MS = 200000
 
+_RADIO_TAG = re.compile(r"<input[^>]*data-merge-main-radio[^>]*>")
+_ACTIONS_TAG = re.compile(r"<div[^>]*data-merge-actions[^>]*>")
+_BADGE_TAG = re.compile(r"<span[^>]*data-merge-main-badge[^>]*>")
+_VALUE_ATTR = re.compile(r'value="([^"]*)"')
+
 
 class MergeReviewRouteTestCase(AppTestCase):
-    def _seedPair(self, dash):
-        """One review-worthy pair: an original out-playing its remaster."""
+    def _seedPair(self, dash, originalPlays=70, remasterPlays=13):
+        """One review-worthy pair: an original and its remaster."""
         conn = dash.repo._conn()
         with conn:
             conn.execute("INSERT INTO users (username, created_at, is_admin) "
@@ -28,8 +34,8 @@ class MergeReviewRouteTestCase(AppTestCase):
             conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb2', 'The Best Of', '')")
             conn.execute("INSERT INTO artists (id, name, url) VALUES ('art1', 'Talking Heads', '')")
             for trackId, name, albumId, plays in (
-                    ("A" * 22, "Psycho Killer", "alb1", 70),
-                    ("B" * 22, "Psycho Killer - 2005 Remaster", "alb2", 13)):
+                    ("A" * 22, "Psycho Killer", "alb1", originalPlays),
+                    ("B" * 22, "Psycho Killer - 2005 Remaster", "alb2", remasterPlays)):
                 conn.execute(
                     "INSERT INTO tracks (id, name, url, album_id, duration_ms, created_at) "
                     "VALUES (?, ?, '', ?, ?, 1000.0)", (trackId, name, albumId, DURATION_MS))
@@ -84,6 +90,71 @@ class TestMergeReviewPage(MergeReviewRouteTestCase):
         body = self._request(dash, "GET", "/admin/merge-review").data.decode()
 
         self.assertIn("Nothing to review", body)
+
+
+class TestMainVersionPicker(MergeReviewRouteTestCase):
+    """Which release stays as the song's page is a suggestion, not a verdict -
+    so every release in a group carries a control to become it."""
+
+    def _radios(self, dash):
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+        return [(_VALUE_ATTR.search(tag).group(1), "checked" in tag)
+                for tag in _RADIO_TAG.findall(body)]
+
+    def test_every_release_offers_itself_as_the_main_version(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        self.assertEqual(self._radios(dash), [("A" * 22, True), ("B" * 22, False)])
+
+    def test_the_plain_title_is_suggested_even_when_the_remaster_wins_on_plays(self):
+        """The suggestion the page leads with, and the reason the picker is
+        not the only half of this: a remaster seeded better than its original
+        used to take the song's page on play count alone."""
+        dash = self._makeApp()
+        self._seedPair(dash, originalPlays=13, remasterPlays=70)
+
+        self.assertEqual(self._radios(dash), [("A" * 22, True), ("B" * 22, False)])
+
+    def test_the_page_loads_the_script_that_makes_the_picker_do_anything(self):
+        """A radio nothing listens to is a control that lies. The rest of the
+        page works without it - the server renders the suggested main badged
+        and the others with their buttons - so only the OVERRULE is lost, and
+        silently, which is exactly why this is asserted here."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+
+        self.assertIn("js/merge-review.js", body)
+
+    def test_the_suggested_main_carries_no_verdict_buttons_of_its_own(self):
+        """It cannot merge into itself, and "not the same" aimed at the
+        release the group is built around answers a question nobody asked.
+
+        Both halves are rendered on every row and hidden the other way round,
+        which is the whole reason the picker can swap them client-side - so
+        the badge is asserted alongside, not instead."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+
+        self.assertEqual([("hidden" in tag) for tag in _ACTIONS_TAG.findall(body)],
+                         [True, False])
+        self.assertEqual([("hidden" in tag) for tag in _BADGE_TAG.findall(body)],
+                         [False, True])
+
+    def test_picking_the_other_release_merges_the_other_way(self):
+        """What the picker posts once a person overrules the suggestion: the
+        member and canonical swap, and the remaster keeps the song's page."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/merge",
+                             data={"member": "A" * 22, "canonical": "B" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(self._canonical(dash, "A" * 22), "B" * 22)
+        self.assertIsNone(self._canonical(dash, "B" * 22))
 
 
 class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
