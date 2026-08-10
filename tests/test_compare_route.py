@@ -172,32 +172,47 @@ class TestCompareRoute(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.dbs["carol"].getPlayTotals.assert_called()
 
-    def test_shared_songs_offer_the_blend_download(self):
-        """The download links ride the swapped fragment - a static shell link
-        would go stale the moment a filter changed - and must opt out of the
-        page's htmx boost or the file lands in the DOM instead of on disk."""
+    def test_shared_songs_offer_the_blend_download_beside_the_heading(self):
+        """The links sit in the Top Common Songs heading row (Wrapped-style):
+        the shell renders an empty #blendExportLinks slot beside the h2, and
+        the fragment fills it out-of-band on every refresh - a link printed in
+        the shell would go stale the moment a filter changed. They must also
+        opt out of the page's htmx boost or the file lands in the DOM instead
+        of on disk."""
         self._accept("alice", "bob")
         shared = _song("T" * 22, "Shared Song", plays=3, totalTimeListened=1000)
         self.dbs["alice"].getTopSongs.return_value = [shared]
         self.dbs["bob"].getTopSongs.return_value = [dict(shared)]
         client = self._loginAs("alice")
 
-        _, data = self._ajax(client, "/compare?with=bob")
-        html = self._ajaxHtml(data)
+        shell = client.get("/compare?with=bob").data.decode()
+        #< the slot the fragment targets must exist in the shell, and empty -
+        #  the oob swap needs its id, and a stale prefilled link needs no home
+        self.assertIn('id="blendExportLinks"></span>', shell)
 
-        self.assertIn("/compare/blend", html)
-        self.assertIn("format=m3u", html)
-        self.assertIn('hx-boost="false"', html)
+        #< the span rides the fragment OUTSIDE the named list regions (it
+        #  targets the heading row, not a list), so it is asserted on the raw
+        #  body rather than through _ajaxHtml's region slicing
+        resp, _ = self._ajax(client, "/compare?with=bob")
+        fragment = resp.get_data(as_text=True)
+        self.assertIn('id="blendExportLinks" hx-swap-oob="innerHTML"', fragment)
+        self.assertIn("/compare/blend", fragment)
+        self.assertIn("format=m3u", fragment)
+        self.assertIn('hx-boost="false"', fragment)
 
     def test_no_shared_songs_means_no_blend_link(self):
+        """The oob slot still swaps - emptied - so a filter change away from
+        an overlapping range clears the stale links instead of keeping them."""
         self._accept("alice", "bob")
         self.dbs["alice"].getTopSongs.return_value = [
             _song("T" * 22, "Mine Alone", plays=3, totalTimeListened=1000)]
         client = self._loginAs("alice")
 
-        _, data = self._ajax(client, "/compare?with=bob")
+        resp, _ = self._ajax(client, "/compare?with=bob")
+        fragment = resp.get_data(as_text=True)
 
-        self.assertNotIn("/compare/blend", self._ajaxHtml(data))
+        self.assertIn('id="blendExportLinks" hx-swap-oob="innerHTML"', fragment)
+        self.assertNotIn("/compare/blend", fragment)
 
     def test_with_param_pointing_at_a_non_shared_user_is_ignored(self):
         """The critical authorization boundary: ?with= is untrusted input and
