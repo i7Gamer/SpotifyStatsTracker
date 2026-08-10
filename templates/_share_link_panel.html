@@ -12,11 +12,11 @@
       <span style="color: var(--muted);">{{ link.expiryLabel }}</span>
     </div>
     <div style="display: flex; gap: 0.5rem; align-items: center;">
-      <button type="button" class="primary-button" style="padding: 4px 12px;" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
+      <button type="button" class="primary-button button-small" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
       <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <input type="hidden" name="year" value="{{ year }}"/>
-        <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+        <button type="submit" class="primary-button button-small is-danger">Revoke</button>
       </form>
     </div>
   </div>
@@ -42,13 +42,13 @@
         <span style="color: var(--muted);">{{ link.expiryLabel }}</span>
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <button type="button" class="primary-button" style="padding: 4px 12px;" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
+        <button type="button" class="primary-button button-small" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
         {# year= is the year still on screen, not the link's - the panel this
            refresh returns is the one the user is looking at. #}
         <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
           <input type="hidden" name="year" value="{{ year }}"/>
-          <button type="submit" class="primary-button" style="padding: 4px 12px; background: #c92a2a;">Revoke</button>
+          <button type="submit" class="primary-button button-small is-danger">Revoke</button>
         </form>
       </div>
     </div>

@@ -110,9 +110,11 @@ if (typeof window !== 'undefined') (function() {
       if (tags && tags.length > 0) {
         tags.forEach(function(t) {
           var chip = document.createElement('span');
+          //< styling lives on the classes now (see .tag-chip/.btn-remove-tag
+          //  in style.css) - this render and _tag_widget.html used to carry
+          //  duplicate cssText/style copies that could drift apart
           chip.className = 'tag-chip';
           chip.dataset.tag = t;
-          chip.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font-size: 0.85rem;';
           chip.appendChild(document.createTextNode('#' + t));
 
           var removeBtn = document.createElement('button');
@@ -121,7 +123,6 @@ if (typeof window !== 'undefined') (function() {
           removeBtn.setAttribute('aria-label', 'Remove tag ' + t);
           removeBtn.title = 'Remove tag';
           removeBtn.dataset.tag = t;
-          removeBtn.style.cssText = 'background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px; font-weight: bold;';
           removeBtn.innerHTML = '&times;';
           chip.appendChild(removeBtn);
 

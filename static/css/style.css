@@ -995,12 +995,6 @@ progress::-moz-progress-bar {
   text-align: right;
 }
 
-.share-action-button {
-  padding: 4px 12px;
-  text-decoration: none;
-  display: inline-block;
-}
-
 .share-actions form {
   display: inline-block;
 }
@@ -1018,11 +1012,6 @@ progress::-moz-progress-bar {
 .profile-logout-row {
   margin-top: 3rem;
   text-align: center;
-}
-
-.profile-logout-button {
-  background: #555;
-  padding: 0.5rem 2rem;
 }
 
 .login-card {
@@ -1064,6 +1053,10 @@ progress::-moz-progress-bar {
   cursor: pointer;
   font-weight: 700;
   transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  /* the class also dresses <a> elements (import's export links, the share
+     panel's Compare) - on a <button> both of these are the UA default */
+  text-decoration: none;
+  display: inline-block;
 }
 
 .primary-button:hover {
@@ -1380,6 +1373,29 @@ progress::-moz-progress-bar {
 
 .artist-toggle:hover {
   text-decoration: underline;
+}
+
+/* The tag widget's chip and its remove control, as classes rather than the
+   inline styles that used to live - twice - in _tag_widget.html AND tags.js's
+   renderTags (style.cssText), where the two copies could drift apart. */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.btn-remove-tag {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  font-weight: bold;
 }
 
 .btn-remove-tag:hover {
@@ -3041,6 +3057,26 @@ progress::-moz-progress-bar {
   color: white;
 }
 
+/* The ONE small size, legal on either base (.primary-button or .button).
+   It replaces the nine per-instance inline paddings the templates had grown
+   (2px 8px, 2px 10px, 3px 12px, 4px 10px, 4px 12px, 4px 16px, ...) - a
+   button is standard or small, nothing else. AFTER both bases in source
+   order, which is what lets it win their padding at equal specificity.
+   Guarded by test_css_accessibility's no-inline-padding-on-buttons scan. */
+.button-small {
+  padding: 4px 12px;
+  font-size: 0.85rem;
+}
+
+/* Icon-carrying buttons (Wrapped's Export and Share): the flex-and-gap their
+   inline styles used to declare; look and size come from .primary-button.
+   Same source-order constraint: .primary-button declares display too. */
+.button-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* The playlist page's two .button-based tag controls. Both live AFTER .button
    on purpose: they override its resting fill at the same specificity, so the
    cascade decides on source order alone.
@@ -3050,6 +3086,17 @@ progress::-moz-progress-bar {
    the same one the "Play now" and Spotify-link pills use, which nothing inline
    overrides. The Delete button's tint used to be inline too, so hovering it
    changed nothing at all. */
+/* The chip's resting look, out of the template's style attribute. Its
+   SELECTED state stays inline on purpose: playlists.js paints it per click,
+   and inline is what beats the :hover fill (see the comment above). */
+.playlist-tag-chip {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color, #444);
+}
+
 .playlist-tag-chip:hover {
   box-shadow: 0 0 8px var(--accent-glow);
 }
@@ -4796,7 +4843,7 @@ html.theme-red {
   background: var(--card-bg, #1e1e1e);
   color: var(--fg, #eee);
   border: 1px solid var(--border, #444);
-  border-radius: 4px;
+  border-radius: 10px;   /* the app's control radius, not its own 4px */
 }
 
 .admin-check-label {
@@ -4859,10 +4906,6 @@ html.theme-red {
 
 .admin-card-header {
   padding: 1.5rem 1.5rem 0.5rem 1.5rem;
-}
-
-.admin-save-btn {
-  padding: 4px 16px;
 }
 
 .admin-status-table {

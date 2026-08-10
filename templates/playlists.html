@@ -16,7 +16,7 @@
     <h2>Select Tags to Filter</h2>
     <div id="playlist-tag-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin: 1rem 0;">
       {% for t in user_tags %}
-      <button type="button" class="playlist-tag-chip button" data-tag="{{ t.tag }}" style="padding: 6px 14px; border-radius: 20px; font-size: 0.9rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color, #444);">
+      <button type="button" class="playlist-tag-chip button" data-tag="{{ t.tag }}">
         #{{ t.tag }} <span style="font-size: 0.75rem; opacity: 0.7;">({{ t.count }})</span>
       </button>
       {% endfor %}
@@ -25,7 +25,7 @@
     <div class="playlist-filters">
       <div class="filter-group">
         <label for="matchMode">Match Mode:</label>
-        <select id="matchMode" class="form-control">
+        <select id="matchMode">
           <option value="any">Match Any Selected Tag</option>
           <option value="all">Match All Selected Tags (Intersection)</option>
         </select>
@@ -33,7 +33,7 @@
 
       <div class="filter-group">
         <label for="sortBy">Sort Order:</label>
-        <select id="sortBy" class="form-control">
+        <select id="sortBy">
           <option value="plays">Most Played First</option>
           <option value="recent">Most Recently Played</option>
           <option value="name">Track Name (A–Z)</option>
@@ -45,7 +45,7 @@
          enough to truncate every option. #}
       <div class="filter-group filter-group-wide">
         <label for="exportFormat">File Format:</label>
-        <select id="exportFormat" class="form-control">
+        <select id="exportFormat">
           <option value="csv">CSV (Spotify URIs, ISRCs & Track Info - Soundiiz/TuneMyMusic)</option>
           <option value="m3u">M3U Playlist (Spotify Desktop file import)</option>
           <option value="xspf">XSPF XML Playlist</option>
@@ -58,7 +58,7 @@
         <strong style="font-size: 1.1rem; color: var(--accent);" id="previewCount">0 tracks match selection</strong>
         <p style="font-size: 0.85rem; color: var(--text-muted, #aaa); margin: 4px 0 0 0;">Select one or more tags above to generate a playlist.</p>
       </div>
-      <button type="button" id="btnDownloadPlaylist" class="button" disabled style="padding: 10px 20px; font-weight: bold;">Download Playlist</button>
+      <button type="button" id="btnDownloadPlaylist" class="button" disabled>Download Playlist</button>
     </div>
   </div>
 
@@ -80,10 +80,10 @@
           <td style="padding: 8px; font-weight: bold; color: var(--accent);">#{{ t.tag }}</td>
           <td style="padding: 8px;">{{ t.count }}</td>
           <td style="padding: 8px; text-align: right; display: flex; gap: 8px; justify-content: flex-end;">
-            <button type="button" class="button button-small btn-rename-tag" data-tag="{{ t.tag }}" style="padding: 2px 8px; font-size: 0.8rem;">Rename</button>
+            <button type="button" class="button button-small btn-rename-tag" data-tag="{{ t.tag }}">Rename</button>
             {# Danger tint lives in style.css, not inline: an inline background
                beats .btn-delete-tag:hover and left the button looking dead. #}
-            <button type="button" class="button button-small btn-delete-tag" data-tag="{{ t.tag }}" style="padding: 2px 8px; font-size: 0.8rem;">Delete</button>
+            <button type="button" class="button button-small btn-delete-tag" data-tag="{{ t.tag }}">Delete</button>
           </td>
         </tr>
         {% endfor %}

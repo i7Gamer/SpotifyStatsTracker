@@ -106,6 +106,66 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         self.assertIn("margin-top: 12px", mobile[blockEnd:blockEnd + 200])
 
 
+class TestButtonNormalization(unittest.TestCase):
+    """The 2026-08-10 button sweep: two bases, one small size, no inline
+    paddings. Nine per-instance paddings, two phantom classes (.button-small
+    had no rule; .form-control never had one anywhere) and a third,
+    inline-built "primary" look on Wrapped's Export/Share all collapsed into
+    (primary-button | button) x (button-small?) x (is-danger | is-neutral |
+    button-danger), plus .button-icon carrying the icon buttons' flex+gap."""
+
+    def setUp(self):
+        self.css = _readFile(_CSS_PATH)
+
+    def _block(self, selector):
+        import re
+        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
+        self.assertIsNotNone(match, f"{selector} missing from style.css")
+        return match.group(1)
+
+    def test_the_small_modifier_is_real_and_single_sized(self):
+        block = self._block(".button-small")
+        self.assertIn("padding: 4px 12px", block)
+        self.assertIn("font-size: 0.85rem", block)
+
+    def test_the_modifiers_come_after_both_bases(self):
+        """Equal specificity means source order decides: a .button-small
+        declared before .primary-button would silently lose the padding fight
+        and size nothing at all."""
+        smallAt = self.css.index(".button-small {")
+        iconAt = self.css.index(".button-icon {")
+        for base in (".primary-button {", ".button {"):
+            self.assertLess(self.css.index(base), smallAt, base)
+            self.assertLess(self.css.index(base), iconAt, base)
+
+    def test_the_folded_classes_are_gone(self):
+        """Each was a one-off spelling of button-small or is-neutral."""
+        for selector in (".admin-save-btn", ".share-action-button",
+                         ".profile-logout-button"):
+            self.assertNotIn(selector, self.css)
+
+    def test_no_button_carries_an_inline_padding(self):
+        """The drift guard: a button's size is its class now. Any new
+        style="...padding..." on a button-classed element restarts the
+        nine-sizes problem this sweep ended. Lookaheads, because class= and
+        style= appear in either order."""
+        import glob
+        import re
+        buttonWithInlinePadding = re.compile(
+            r'<(?:button|a)\b(?=[^>]*class="[^"]*button)(?=[^>]*style="[^"]*padding)')
+        offenders = []
+        for path in glob.glob(os.path.join(_ROOT, "templates", "*.html")):
+            if buttonWithInlinePadding.search(_readFile(path)):
+                offenders.append(os.path.basename(path))
+        self.assertEqual(offenders, [])
+
+    def test_the_phantom_form_control_class_is_gone(self):
+        import glob
+        for path in glob.glob(os.path.join(_ROOT, "templates", "*.html")):
+            self.assertNotIn("form-control", _readFile(path),
+                             f"{os.path.basename(path)} references a class no stylesheet defines")
+
+
 class TestMobileNavToggleAnnouncesItsState(unittest.TestCase):
     """Opening the mobile menu only flips CSS classes, which a screen reader
     cannot see. `.artist-toggle` and the play-embed button both carry

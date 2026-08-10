@@ -68,12 +68,12 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <input type="hidden" name="member" value="{{ member.trackId }}"/>
         <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
-        <button type="submit" class="primary-button" style="padding: 3px 12px;">Same recording &mdash; merge</button>
+        <button type="submit" class="primary-button button-small">Same recording &mdash; merge</button>
       </form>
       <form method="post" action="{{ url_for('adminMergeReviewReject') }}" style="margin: 0;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <input type="hidden" name="member" value="{{ member.trackId }}"/>
-        <button type="submit" class="primary-button" style="padding: 3px 12px; background: transparent; border: 1px solid var(--border, #555); color: var(--muted);">Not the same</button>
+        <button type="submit" class="button button-small">Not the same</button>
       </form>
     </div>
     {% endfor %}

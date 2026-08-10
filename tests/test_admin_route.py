@@ -1610,7 +1610,9 @@ class TestAdminMailWorkerHealth(AdminRouteTestBase):
         resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
         body = resp.data.decode()
 
-        self.assertIn('form="adminTestEmailForm" class="primary-button"', body)
+        #< button-small since the 2026-08-10 sweep: sizes are classes now,
+        #  never inline paddings
+        self.assertIn('form="adminTestEmailForm" class="primary-button button-small"', body)
         self.assertIn('Send Test Email to Admin</button>', body)
 
 

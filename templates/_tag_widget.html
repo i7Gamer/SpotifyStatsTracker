@@ -7,9 +7,9 @@
       <span style="font-size: 0.9rem; font-weight: bold; color: var(--text-muted, #888888);">Tags:</span>
       {% if entity_tags %}
         {% for t in entity_tags %}
-          <span class="tag-chip" data-tag="{{ t }}" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font-size: 0.85rem;">
+          <span class="tag-chip" data-tag="{{ t }}">
             #{{ t }}
-            <button type="button" class="btn-remove-tag" data-tag="{{ t }}" aria-label="Remove tag {{ t }}" title="Remove tag" style="background: none; border: none; color: inherit; cursor: pointer; padding: 0 2px; font-weight: bold;">&times;</button>
+            <button type="button" class="btn-remove-tag" data-tag="{{ t }}" aria-label="Remove tag {{ t }}" title="Remove tag">&times;</button>
           </span>
         {% endfor %}
       {% else %}
@@ -18,7 +18,7 @@
     </div>
     <form class="form-add-tag" style="display: flex; gap: 12px; align-items: center; margin: 0;">
       <input type="text" class="input-new-tag" aria-label="Add a tag" placeholder="Add tag (e.g. workout)">
-      <button type="submit" class="button button-small" style="padding: 4px 10px; font-size: 0.85rem;">+ Tag</button>
+      <button type="submit" class="button button-small">+ Tag</button>
     </form>
   </div>
   {#- Outside .tag-chips-container on purpose: renderTags() rebuilds that

@@ -47,12 +47,12 @@
           <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <input type="hidden" name="action" value="accept">
-            <button type="submit" class="primary-button share-action-button">Accept</button>
+            <button type="submit" class="primary-button button-small">Accept</button>
           </form>
           <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <input type="hidden" name="action" value="decline">
-            <button type="submit" class="primary-button share-action-button is-neutral">Decline</button>
+            <button type="submit" class="primary-button button-small is-neutral">Decline</button>
           </form>
         </td>
       </tr>
@@ -74,7 +74,7 @@
           <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <input type="hidden" name="action" value="cancel">
-            <button type="submit" class="primary-button share-action-button is-neutral">Cancel</button>
+            <button type="submit" class="primary-button button-small is-neutral">Cancel</button>
           </form>
         </td>
       </tr>
@@ -93,11 +93,11 @@
       <tr>
         <td><span class="badge badge-success">{{ share.counterpart | displayName }}</span></td>
         <td class="share-actions">
-          <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button share-action-button">Compare</a>
+          <a href="{{ url_for('comparePage', with=share.counterpart) }}" class="primary-button button-small">Compare</a>
           <form method="post" action="{{ url_for('profileShareAction', share_id=share.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <input type="hidden" name="action" value="revoke">
-            <button type="submit" class="primary-button share-action-button is-danger">Revoke</button>
+            <button type="submit" class="primary-button button-small is-danger">Revoke</button>
           </form>
         </td>
       </tr>
