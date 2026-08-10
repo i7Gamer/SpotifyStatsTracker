@@ -172,6 +172,33 @@ class TestCompareRoute(AppTestCase):
         self.assertEqual(resp.status_code, 200)
         self.dbs["carol"].getPlayTotals.assert_called()
 
+    def test_shared_songs_offer_the_blend_download(self):
+        """The download links ride the swapped fragment - a static shell link
+        would go stale the moment a filter changed - and must opt out of the
+        page's htmx boost or the file lands in the DOM instead of on disk."""
+        self._accept("alice", "bob")
+        shared = _song("T" * 22, "Shared Song", plays=3, totalTimeListened=1000)
+        self.dbs["alice"].getTopSongs.return_value = [shared]
+        self.dbs["bob"].getTopSongs.return_value = [dict(shared)]
+        client = self._loginAs("alice")
+
+        _, data = self._ajax(client, "/compare?with=bob")
+        html = self._ajaxHtml(data)
+
+        self.assertIn("/compare/blend", html)
+        self.assertIn("format=m3u", html)
+        self.assertIn('hx-boost="false"', html)
+
+    def test_no_shared_songs_means_no_blend_link(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [
+            _song("T" * 22, "Mine Alone", plays=3, totalTimeListened=1000)]
+        client = self._loginAs("alice")
+
+        _, data = self._ajax(client, "/compare?with=bob")
+
+        self.assertNotIn("/compare/blend", self._ajaxHtml(data))
+
     def test_with_param_pointing_at_a_non_shared_user_is_ignored(self):
         """The critical authorization boundary: ?with= is untrusted input and
         must never select a user's data the session user hasn't mutually

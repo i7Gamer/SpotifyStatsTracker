@@ -15,14 +15,16 @@ and templates/compare.html for the attribute wiring.
 """
 from datetime import timedelta
 
-from flask import render_template, request, abort, url_for, Response
+from flask import render_template, request, abort, url_for, Response, stream_with_context
 
 from routes._htmx import isHtmxSwap
+from routes.tags import FILENAME_UNSAFE_RE
 
 from config import (
     WRAPPED_LIMIT_OPTIONS, COMPARE_TOP_LIST_SIZE, COMPARE_SHARED_POOL_SIZE,
-    COMPARE_GENRE_POOL_SIZE, COMPARE_TOP_GENRES_LIMIT,
+    COMPARE_GENRE_POOL_SIZE, COMPARE_TOP_GENRES_LIMIT, PLAYLIST_EXPORT_FORMATS,
 )
+from services.export import resolvePlaylistFormat
 from Database.utils import convertToDatetime
 from services.taste_match import _markLinkExternally, _tasteMatchPercent
 from services.genre_gate import (
@@ -375,6 +377,66 @@ def register(app, dashboard):
             lastfmEnabled=lastfmEnabled,
             sharedArtists=sharedArtists, sharedSongs=sharedSongs, sharedAlbums=sharedAlbums,
             comparisonTrend=comparisonTrend,
+            #< rides the swapped fragment, not the shell, so the download
+            #  always carries the filters the visible lists were built from
+            blendExportUrl=url_for("compareBlendExport", **filterArgs),
             **listArgs,
         )
     app.add_url_rule("/compare", "comparePage", comparePage, methods=["GET"])
+
+    def compareBlendExport():
+        """The two users' shared songs as a playlist file - the Top Common
+        Songs list, uncapped.
+
+        Same guards, same range resolution, same pool call and the same
+        _buildSharedItems ranking as comparePage itself, so the file can never
+        disagree with the page it was downloaded from. The formats are the
+        Playlists page's own exporters (see resolvePlaylistFormat)."""
+        if not dashboard.repo.isDataSharingEnabled():
+            abort(404)
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return dashboard.unauthenticatedResponse()
+
+        #< same cookies guard as comparePage: get_user_db needs stored cookies
+        acceptedUsernames = [
+            u for u in dashboard.repo.getAcceptedShareUsernames(username)
+            if dashboard.repo.getUserCookies(u) is not None
+        ]
+        if not acceptedUsernames:
+            abort(404)   #< the page itself renders the empty state; a file can't
+        withUsername = request.args.get("with", acceptedUsernames[0])
+        if withUsername not in acceptedUsernames:
+            #< same fallback rule as comparePage: ?with= is untrusted input and
+            #  must never select data the session user has no mutual share with
+            withUsername = acceptedUsernames[0]
+        otherDb = dashboard.get_user_db(withUsername, dashboard.repo.getEmailForUsername(withUsername))
+
+        settings = dashboard.repo.getUserSettings(username)
+        defaultWindow = settings.get("default_dashboard_window", "day")
+        if defaultWindow == "all time":
+            defaultWindow = ""
+        interval = request.args.get("interval", defaultWindow)
+        startDate, endDate = dashboard._getDateRange(
+            interval, request.args.get("startDate", ""), request.args.get("endDate", ""),
+            default="all time", tz=db.tz)
+
+        #< the deeper shared pool, not the displayed page - the same
+        #  COMPARE_SHARED_POOL_SIZE call _gatherCompareStats feeds the page's
+        #  Top Common list from, ranked by the same shared score. embedFn is
+        #  identity: the exporters read catalog fields the rows already carry,
+        #  and the page's text embellishments are display-only
+        myPool = db.getTopSongs(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
+        theirPool = otherDb.getTopSongs(startDate, endDate, limit=COMPARE_SHARED_POOL_SIZE)
+        tracks = dashboard._buildSharedItems(myPool, theirPool, lambda items: items, limit=None)
+
+        fmt = request.args.get("format", "csv").lower()
+        if fmt not in PLAYLIST_EXPORT_FORMATS:
+            fmt = "csv"
+        pairName = FILENAME_UNSAFE_RE.sub("_", f"{username}_{withUsername}").strip("_")
+        generator, mimetype = resolvePlaylistFormat(
+            tracks, fmt, title=f"Blend: {username} and {withUsername}")
+        response = Response(stream_with_context(generator), mimetype=mimetype)
+        response.headers["Content-Disposition"] = f'attachment; filename="blend_{pairName}.{fmt}"'
+        return response
+    app.add_url_rule("/compare/blend", "compareBlendExport", compareBlendExport, methods=["GET"])

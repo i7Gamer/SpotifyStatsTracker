@@ -249,6 +249,20 @@ def generatePlaylistM3u(tracks: list[dict]):
         yield f"#EXTINF:-1,{artist_names} - {title}\n{spotify_uri}\n"
 
 
+def resolvePlaylistFormat(tracks: list[dict], fmt: str, title: str):
+    """The (generator, mimetype) pair for one playlist download format.
+
+    One resolver for every route that streams a playlist file (the Playlists
+    page's tag export, Wrapped's Top 100, the Compare blend), so a new format
+    or a mimetype fix lands everywhere at once. An unknown fmt degrades to
+    CSV, matching the routes' own whitelist fallback."""
+    if fmt == "m3u":
+        return generatePlaylistM3u(tracks), "audio/x-mpegurl"
+    if fmt == "xspf":
+        return generatePlaylistXspf(tracks, title=title), "application/xspf+xml; charset=utf-8"
+    return generatePlaylistCsv(tracks), "text/csv; charset=utf-8"
+
+
 def generatePlaylistXspf(tracks: list[dict], title: str = "Spotify Tracker Playlist"):
     import xml.sax.saxutils as xml_escape
     yield '<?xml version="1.0" encoding="UTF-8"?>\n'

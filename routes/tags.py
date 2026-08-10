@@ -8,7 +8,7 @@ import re
 from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context, abort
 
 from config import PLAYLIST_EXPORT_FORMATS
-from services.export import generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf
+from services.export import resolvePlaylistFormat
 
 logger = logging.getLogger(__name__)
 
@@ -237,16 +237,7 @@ def register(app, dashboard):
             filename = f"playlist_{tag_summary or 'all'}.{fmt}"
             title = f"Playlist ({', '.join(tags)})" if tags else "Playlist"
 
-        if fmt == "m3u":
-            generator = generatePlaylistM3u(tracks)
-            mimetype = "audio/x-mpegurl"
-        elif fmt == "xspf":
-            generator = generatePlaylistXspf(tracks, title=title)
-            mimetype = "application/xspf+xml; charset=utf-8"
-        else:
-            generator = generatePlaylistCsv(tracks)
-            mimetype = "text/csv; charset=utf-8"
-
+        generator, mimetype = resolvePlaylistFormat(tracks, fmt, title)
         response = Response(stream_with_context(generator), mimetype=mimetype)
         response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
