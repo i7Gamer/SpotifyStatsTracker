@@ -375,3 +375,20 @@ class TestThePreview(TrackMergeTestCase):
         applied = db.repo.mergeTracksByIsrc()
 
         self.assertEqual(preview["merged"], applied["merged"])
+
+    def test_a_member_nobody_has_played_still_counts(self):
+        """The play tally arrives via an aggregate join over plays; a track
+        with no plays at all has no row on that side, and must stay in its
+        group at zero rather than vanish. Exactly the state a new arrival is
+        in when the backfiller completes its pair."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, plays=4)
+        self._track(db, "B" * 22, isrc=ISRC_A, plays=0)
+
+        preview = db.repo.previewMergeTracksByIsrc()
+
+        self.assertEqual(preview["merged"], 1)
+        group = preview["groups"][0]
+        self.assertEqual(group["canonical"]["trackId"], "A" * 22)
+        self.assertEqual(group["members"],
+                         [{"trackId": "B" * 22, "name": "Song", "plays": 0}])

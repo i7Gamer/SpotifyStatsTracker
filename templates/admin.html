@@ -600,8 +600,11 @@
                'only between accepted shares; each user can also opt out on their own Profile', '1rem'),
               ('track_merge', 'Merge duplicate tracks (same recording released more than once)', track_merge_enabled,
                (track_merge_preview and track_merge_preview.merged)
-                 and ('matched by ISRC; would merge ' ~ track_merge_preview.merged ~ ' track(s) into '
-                      ~ (track_merge_preview.groups | length) ~ ' song(s) right now, growing as ISRCs arrive. '
+                 and ('matched by ISRC; would collapse '
+                      ~ (track_merge_preview.merged + (track_merge_preview.groups | length))
+                      ~ ' release(s) into ' ~ (track_merge_preview.groups | length)
+                      ~ ' song(s) right now (' ~ track_merge_preview.merged
+                      ~ ' duplicate(s) removed), growing as ISRCs arrive. '
                       ~ 'Turning it off later undoes every automatic merge instantly')
                  or 'counts a song released on several albums once in the global stats; toggling off undoes every automatic merge', '1rem'),
             ] %}

@@ -384,10 +384,10 @@ class TestAdminUserSettingsHints(AdminRouteTestBase):
         "Tags": "tag panel on song/artist/album pages, tag filter on Top Songs/Artists/Albums, and the Playlists page",
         "Friends' current track on the dashboard":
             "only between accepted shares; each user can also opt out on their own Profile",
-        #< the mocked repo's isTrackMergeEnabled() returns a truthy MagicMock,
-        #  so the route passes track_merge_preview=None and the hint renders its
-        #  enabled-state wording; the dry-run wording needs a real repo and is
-        #  covered by TestTrackMergeToggle instead
+        #< the repo default is toggle-off with an empty catalog, so the route
+        #  passes a preview that merges nothing and the hint renders its
+        #  fallback wording; the dry-run wording is covered by
+        #  TestTrackMergeDryRunWording below
         "Merge duplicate tracks (same recording released more than once)":
             "counts a song released on several albums once in the global stats; "
             "toggling off undoes every automatic merge",
@@ -423,6 +423,55 @@ class TestAdminUserSettingsHints(AdminRouteTestBase):
         start = body.index("New user registration")
 
         self.assertNotIn("setting-hint", body[start:start + 200])
+
+
+class TestTrackMergeDryRunWording(AdminRouteTestBase):
+    """The dry-run hint while the toggle is off, rendered from a real planner.
+
+    The 1.49.0 wording - "would merge 433 track(s) into 407 song(s)" - read as
+    a before/after pair, i.e. a shrink of 26, when the two counts actually name
+    disjoint things (duplicates that fold away vs songs that survive them). The
+    hint now leads with the before-count so the arithmetic is on the page:
+    before = duplicates + survivors, removed = duplicates."""
+
+    def _seedGroups(self, dash):
+        """Two actionable groups: a pair and a triple - 5 releases, 2 songs,
+        3 duplicates. Multi-group on purpose: the before-count is a SUM the
+        template computes, and a single pair (2 into 1, 1 removed) could not
+        tell it apart from either of its addends."""
+        conn = dash.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb1', 'A', '')")
+            for i, isrc in enumerate(["USRC12345678"] * 2 + ["GBAYE0000001"] * 3):
+                conn.execute("INSERT INTO tracks (id, name, url, album_id, isrc, created_at) "
+                             "VALUES (?, 'Song', '', 'alb1', ?, ?)",
+                             (chr(ord("A") + i) * 22, isrc, 1000.0 + i))
+
+    def test_the_hint_shows_before_after_and_removed(self):
+        dash = self._makeApp()
+        self._seedGroups(dash)
+
+        body = self._getAdmin(dash, path="/admin?tab=settings").data.decode()
+
+        self.assertIn("matched by ISRC; would collapse 5 release(s) into "
+                      "2 song(s) right now (3 duplicate(s) removed)", body)
+        self.assertNotIn("would merge", body)   #< the misreadable shape is gone
+
+    def test_enabling_reports_the_same_arithmetic(self):
+        """The flash message after the toggle-on edge had the identical
+        misreadable shape; it states the same three numbers the same way."""
+        from urllib.parse import unquote_plus
+        dash = self._makeApp()
+        self._seedGroups(dash)
+
+        resp = self._post(dash, "/admin/user_settings", isAdmin=True,
+                          data={"track_merge": "1"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("Track merge enabled: 5 release(s) collapsed into "
+                      "2 song(s); 3 duplicate(s) removed.",
+                      unquote_plus(resp.headers["Location"]))
+        self.assertTrue(dash.repo.isTrackMergeEnabled())
 
 
 class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):

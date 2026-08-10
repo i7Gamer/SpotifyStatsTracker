@@ -838,11 +838,19 @@ class TrackQueries:
         # to decide. Fabricated ids are already excluded by getTracksMissingIsrc
         # never filling them, but the length test costs nothing and keeps this
         # honest if an ISRC ever arrives by another route.
+        #< the play tally is one aggregate pass over plays joined back, never a
+        #  correlated per-candidate COUNT: no play index leads with track_id
+        #  (both lead with username), so the correlated form re-read every play
+        #  for each candidate - measured 8 s at 840 candidates over 134k plays,
+        #  paid on every admin page view while the toggle is off. LEFT JOIN,
+        #  because a track nobody has played yet must stay in its group at zero
         rows = conn.execute(
             """
             SELECT t.id, t.isrc, t.canonical_id, t.created_at,
-                   (SELECT COUNT(*) FROM plays p WHERE p.track_id = t.id) AS play_count
+                   COALESCE(pc.play_count, 0) AS play_count
             FROM tracks t
+            LEFT JOIN (SELECT track_id, COUNT(*) AS play_count
+                       FROM plays GROUP BY track_id) pc ON pc.track_id = t.id
             WHERE t.isrc IS NOT NULL AND t.isrc <> ''
               AND t.isrc IN (SELECT isrc FROM tracks
                              WHERE isrc IS NOT NULL AND isrc <> ''

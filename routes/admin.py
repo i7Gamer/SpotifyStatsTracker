@@ -538,8 +538,15 @@ def register(app, dashboard):
             dashboard.repo.setTrackMergeEnabled(mergeWanted)
             if mergeWanted:
                 summary = dashboard.repo.mergeTracksByIsrc()
+                #< before-count first - "merged 433 into 407" reads as a shrink
+                #  of 26, but the two counts are disjoint (duplicates that fold
+                #  away vs songs that survive), so lead with their sum. NB
+                #  summary["groups"] is already a count, unlike the preview's
+                #  list - len() of it was a TypeError that 500'd this POST
+                groupCount = summary["groups"]
                 message = (f"User settings saved. Track merge enabled: "
-                           f"{summary['merged']} track(s) merged into {len(summary['groups'])} song(s).")
+                           f"{summary['merged'] + groupCount} release(s) collapsed into "
+                           f"{groupCount} song(s); {summary['merged']} duplicate(s) removed.")
             else:
                 undone = dashboard.repo.unmergeAllIsrcMerges()
                 message = (f"User settings saved. Track merge disabled: "
