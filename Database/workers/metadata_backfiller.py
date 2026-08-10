@@ -439,8 +439,6 @@ class MetadataBackfillMixin:
         if _dbmod.time.time() < self._catalogBackoffUntil:
             return
 
-        import requests
-
         target_ids = []
         try:
             # The catalog is shared - one tracks table for the whole instance -
