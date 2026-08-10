@@ -40,6 +40,72 @@ class TestNavKeyboardCss(unittest.TestCase):
         self.assertIn("padding-right: 1px;", self.css)
 
 
+class TestPageRhythmAndInlineHero(unittest.TestCase):
+    """The 2026-08-10 spacing polish, pinned.
+
+    One vertical rhythm: the page used to stack its blocks (hero, filter card,
+    lists, summary grids) 24px apart while the cards INSIDE a list sat 18px
+    apart - close enough to look like a mistake rather than a hierarchy. The
+    lower value is the standard now, everywhere a block or card ends.
+
+    And the Top Songs/Artists/Albums hero holds its one-sentence description
+    beside the heading (desktop/tablet) instead of under it, in a shorter
+    pane; phones stack it back underneath by media query, not by luck of
+    where the sentence happens to wrap."""
+
+    _RHYTHM_SELECTORS = (
+        ".hero", ".filter-section", ".import-card", ".biography-card",
+        ".track-summary-grid", ".track-summary-grid-3",
+        ".track-list + .track-list",
+    )
+
+    def setUp(self):
+        self.css = _readFile(_CSS_PATH)
+
+    def _block(self, selector):
+        import re
+        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
+        self.assertIsNotNone(match, f"{selector} missing from style.css")
+        return match.group(1)
+
+    def test_every_stacked_block_shares_the_18px_rhythm(self):
+        for selector in self._RHYTHM_SELECTORS:
+            with self.subTest(selector=selector):
+                block = self._block(selector)
+                margin = "margin-top" if "+" in selector else "margin-bottom"
+                self.assertIn(f"{margin}: 18px", block)
+                #< the margin specifically - horizontal PADDING may still say
+                #  24px (.hero pads 28px 24px), and that is not the rhythm
+                self.assertNotIn(f"{margin}: 24px", block)
+
+    def test_the_between_cards_gap_is_the_same_18px(self):
+        for selector in (".track-list", ".track-summary-grid",
+                         ".track-summary-grid-3", ".dashboard-summary"):
+            with self.subTest(selector=selector):
+                self.assertIn("gap: 18px", self._block(selector))
+
+    def test_the_top_pages_hero_is_the_inline_variant(self):
+        for template in ("top_songs.html", "top_artists.html", "top_albums.html"):
+            with self.subTest(template=template):
+                markup = _readFile(os.path.join(_ROOT, "templates", template))
+                self.assertIn('class="hero hero-inline"', markup)
+
+    def test_the_inline_hero_rides_beside_the_heading_and_shrinks_the_pane(self):
+        self.assertIn("display: flex", self._block(".hero-inline .hero-content"))
+        self.assertIn("align-items: baseline", self._block(".hero-inline .hero-content"))
+        self.assertIn("padding: 18px 24px", self._block(".hero-inline"))
+        self.assertIn("margin-top: 0", self._block(".hero-inline .hero-content p"))
+
+    def test_phones_stack_the_description_back_underneath(self):
+        """By media query, not by wrap: a layout that depends on how long the
+        sentence happens to be isn't a layout."""
+        mobile = self.css[self.css.index(".hero-inline"):]
+        mobile = mobile[mobile.index("@media (max-width: 768px)"):]
+        blockEnd = mobile.index(".hero-inline .hero-content p")
+        self.assertIn("display: block", mobile[:blockEnd])
+        self.assertIn("margin-top: 12px", mobile[blockEnd:blockEnd + 200])
+
+
 class TestMobileNavToggleAnnouncesItsState(unittest.TestCase):
     """Opening the mobile menu only flips CSS classes, which a screen reader
     cannot see. `.artist-toggle` and the play-embed button both carry

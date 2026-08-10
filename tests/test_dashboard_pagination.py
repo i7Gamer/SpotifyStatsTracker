@@ -890,8 +890,9 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
 
 class TestHistoryFilterSpacing(unittest.TestCase):
     """On /history the filter form is the last thing in the hero, so
-    .filter-section's 24px bottom margin only pads the hero's own padding out.
-    The dashboard keeps it - there the summary cards follow the form."""
+    .filter-section's bottom margin (18px, the page rhythm) would only pad the
+    hero's own padding out. The dashboard keeps it - there the summary cards
+    follow the form."""
 
     def setUp(self):
         cssPath = os.path.join(os.path.dirname(__file__), "..", "static", "css", "style.css")
@@ -907,7 +908,8 @@ class TestHistoryFilterSpacing(unittest.TestCase):
         self.assertIn("margin-bottom: 0", self._block(".hero-content > .filter-section:last-child"))
 
     def test_the_shared_rule_still_spaces_a_followed_filter_form(self):
-        self.assertIn("margin-bottom: 24px", self._block(".filter-section"))
+        #< 18px: the one vertical rhythm every stacked block shares now
+        self.assertIn("margin-bottom: 18px", self._block(".filter-section"))
 
     def test_history_puts_nothing_after_the_filter_form_in_the_hero(self):
         """The scoped rule above only bites while this stays true."""

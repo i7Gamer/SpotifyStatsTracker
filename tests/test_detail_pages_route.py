@@ -1864,7 +1864,7 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
 class TestDetailHeroSpacingCss(unittest.TestCase):
     """The stylesheet half of the gap under a detail page's hero card.
 
-    `.page > .track-list` gave that card its 24px, and the two-phase split
+    `.page > .track-list` gave that card its gap, and the two-phase split
     moved the list out of main.page and into #detailBody - a direct-child
     selector the wrapper silently broke. It went unnoticed because the Spotify
     embed sits in that gap and carries a margin of its own, so the hero only
