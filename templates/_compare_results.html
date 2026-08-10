@@ -56,19 +56,18 @@
 {% endfor %}
 
 {# The blend download, filling the slot beside the Top Common Songs heading
-   (see compare.html) with links built from THIS refresh's filters. Emptied
-   when there is nothing shared. hx-boost="false", or htmx would swap the
-   file's bytes into the page instead of letting the browser download it. #}
-<span id="blendExportLinks" hx-swap-oob="innerHTML">
+   (see compare.html) with a URL built from THIS refresh's filters. Emptied
+   when there is nothing shared. The control itself is Wrapped's own
+   (_playlist_download.html) - same dropdown, same button, one partial. #}
+<div id="blendExportLinks" hx-swap-oob="innerHTML">
   {%- if sharedSongs %}
-  <span style="color: var(--muted); font-size: 0.85rem;">
-    Download all {{ similarities.sharedSongCount }} shared song(s):
-    <a href="{{ blendExportUrl }}" hx-boost="false">CSV</a> &middot;
-    <a href="{{ blendExportUrl }}&format=m3u" hx-boost="false">M3U</a> &middot;
-    <a href="{{ blendExportUrl }}&format=xspf" hx-boost="false">XSPF</a>
-  </span>
+  {% with downloadId = 'blendPlaylistFormat',
+          downloadUrl = blendExportUrl,
+          downloadLabel = 'Download Blend' %}
+    {% include '_playlist_download.html' %}
+  {% endwith %}
   {%- endif %}
-</span>
+</div>
 
 {# The trend is DATA, and htmx swaps HTML - so it rides along as a JSON island
    and compare.js repaints the canvas from it in an htmx:afterSwap listener.

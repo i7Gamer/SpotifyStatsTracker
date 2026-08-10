@@ -293,8 +293,10 @@ if (typeof document !== 'undefined') {
   // --- htmx wiring -----------------------------------------------------------
 
   // Both of these buttons are inside content the server re-renders (the export
-  // button out of band, the playlist download inside the swap container), so
-  // neither can hold a listener of its own.
+  // button out of band, the stats filters inside the swap container), so
+  // neither can hold a listener of its own. The playlist download that used to
+  // be handled here is the shared _playlist_download.html control now, and
+  // chrome-common.js owns its (equally delegated) handler.
   document.body.addEventListener('click', function (evt) {
     if (!evt.target || !evt.target.closest) return;
 
@@ -306,13 +308,6 @@ if (typeof document !== 'undefined') {
     var exportButton = evt.target.closest('#exportWrappedBtn');
     if (exportButton) {
       exportSummaryCard(exportButton);
-      return;
-    }
-    var playlistButton = evt.target.closest('#downloadWrappedPlaylistBtn');
-    if (playlistButton) {
-      var format = byId('wrappedPlaylistFormat').value;
-      window.location.href = '/playlist/export?year=' + encodeURIComponent(playlistButton.dataset.year) +
-                             '&format=' + encodeURIComponent(format);
     }
   });
 

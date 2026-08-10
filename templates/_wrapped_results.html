@@ -126,19 +126,13 @@
   <div class="play-log-header">
     <h2>Top Songs</h2>
     {% if not publicView and topSongs %}
-    <div class="play-log-controls">
-      <div class="filter-group">
-        <label for="wrappedPlaylistFormat">Format:</label>
-        <select id="wrappedPlaylistFormat">
-          <option value="csv">CSV</option>
-          <option value="m3u">M3U</option>
-          <option value="xspf">XSPF</option>
-        </select>
-      </div>
-      <button type="button" id="downloadWrappedPlaylistBtn" class="button" data-year="{{ year }}">
-        Download Top 100
-      </button>
-    </div>
+    {# The shared control (_playlist_download.html); its handler lives in
+       chrome-common.js now, not wrapped.js. #}
+    {% with downloadId = 'wrappedPlaylistFormat',
+            downloadUrl = url_for('playlistExport', year=year),
+            downloadLabel = 'Download Top 100' %}
+      {% include '_playlist_download.html' %}
+    {% endwith %}
     {% endif %}
   </div>
   <section class="track-list">

@@ -21,19 +21,21 @@ function makeImg(complete) {
 
 // Loads the script fresh against a new stub. The module cache would otherwise
 // hand back the first load's side effects, and readyState is read at load time.
-function loadScript(readyState, images) {
+// elementsById feeds getElementById (the playlist handler looks its format
+// <select> up by id); everything else has no elements to find.
+function loadScript(readyState, images, elementsById) {
   const listeners = {};
   const sweptRoots = [];
-  global.window = { addEventListener() {} };
+  global.window = { addEventListener() {}, location: { href: '' } };
   global.document = {
     readyState,
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     querySelectorAll(selector) { sweptRoots.push({ root: 'document', selector }); return images; },
-    getElementById() { return null; },   //< no #scroll-to-top in this stub
+    getElementById(id) { return (elementsById || {})[id] || null; },
   };
   delete require.cache[require.resolve(SCRIPT)];
   require(SCRIPT);
-  return { listeners, sweptRoots };
+  return { listeners, sweptRoots, window: global.window };
 }
 
 function run(name, fn) {
@@ -83,6 +85,44 @@ run('an htmx swap sweeps the swapped element, not the whole document', () => {
 
   assert.deepStrictEqual(swapped.classes, ['loaded']);
   assert.strictEqual(sweptRoots.length, before, 'the document was not re-swept');
+});
+
+// ------------------------------------------------------- playlist download
+// The shared _playlist_download.html control (Wrapped's Top 100, the Compare
+// blend): the delegated click handler reads the format <select> the button
+// names and navigates to the export URL with the format appended.
+
+function clickPlaylistButton(btn, elementsById) {
+  const { listeners, window } = loadScript('interactive', [], elementsById);
+  listeners['click'].forEach(fn => fn({
+    target: { closest: sel => (sel === '.js-playlist-download' ? btn : null) },
+  }));
+  return window;
+}
+
+run('the button navigates to its export url with the chosen format', () => {
+  const btn = { dataset: { formatSelect: 'blendPlaylistFormat',
+                           exportUrl: '/compare/blend?with=bob&interval=' } };
+
+  const window = clickPlaylistButton(btn, { blendPlaylistFormat: { value: 'm3u' } });
+
+  //< & not ?: the blend URL already carries a query of its own
+  assert.strictEqual(window.location.href, '/compare/blend?with=bob&interval=&format=m3u');
+});
+
+run('an export url without a query gets ? not &', () => {
+  const btn = { dataset: { formatSelect: 'wrappedPlaylistFormat',
+                           exportUrl: '/playlist/export' } };
+
+  const window = clickPlaylistButton(btn, { wrappedPlaylistFormat: { value: 'csv' } });
+
+  assert.strictEqual(window.location.href, '/playlist/export?format=csv');
+});
+
+run('a click that is not the button leaves the page alone', () => {
+  const window = clickPlaylistButton(null, {});
+
+  assert.strictEqual(window.location.href, '');
 });
 
 console.log('all chrome-common tests passed');

@@ -109,3 +109,23 @@
     initScrollToTop();
   }
 })();
+
+// Playlist-file download buttons (_playlist_download.html): ONE delegated
+// handler for every page the shared control appears on - Wrapped's Top 100
+// (whose bespoke wrapped.js branch this replaced) and the Compare blend.
+// It reads the format <select> the button names and NAVIGATES to the export
+// URL with the format appended, so the browser's own download flow handles
+// the attachment; appending with ? or & lets the URL arrive with or without
+// a query of its own. Delegated off document because Compare's control
+// arrives inside an htmx swap - a listener bound at load would never see it.
+(function() {
+  document.addEventListener('click', (evt) => {
+    const btn = evt.target.closest('.js-playlist-download');
+    if (!btn) return;
+    const select = document.getElementById(btn.dataset.formatSelect);
+    const format = select ? select.value : 'csv';
+    const url = btn.dataset.exportUrl;
+    const joiner = url.indexOf('?') === -1 ? '?' : '&';
+    window.location.href = url + joiner + 'format=' + encodeURIComponent(format);
+  });
+})();

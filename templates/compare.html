@@ -248,13 +248,14 @@
 
 <div data-category="common-top-songs">
   <section style="margin-bottom: 2.5rem;">
-    {# Heading row, Wrapped-style: title left, blend download right. The span
-       is an EMPTY slot the results fragment fills out-of-band on every
-       refresh (see _compare_results.html) - a link printed here in the shell
-       would go stale the moment a filter changed. #}
-    <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;">
+    {# Heading row, Wrapped-style: title left, the blend's format dropdown +
+       download button (_playlist_download.html) right. The div is an EMPTY
+       slot the results fragment fills out-of-band on every refresh (see
+       _compare_results.html) - a control printed here in the shell would
+       carry stale filters the moment they changed. #}
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
       <h2>Top Common Songs</h2>
-      <span id="blendExportLinks"></span>
+      <div id="blendExportLinks"></div>
     </div>
     <div class="track-list htmx-fade-target" id="sharedSongsList">
       <p class="loading">Loading…</p>

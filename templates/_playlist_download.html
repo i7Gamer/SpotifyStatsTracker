@@ -1,0 +1,35 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The playlist-file download control: a Format dropdown and a download
+   button, exactly as Wrapped's Top 100 introduced it - now shared with the
+   Compare blend so the two controls cannot drift.
+
+   The caller provides (via {% with %}):
+     downloadId    - id for the format <select>; must be unique per page,
+                     the label's `for` and the button's lookup both use it
+     downloadUrl   - the export URL WITHOUT a format param; the shared
+                     handler in chrome-common.js appends format=<selection>
+                     with ? or & as the URL already requires
+     downloadLabel - the button's text
+
+   Plain attributes only (no hx-on:, no inline handlers): the CSP grants
+   'unsafe-eval' to the detail pages ONLY, and the delegated listener in
+   chrome-common.js is loaded by both layouts on every page - including
+   controls that arrive inside an htmx swap, which is how Compare's gets
+   here. #}
+<div class="play-log-controls">
+  <div class="filter-group">
+    <label for="{{ downloadId }}">Format:</label>
+    <select id="{{ downloadId }}">
+      <option value="csv">CSV</option>
+      <option value="m3u">M3U</option>
+      <option value="xspf">XSPF</option>
+    </select>
+  </div>
+  <button type="button" class="button js-playlist-download"
+          data-format-select="{{ downloadId }}"
+          data-export-url="{{ downloadUrl }}">
+    {{ downloadLabel }}
+  </button>
+</div>

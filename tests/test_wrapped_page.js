@@ -301,21 +301,9 @@ run('an unknown theme falls back to the default rather than drawing nothing', ()
   assert.ok(page.canvas.texts.includes('2026 WRAPPED'));
 });
 
-// ------------------------------------------------------- playlist download
-
-run('the playlist button navigates to the export with the chosen format', () => {
-  const format = makeElement({ value: 'csv' });
-  const page = loadWrapped({ elements: { wrappedPlaylistFormat: format } });
-  const btn = makeElement({ dataset: { year: '2026' } });
-  btn.selectors = ['#downloadWrappedPlaylistBtn'];
-
-  clickOn(page, btn);
-
-  const url = new URL(page.window.location.href, 'http://localhost');
-  assert.strictEqual(url.pathname, '/playlist/export');
-  assert.strictEqual(url.searchParams.get('year'), '2026');
-  assert.strictEqual(url.searchParams.get('format'), 'csv');
-});
+// The playlist download that used to be tested here is the shared
+// _playlist_download.html control now - its (still delegated) handler lives
+// in chrome-common.js and is pinned by test_chrome_common.js instead.
 
 // ----------------------------------------------------------- share modal
 

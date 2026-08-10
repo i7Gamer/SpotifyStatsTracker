@@ -185,14 +185,16 @@ class TestWrappedDownloadButtonVisibility(AppTestCase):
 
         resp = self._getWrapped(db)
 
-        self.assertIn(b'id="downloadWrappedPlaylistBtn"', resp.data)
+        #< the shared _playlist_download.html control's button class - the
+        #  bespoke #downloadWrappedPlaylistBtn id went with the bespoke handler
+        self.assertIn(b'js-playlist-download', resp.data)
 
     def test_button_absent_when_year_has_no_songs(self):
         db = self._makeDb(songs=[])
 
         resp = self._getWrapped(db)
 
-        self.assertNotIn(b'id="downloadWrappedPlaylistBtn"', resp.data)
+        self.assertNotIn(b'js-playlist-download', resp.data)
 
     def test_button_absent_on_public_shared_view(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
@@ -204,7 +206,7 @@ class TestWrappedDownloadButtonVisibility(AppTestCase):
             resp = client.get(f"/shared/{token}")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertNotIn(b'id="downloadWrappedPlaylistBtn"', resp.data)
+        self.assertNotIn(b'js-playlist-download', resp.data)
 
 
 if __name__ == "__main__":
