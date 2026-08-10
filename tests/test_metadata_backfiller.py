@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from conftest import DatabaseTestCase
 from Database.database import Database
 from Database.workers.metadata_backfiller import TOKEN_REFRESH_REAUTH_THRESHOLD
-from test_track_isrc_backfill import _insertTrack
+from test_track_isrc_backfill import REAL_ID, _insertTrack
 
 
 def runsCycles(db, count, event=None):
@@ -803,6 +803,151 @@ class TestPerIdAlbumLookups(DatabaseTestCase):
         db._metadataBackfillLoop()
 
         mock_spotify.assert_not_called()
+
+
+class TestAlbumLookupsShareTheQuotaStandDown(DatabaseTestCase):
+    """Spotify meters ONE per-app budget for the catalog endpoints - measured
+    live on 2026-08-09, when the ISRC step stood itself down for the day while
+    the album step, on the same app and the same quota, would have gone on
+    spending a token refresh and one refused request every cycle to rediscover
+    the wall. So the wall is shared: a QUOTA_EXCEEDED on either step arms it,
+    the ISRC step waits it out (it has no other source), and the album step
+    skips straight to the cookie client - which answers through a different
+    door and spends no Web-API quota at all."""
+
+    def _db(self, albumIds=("alb1",)):
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            for albumId in albumIds:
+                conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) "
+                             "VALUES (?, ?, '', 0.0, 0)", (albumId, f"Album {albumId}"))
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        db.backfiller_stop_event.is_set.return_value = False
+        #< exactly one cycle, keyed on WHICH wait it is - see TestPerIdAlbumLookups
+        db.backfiller_stop_event.wait.side_effect = (
+            lambda seconds=None: seconds == db.BACKFILLER_IDLE_WAIT_SECONDS)
+        self.addCleanup(Database._active_backfills.clear)
+        return db, conn
+
+    def _albumPayload(self, albumId):
+        return {"id": albumId, "name": f"Album {albumId}", "release_date": "2020-05-05",
+                "total_tracks": 7, "tracks": {"items": []}}
+
+    def _quotaResponse(self, retryAfter=None):
+        response = MagicMock()
+        response.status_code = 429
+        response.text = '{"error":{"status":429,"message":"Too many requests","reason":"QUOTA_EXCEEDED"}}'
+        response.headers = {"Retry-After": retryAfter} if retryAfter is not None else {}
+        return response
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_walled_cycle_asks_the_cookie_client_not_the_web_api(self, mock_get, mock_spotify,
+                                                                   mock_refresh):
+        """While the wall is up, a Web-API album request buys exactly one 429,
+        and the token refresh that precedes it buys nothing at all. The cookie
+        client is the whole album path meanwhile - metadata keeps arriving, at
+        zero quota."""
+        import time
+        db, conn = self._db()
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb1")
+        db._catalogBackoffUntil = time.time() + 3600
+
+        db._metadataBackfillLoop()
+
+        mock_get.assert_not_called()       #< no refused request bought on the wall
+        mock_refresh.assert_not_called()   #< and no token round-trip spent deciding to
+        mock_spotify.assert_called_once_with()
+        self.assertGreater(conn.execute("SELECT release_date FROM albums WHERE id='alb1'").fetchone()[0], 0)
+
+    @patch("Database.database.logger")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_walled_cycle_does_not_claim_the_refresh_failed(self, mock_get, mock_spotify,
+                                                              mock_refresh, mock_logger):
+        """The fallback warning diagnoses a refresh failure. While walled, the
+        token was deliberately never asked for - logging "Failed to refresh"
+        would send whoever reads it off to debug credentials that are fine."""
+        import time
+        db, _ = self._db()
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb1")
+        db._catalogBackoffUntil = time.time() + 3600
+
+        db._metadataBackfillLoop()
+
+        lines = [args[0] for args, _ in mock_logger.warning.call_args_list]
+        self.assertFalse(any("Failed to refresh access token" in line for line in lines), lines)
+
+    @patch("Database.database.logger")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_an_album_quota_refusal_arms_the_stand_down(self, mock_get, mock_spotify,
+                                                        mock_refresh, mock_logger):
+        """The other direction: a 429 met on the ALBUM step is the same budget
+        running out, so it must arm the same wall - honouring Spotify's own
+        Retry-After, exactly as the ISRC step does."""
+        import time
+        db, _ = self._db()
+        mock_get.return_value = self._quotaResponse(retryAfter="120")
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb1")
+
+        before = time.time()
+        db._metadataBackfillLoop()
+
+        self.assertGreaterEqual(getattr(db, "_catalogBackoffUntil", 0.0), before + 120)
+        self.assertLess(db._catalogBackoffUntil, before + 120 + 60)
+        #< the walled batch answered nothing, so the cookie client still serves
+        #  this cycle - standing down is about quota, not about giving up
+        mock_spotify.assert_called_once_with()
+
+    @patch("Database.database.logger")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_an_album_armed_wall_stands_the_isrc_step_down_too(self, mock_get, mock_spotify,
+                                                               mock_refresh, mock_logger):
+        """One budget, one wall, both directions: the ISRC step must not walk
+        into a quota the album step already found exhausted."""
+        db, conn = self._db()
+        mock_get.return_value = self._quotaResponse()
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb1")
+
+        db._metadataBackfillLoop()
+
+        _insertTrack(conn, REAL_ID)
+        db._backfillTrackIsrcs(lambda: "mock_token",
+                               MagicMock(is_set=MagicMock(return_value=False)))
+
+        trackUrls = [c[0][0] for c in mock_get.call_args_list if "/v1/tracks/" in c[0][0]]
+        self.assertEqual(trackUrls, [])
+
+    @patch("Database.database.logger")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_an_isrc_armed_wall_covers_the_album_step_the_same_cycle(self, mock_get, mock_spotify,
+                                                                     mock_refresh, mock_logger):
+        """The ISRC step runs first, so the wall it hits is already up when the
+        album step's turn comes - waiting a cycle to honour it would spend one
+        more refused request for nothing."""
+        db, conn = self._db()
+        _insertTrack(conn, REAL_ID)
+        mock_get.return_value = self._quotaResponse()
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb1")
+
+        db._metadataBackfillLoop()
+
+        albumUrls = [c[0][0] for c in mock_get.call_args_list if "/v1/albums" in c[0][0]]
+        self.assertEqual(albumUrls, [])
+        mock_spotify.assert_called_once_with()
 
 
 class TestReauthPrompting(DatabaseTestCase):

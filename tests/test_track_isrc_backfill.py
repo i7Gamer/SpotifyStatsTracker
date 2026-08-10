@@ -9,7 +9,7 @@ from conftest import DatabaseTestCase, normalizeTrackForTest
 from Database.database import Database
 from Database.repository import TRACK_ISRC_RETRY_SECONDS
 from Database.workers.metadata_backfiller import (
-    CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT, ISRC_QUOTA_BACKOFF_SECONDS,
+    CATALOG_QUOTA_BACKOFF_SECONDS, CONSECUTIVE_FAILURE_ABORT, ERROR_BODY_LOG_LIMIT,
     TRACK_BATCH_SIZE,
 )
 
@@ -359,7 +359,7 @@ class TestPerIdIsrcLookups(DatabaseTestCase):
         mock_get.return_value = self._response(trackId=REAL_ID)
 
         #< the window elapses; nothing about this test depends on real time
-        db._isrcBackoffUntil = 0.0
+        db._catalogBackoffUntil = 0.0
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
         self.assertEqual(self._isrc(conn, REAL_ID), "USRC12345678")
@@ -376,8 +376,8 @@ class TestPerIdIsrcLookups(DatabaseTestCase):
         before = time.time()
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
-        self.assertGreaterEqual(db._isrcBackoffUntil, before + 120)
-        self.assertLess(db._isrcBackoffUntil, before + 120 + 60)
+        self.assertGreaterEqual(db._catalogBackoffUntil, before + 120)
+        self.assertLess(db._catalogBackoffUntil, before + 120 + 60)
 
     @patch("Database.database.logger")
     @patch("requests.get")
@@ -392,7 +392,7 @@ class TestPerIdIsrcLookups(DatabaseTestCase):
         before = time.time()
         db._backfillTrackIsrcs(_token(), MagicMock(is_set=MagicMock(return_value=False)))
 
-        self.assertGreaterEqual(db._isrcBackoffUntil, before + ISRC_QUOTA_BACKOFF_SECONDS)
+        self.assertGreaterEqual(db._catalogBackoffUntil, before + CATALOG_QUOTA_BACKOFF_SECONDS)
 
     @patch("Database.database.logger")
     @patch("requests.get")

@@ -73,8 +73,10 @@ TOKEN_REFRESH_REAUTH_THRESHOLD = 3
 # because it is the one that says stopping now helps.
 SPOTIFY_RATE_LIMIT_STATUS = 429
 
-# How long to stand the ISRC step down when Spotify answers 429 without saying
-# for how long.
+# How long to stand the Web-API catalog lookups down when Spotify answers 429
+# without saying for how long. One stand-down for BOTH catalog steps - the ISRC
+# batch and the album batch spend the same per-app quota, so a refusal on
+# either is a refusal for both (see _standDownCatalogLookups).
 #
 # Measured, not chosen: the live instance drew QUOTA_EXCEEDED at 16:24 on
 # 2026-08-08 and was still drawing it 15.5 hours and 557 requests later, because
@@ -85,9 +87,9 @@ SPOTIFY_RATE_LIMIT_STATUS = 429
 # An hour is the compromise: short enough that a window which has quietly
 # reopened is noticed the same day, long enough that a closed one costs 24
 # requests rather than 288.
-ISRC_QUOTA_BACKOFF_SECONDS = 3600
+CATALOG_QUOTA_BACKOFF_SECONDS = 3600
 # A malformed or absurd Retry-After must not park the queue for a week.
-ISRC_QUOTA_BACKOFF_MAX_SECONDS = 24 * 3600
+CATALOG_QUOTA_BACKOFF_MAX_SECONDS = 24 * 3600
 
 
 def _retryAfterSeconds(resp) -> float:
@@ -101,8 +103,8 @@ def _retryAfterSeconds(resp) -> float:
     try:
         seconds = float(header)
     except (TypeError, ValueError):
-        return ISRC_QUOTA_BACKOFF_SECONDS
-    return max(0.0, min(seconds, ISRC_QUOTA_BACKOFF_MAX_SECONDS))
+        return CATALOG_QUOTA_BACKOFF_SECONDS
+    return max(0.0, min(seconds, CATALOG_QUOTA_BACKOFF_MAX_SECONDS))
 
 
 def _responseDetail(resp) -> str:
@@ -211,6 +213,26 @@ class MetadataBackfillMixin:
             artists.append({"id": artistId, "name": name, "url": url, "imageId": artistId})
         return artists
 
+    def _standDownCatalogLookups(self, resp) -> None:
+        """Arm this user's catalog stand-down from a 429's Retry-After.
+
+        One wall for both Web-API steps, because Spotify meters one budget: the
+        ISRC lookups and the album lookups spend the same per-app quota, so a
+        refusal met on either is a refusal for both. What each does behind the
+        wall differs - the ISRC step waits it out (it has no other source),
+        while the album step goes straight to the cookie client, which answers
+        through a different door and spends no Web-API quota at all.
+
+        Logged unconditionally, unlike the album batch's debug-gated failure
+        line: arming is a state change that can silence both steps for a day
+        (Retry-After runs to ~23h on the live instance), never colour on a
+        story the log already tells."""
+        standDown = _retryAfterSeconds(resp)
+        self._catalogBackoffUntil = _dbmod.time.time() + standDown
+        _dbmod.logger.warning(
+            "[Backfiller-%s] Spotify refused on quota; standing Web-API catalog "
+            "lookups down for %.0f minutes", self.user, standDown / 60)
+
     def _noteTokenHealth(self, getAccessToken, hasWebApiCreds: bool) -> None:
         """Count consecutive cycles whose token refresh failed, and ask the
         account to re-authorize once that is clearly not a blip.
@@ -291,7 +313,10 @@ class MetadataBackfillMixin:
 
         # Before the queue read and before the token: a quota wall that lasts
         # hours must not cost a refresh round-trip every five minutes while it
-        # does. See ISRC_QUOTA_BACKOFF_SECONDS for what standing down is worth.
+        # does. See CATALOG_QUOTA_BACKOFF_SECONDS for what standing down is
+        # worth. The album step honours the same wall (its Web-API branch is
+        # skipped for the cookie client), and either step's 429 can have armed
+        # it - one per-app budget, one stand-down.
         #
         # Per USER, and that is correct rather than incidental: Spotify meters
         # per registered app, and each account here has its own. Measured when
@@ -305,7 +330,7 @@ class MetadataBackfillMixin:
         # idle two accounts that still have quota. The one setup where sharing
         # WOULD be right is every account pointed at a single app - if that ever
         # happens here, key this on the client_id rather than on the instance.
-        if _dbmod.time.time() < getattr(self, "_isrcBackoffUntil", 0.0):
+        if _dbmod.time.time() < getattr(self, "_catalogBackoffUntil", 0.0):
             return
 
         import requests
@@ -387,11 +412,7 @@ class MetadataBackfillMixin:
                         #  outlasts the five minutes until the next one
                         rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
                         if rateLimited:
-                            standDown = _retryAfterSeconds(resp)
-                            self._isrcBackoffUntil = _dbmod.time.time() + standDown
-                            _dbmod.logger.warning(
-                                "[Backfiller-%s] Spotify refused on quota; standing the ISRC "
-                                "backfill down for %.0f minutes", self.user, standDown / 60)
+                            self._standDownCatalogLookups(resp)
                 except Exception as e:
                     #< caught HERE, per track, and not by the batch's handler
                     #  below: one reset connection used to cost the other
@@ -570,8 +591,16 @@ class MetadataBackfillMixin:
                     #< the cycle's shared token, minted here only if the ISRC
                     #  step above did not already need it (step 2). Asked for
                     #  behind the early-out above, so a drained album queue
-                    #  costs nothing
-                    access_token = getAccessToken()
+                    #  costs nothing - and not asked for at all while the
+                    #  catalog stand-down is armed: these lookups spend the
+                    #  same per-app quota the 429 was about (see the gate in
+                    #  _backfillTrackIsrcs), so a walled cycle skips straight
+                    #  to the cookie client instead of buying one refused
+                    #  request and a token round-trip to rediscover the wall.
+                    #  Read fresh each cycle, so a wall the ISRC step raised
+                    #  moments ago already covers this step's turn
+                    quotaWalled = _dbmod.time.time() < getattr(self, "_catalogBackoffUntil", 0.0)
+                    access_token = None if quotaWalled else getAccessToken()
                     self._noteTokenHealth(getAccessToken, hasWebApiCreds)
                     if access_token:
                         import requests
@@ -609,6 +638,10 @@ class MetadataBackfillMixin:
                                     albumFailures += 1
                                     consecutiveFailures += 1
                                     rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
+                                    #< the same budget the ISRC step spends, so
+                                    #  a refusal here arms the shared wall too
+                                    if rateLimited:
+                                        self._standDownCatalogLookups(resp)
                             except Exception as e:
                                 #< per album, so one reset does not cost the rest
                                 #  of the batch its turn
@@ -641,7 +674,11 @@ class MetadataBackfillMixin:
                                     "[Backfiller-%s] Spotify Web API returned %s for %d of %d album(s).",
                                     self.user, firstFailure, albumFailures, len(target_ids)
                                 )
-                    elif hasWebApiCreds:
+                    elif hasWebApiCreds and not quotaWalled:
+                        #< not while walled: the token was deliberately never
+                        #  asked for, and this line's diagnosis - a refresh
+                        #  failure - would send the reader to debug credentials
+                        #  that are fine. The stand-down already said why
                         _dbmod.logger.warning("[Backfiller-%s] Failed to refresh access token. Falling back to the cookie client.", self.user)
 
                     if use_fallback:
