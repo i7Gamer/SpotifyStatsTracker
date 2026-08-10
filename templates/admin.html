@@ -624,6 +624,12 @@
             {% endfor %}
             <button type="submit" class="primary-button admin-save-btn">Save</button>
           </form>
+          {# The other half of duplicate handling: ISRC merges what it can
+             prove; this queue asks about what it can't (remasters, imports). #}
+          <p style="color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0;">
+            Duplicates ISRC cannot decide (remasters, imported rows):
+            <a href="{{ url_for('adminMergeReview') }}">Merge review</a>
+          </p>
         </div>
       </article>
 

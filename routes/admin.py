@@ -642,6 +642,53 @@ def register(app, dashboard):
     app.add_url_rule("/admin/split_track/<track_id>", "adminSplitTrack", adminSplitTrack, methods=["POST"])
 
     @requiresAdmin
+    def adminMergeReview(username, db):
+        """Admin-only: the manual review queue - same-title, same-artist,
+        duration-agreeing groups the ISRC tier can NOT decide (a remaster is a
+        new master with its own ISRC; a fabricated import row has none at all).
+        The page proposes, a person rules, and both verdicts write the pinned
+        decision rows every automatic pass already honours."""
+        return render_template(
+            "merge_review.html",
+            review=dashboard.repo.getMergeReviewCandidates(),
+            track_merge_enabled=dashboard.repo.isTrackMergeEnabled(),
+            message=request.args.get("message"),
+            error=request.args.get("error"),
+            section="admin",
+        )
+    app.add_url_rule("/admin/merge-review", "adminMergeReview", adminMergeReview, methods=["GET"])
+
+    @requiresAdmin
+    def adminMergeReviewMerge(username, db):
+        """Admin-only: a person's "same recording" for one proposed member.
+        Admin-gated like the toggle and the split, and for the same reason: a
+        merge is instance-wide, so it moves every account's numbers."""
+        try:
+            merged = dashboard.repo.mergeTrackManually(
+                request.form.get("member", ""), request.form.get("canonical", ""),
+                decidedBy=username)
+        except ValueError:
+            abort(400)
+        return redirect(url_for("adminMergeReview",
+                                message=f"Merged {merged} release(s) into one song."))
+    app.add_url_rule("/admin/merge_review/merge", "adminMergeReviewMerge",
+                     adminMergeReviewMerge, methods=["POST"])
+
+    @requiresAdmin
+    def adminMergeReviewReject(username, db):
+        """Admin-only: a person's "not the same recording". Recorded, so the
+        pair leaves the queue for good and the ISRC matcher honours it too."""
+        try:
+            dashboard.repo.dismissMergeCandidate(request.form.get("member", ""),
+                                                 decidedBy=username)
+        except ValueError:
+            abort(400)
+        return redirect(url_for("adminMergeReview",
+                                message="Kept separate - this release will not be suggested again."))
+    app.add_url_rule("/admin/merge_review/reject", "adminMergeReviewReject",
+                     adminMergeReviewReject, methods=["POST"])
+
+    @requiresAdmin
     def adminSpotifySettings(username, db):
         """Admin-only: the Spotify Developer API backfill kill switch
         (missed-plays recovery and album/track metadata fetching)."""

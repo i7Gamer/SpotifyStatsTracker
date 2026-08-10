@@ -1,0 +1,142 @@
+"""The /admin/merge-review page: the review queue's buttons, guards and flashes.
+
+Repo-level semantics (what is proposed, what the verdicts write) live in
+test_merge_review.py; this file covers the surface - the page renders the real
+planner's groups, the two POST verbs write through the real repo, and none of
+it is reachable without admin."""
+import os
+import sys
+import unittest
+from unittest.mock import patch, MagicMock
+from urllib.parse import unquote_plus
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from _app_factory import AppTestCase
+
+DURATION_MS = 200000
+
+
+class MergeReviewRouteTestCase(AppTestCase):
+    def _seedPair(self, dash):
+        """One review-worthy pair: an original out-playing its remaster."""
+        conn = dash.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO users (username, created_at, is_admin) "
+                         "VALUES ('alice', 0, 1)")
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb1', 'Talking Heads: 77', '')")
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb2', 'The Best Of', '')")
+            conn.execute("INSERT INTO artists (id, name, url) VALUES ('art1', 'Talking Heads', '')")
+            for trackId, name, albumId, plays in (
+                    ("A" * 22, "Psycho Killer", "alb1", 70),
+                    ("B" * 22, "Psycho Killer - 2005 Remaster", "alb2", 13)):
+                conn.execute(
+                    "INSERT INTO tracks (id, name, url, album_id, duration_ms, created_at) "
+                    "VALUES (?, ?, '', ?, ?, 1000.0)", (trackId, name, albumId, DURATION_MS))
+                conn.execute("INSERT INTO track_artists (track_id, artist_id, position) "
+                             "VALUES (?, 'art1', 0)", (trackId,))
+                for i in range(plays):
+                    conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                                 "VALUES ('alice', ?, ?, 200000)", (trackId, 1e9 + i))
+
+    def _request(self, dash, method, path, data=None, isAdmin=True):
+        with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
+             patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=MagicMock()):
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+                sess['username'] = 'alice'
+            if method == "GET":
+                return client.get(path)
+            return client.post(path, data=data or {})
+
+    def _canonical(self, dash, trackId):
+        return dash.repo._conn().execute(
+            "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()[0]
+
+
+class TestMergeReviewPage(MergeReviewRouteTestCase):
+    def test_non_admin_gets_403(self):
+        dash = self._makeApp()
+        self.assertEqual(
+            self._request(dash, "GET", "/admin/merge-review", isAdmin=False).status_code, 403)
+
+    def test_the_page_shows_the_group_with_both_verdict_buttons(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "GET", "/admin/merge-review")
+        body = resp.data.decode()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Psycho Killer - 2005 Remaster", body)
+        #< the album is what tells two same-name releases apart on sight
+        self.assertIn("Talking Heads: 77", body)
+        self.assertIn("The Best Of", body)
+        self.assertIn("/admin/merge_review/merge", body)
+        self.assertIn("/admin/merge_review/reject", body)
+        self.assertIn(str(70), body)
+
+    def test_an_empty_queue_says_so_instead_of_rendering_nothing(self):
+        dash = self._makeApp()
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+
+        self.assertIn("Nothing to review", body)
+
+
+class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
+    def test_merge_writes_through_and_reports_back(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/merge",
+                             data={"member": "B" * 22, "canonical": "A" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/admin/merge-review", resp.headers["Location"])
+        self.assertIn("Merged 1 release(s)", unquote_plus(resp.headers["Location"]))
+        self.assertEqual(self._canonical(dash, "B" * 22), "A" * 22)
+
+    def test_reject_pins_and_reports_back(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "B" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("not be suggested again", unquote_plus(resp.headers["Location"]))
+        row = dash.repo._conn().execute(
+            "SELECT reason, decided_by FROM track_merge_decisions WHERE track_id=?",
+            ("B" * 22,)).fetchone()
+        self.assertEqual(row["reason"], "manual-reject")
+        self.assertEqual(row["decided_by"], "alice")
+        #< and the queue is now empty for the next GET
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+        self.assertIn("Nothing to review", body)
+
+    def test_an_unknown_track_is_a_400_not_a_crash(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        for path, data in (("/admin/merge_review/merge",
+                            {"member": "Z" * 22, "canonical": "A" * 22}),
+                           ("/admin/merge_review/reject", {"member": "Z" * 22})):
+            self.assertEqual(self._request(dash, "POST", path, data=data).status_code, 400)
+
+    def test_verdicts_are_admin_only(self):
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        for path, data in (("/admin/merge_review/merge",
+                            {"member": "B" * 22, "canonical": "A" * 22}),
+                           ("/admin/merge_review/reject", {"member": "B" * 22})):
+            self.assertEqual(
+                self._request(dash, "POST", path, data=data, isAdmin=False).status_code, 403)
+        self.assertIsNone(self._canonical(dash, "B" * 22))
+
+
+if __name__ == "__main__":
+    unittest.main()

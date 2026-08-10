@@ -1,0 +1,393 @@
+"""The manual merge review queue: the title-similarity tier that ASKS.
+
+The ISRC matcher merges on fact - one ISRC, one recording - and was
+deliberately told not to touch remasters or mono mixes, each a new master with
+its own ISRC. This tier surfaces what that leaves behind: same title (after
+version-marker normalization), same primary artist, duration agreeing within a
+measured tolerance. It proposes; a person decides. Both verdicts write the
+same track_merge_decisions rows the automatic tier already honours, so a
+human's yes survives every later matcher pass and a human's no is never
+re-proposed - the exact semantics migrate1_48_0's docstring promised for them.
+
+Measured basis (2026-08-07, live copy): exact name+artist finds 427 duplicate
+groups; normalizing the trailing version markers finds 648; of the
+name-matched groups agreeing on duration, most agree within 1s and the ones
+differing by >10s are genuinely different cuts - so the 3s gate keeps
+different recordings out while letting scan-time remasters through.
+"""
+import os
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from conftest import DatabaseTestCase
+from Database.queries.tracks import normalizeTrackTitle
+
+ISRC_A = "USRC12345678"
+ISRC_B = "GBAYE0000001"
+DURATION_MS = 200000
+
+
+class MergeReviewTestCase(DatabaseTestCase):
+    def _db(self):
+        return self._makeDb({}, [])
+
+    def _track(self, db, trackId, name, artist="Talking Heads", duration=DURATION_MS,
+               isrc=None, plays=0, createdAt=1000.0, album="Album"):
+        conn = db.repo._conn()
+        artistId = "art_" + artist.replace(" ", "_").lower()
+        albumId = "alb_" + album.replace(" ", "_").lower()
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO users (username, created_at) VALUES ('alice', 0)")
+            conn.execute("INSERT OR IGNORE INTO albums (id, name, url) VALUES (?, ?, '')",
+                         (albumId, album))
+            conn.execute("INSERT OR IGNORE INTO artists (id, name, url) VALUES (?, ?, '')",
+                         (artistId, artist))
+            conn.execute(
+                "INSERT INTO tracks (id, name, url, album_id, duration_ms, isrc, created_at) "
+                "VALUES (?, ?, '', ?, ?, ?, ?)",
+                (trackId, name, albumId, duration, isrc, createdAt))
+            conn.execute(
+                "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, 0)",
+                (trackId, artistId))
+            for i in range(plays):
+                conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                             "VALUES ('alice', ?, ?, 200000)", (trackId, 1e9 + i))
+        return trackId
+
+    def _canonical(self, db, trackId):
+        return db.repo._conn().execute(
+            "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()[0]
+
+    def _decision(self, db, trackId):
+        row = db.repo._conn().execute(
+            "SELECT canonical_id, reason, decided_by FROM track_merge_decisions "
+            "WHERE track_id=?", (trackId,)).fetchone()
+        return dict(row) if row else None
+
+
+class TestTitleNormalization(unittest.TestCase):
+    """The recall half of the queue: a remaster differs by NAME, so exact
+    matching finds 427 groups where normalized matching finds 648."""
+
+    def test_version_marker_suffixes_are_stripped(self):
+        for raw in ("Psycho Killer - 2005 Remaster",
+                    "Psycho Killer (Remastered 2019)",
+                    "Psycho Killer - Mono",
+                    "Psycho Killer (Stereo Mix)",
+                    "PSYCHO KILLER"):
+            self.assertEqual(normalizeTrackTitle(raw), "psycho killer", raw)
+
+    def test_stacked_suffixes_all_strip(self):
+        self.assertEqual(normalizeTrackTitle("Song - Mono - 2009 Remaster"), "song")
+
+    def test_a_live_version_is_not_the_same_recording(self):
+        """Deliberately NOT a marker: a live cut is a different performance,
+        which is the line this whole feature must never blur."""
+        self.assertEqual(normalizeTrackTitle("Song (Live)"), "song (live)")
+
+    def test_a_plain_title_survives_unchanged(self):
+        self.assertEqual(normalizeTrackTitle("Don't Stop Believin'"), "don't stop believin'")
+
+    def test_a_title_that_is_only_a_marker_keeps_its_name(self):
+        """"Remastered" by some artist must not normalize to the empty string
+        and collide with every other empty key."""
+        self.assertEqual(normalizeTrackTitle("Remastered"), "remastered")
+
+
+class TestReviewCandidates(MergeReviewTestCase):
+    def test_a_remaster_pair_is_proposed_with_the_most_played_as_canonical(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Psycho Killer", isrc=ISRC_A, plays=70)
+        self._track(db, "B" * 22, "Psycho Killer - 2005 Remaster", isrc=ISRC_B, plays=13)
+
+        review = db.repo.getMergeReviewCandidates()
+
+        self.assertEqual(review["totalGroups"], 1)
+        self.assertEqual(review["totalMembers"], 1)
+        group = review["groups"][0]
+        self.assertEqual(group["canonical"]["trackId"], "A" * 22)
+        self.assertEqual(group["members"][0]["trackId"], "B" * 22)
+
+    def test_matching_is_case_insensitive(self):
+        db = self._db()
+        self._track(db, "A" * 22, "YOU SO DONE", plays=80)
+        self._track(db, "B" * 22, "You So Done", plays=61)
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 1)
+
+    def test_durations_beyond_the_tolerance_do_not_pair(self):
+        """The >10s disagreements in the measured data were genuinely
+        different cuts - the gate is what keeps them out."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", duration=DURATION_MS, plays=5)
+        self._track(db, "B" * 22, "Song", duration=DURATION_MS + 4000, plays=2)
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
+
+    def test_an_unknown_duration_cannot_disagree(self):
+        """A fabricated import row carries duration 0 - "unknown", not "zero
+        seconds long". Those are exactly the ghosts worth surfacing."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", duration=DURATION_MS, plays=5)
+        self._track(db, "B" * 22, "Song", duration=0, plays=2)
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 1)
+
+    def test_the_same_title_by_another_artist_is_another_song(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Intro", artist="Artist One", plays=5)
+        self._track(db, "B" * 22, "Intro", artist="Artist Two", plays=3)
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
+
+    def test_a_pair_sharing_an_isrc_belongs_to_the_automatic_tier(self):
+        """Same ISRC = same master = the checkbox's job, and its preview
+        already lists it. The queue exists for what ISRC can NOT decide."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", isrc=ISRC_A, plays=5)
+        self._track(db, "B" * 22, "Song", isrc=ISRC_A, plays=2)
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
+
+    def test_a_pinned_track_is_never_proposed(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
+
+    def test_an_already_merged_pair_is_done_not_pending(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
+
+    def test_a_member_of_some_other_merge_group_is_not_poached(self):
+        """A track already merged elsewhere has been decided - by the matcher
+        or a person - and the sticky rule says decisions don't drift."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=50)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Song (Remastered)", plays=9)
+        #< B already belongs to C's group
+        db.repo.mergeTrackManually("B" * 22, "C" * 22, decidedBy="timorzipa")
+
+        review = db.repo.getMergeReviewCandidates()
+
+        #< C (with B inside) is still offered against A - as a member, since
+        #  A out-plays it - but B itself is not listed separately
+        memberIds = {m["trackId"] for g in review["groups"] for m in g["members"]}
+        self.assertNotIn("B" * 22, memberIds)
+
+    def test_new_arrivals_are_offered_into_an_existing_groups_canonical(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=50)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+        self._track(db, "C" * 22, "Song (2011 Remaster)", plays=9)
+
+        review = db.repo.getMergeReviewCandidates()
+
+        self.assertEqual(review["totalGroups"], 1)
+        group = review["groups"][0]
+        self.assertEqual(group["canonical"]["trackId"], "A" * 22)
+        self.assertEqual([m["trackId"] for m in group["members"]], ["C" * 22])
+
+    def test_groups_lead_with_the_most_plays_and_totals_count_everything(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Small Song", plays=5)
+        self._track(db, "B" * 22, "Small Song", plays=1)
+        self._track(db, "C" * 22, "Big Song", plays=100)
+        self._track(db, "D" * 22, "Big Song", plays=90)
+
+        review = db.repo.getMergeReviewCandidates()
+
+        self.assertEqual([g["canonical"]["trackId"] for g in review["groups"]],
+                         ["C" * 22, "A" * 22])
+        self.assertEqual(review["totalGroups"], 2)
+        self.assertEqual(review["totalMembers"], 2)
+
+    def test_the_page_cap_reports_what_it_cut(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song One", plays=5)
+        self._track(db, "B" * 22, "Song One", plays=1)
+        self._track(db, "C" * 22, "Song Two", plays=9)
+        self._track(db, "D" * 22, "Song Two", plays=2)
+
+        with patch("Database.queries.tracks.MERGE_REVIEW_PAGE_LIMIT", 1):
+            review = db.repo.getMergeReviewCandidates()
+
+        self.assertEqual(len(review["groups"]), 1)
+        self.assertEqual(review["totalGroups"], 2)   #< the cap cuts display, not the count
+
+
+class TestManualMerge(MergeReviewTestCase):
+    def test_it_merges_and_records_who_decided(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+
+        merged = db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(merged, 1)
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        decision = self._decision(db, "B" * 22)
+        self.assertEqual(decision["reason"], "manual-merge")
+        self.assertEqual(decision["decided_by"], "timorzipa")
+
+    def test_it_drops_every_users_cached_wrapped_years(self):
+        """Same shape as the automatic tier: the merge moves numbers frozen
+        inside every user's cached years."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        conn = db.repo._conn()
+        with conn:
+            conn.execute(
+                "INSERT INTO user_wrapped (username, year, calculated_at, max_played_at,"
+                " total_plays, total_ms, longest_streak, unique_songs, unique_artists,"
+                " discovered_songs, discovered_artists, time_series_day, time_series_week,"
+                " time_series_month, top_songs, top_artists, top_albums,"
+                " discovered_songs_list, discovered_artists_list, discovered_albums_list)"
+                " VALUES ('alice', 2025, 1, 1, 1, 1, 1, 1, 1, 1, 1, '[]', '[]', '[]', '[]',"
+                " '[]', '[]', '[]', '[]', '[]')")
+
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0], 0)
+
+    def test_merging_a_canonical_carries_its_members_along(self):
+        """Never a chain: C already points at B, so B joining A must bring C
+        to A too - or every reader walks a linked list of unknown depth."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=50)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Song", plays=1)
+        db.repo.mergeTrackManually("C" * 22, "B" * 22, decidedBy="timorzipa")
+
+        merged = db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(merged, 2)
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        self.assertEqual(self._canonical(db, "C" * 22), "A" * 22)
+        #< the audit row follows the move, so it still says where C points
+        self.assertEqual(self._decision(db, "C" * 22)["canonical_id"], "A" * 22)
+
+    def test_merging_into_a_member_lands_on_its_canonical(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=50)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Song", plays=1)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        db.repo.mergeTrackManually("C" * 22, "B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._canonical(db, "C" * 22), "A" * 22)
+
+    def test_merging_a_track_into_its_own_group_changes_nothing(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        merged = db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(merged, 0)
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+
+    def test_an_unknown_track_is_refused(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+
+        with self.assertRaises(ValueError):
+            db.repo.mergeTrackManually("Z" * 22, "A" * 22, decidedBy="timorzipa")
+        with self.assertRaises(ValueError):
+            db.repo.mergeTrackManually("A" * 22, "Z" * 22, decidedBy="timorzipa")
+
+    def test_the_matcher_never_overrules_a_manual_merge(self):
+        """The human said same recording; a later ISRC pass discovering they
+        carry different ISRCs must not undo that."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", isrc=ISRC_A, plays=5)
+        self._track(db, "B" * 22, "Song", isrc=ISRC_B, plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        db.repo.mergeTracksByIsrc()
+        db.repo.unmergeAllIsrcMerges()   #< the toggle's OFF edge
+
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+
+
+class TestDismissal(MergeReviewTestCase):
+    def test_a_dismissal_is_a_recorded_not_the_same_verdict(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        decision = self._decision(db, "B" * 22)
+        self.assertIsNone(decision["canonical_id"])
+        self.assertEqual(decision["reason"], "manual-reject")
+        self.assertEqual(decision["decided_by"], "timorzipa")
+        self.assertIsNone(self._canonical(db, "B" * 22))
+
+    def test_a_dismissal_moves_no_numbers_so_it_drops_no_caches(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        conn = db.repo._conn()
+        with conn:
+            conn.execute(
+                "INSERT INTO user_wrapped (username, year, calculated_at, max_played_at,"
+                " total_plays, total_ms, longest_streak, unique_songs, unique_artists,"
+                " discovered_songs, discovered_artists, time_series_day, time_series_week,"
+                " time_series_month, top_songs, top_artists, top_albums,"
+                " discovered_songs_list, discovered_artists_list, discovered_albums_list)"
+                " VALUES ('alice', 2025, 1, 1, 1, 1, 1, 1, 1, 1, 1, '[]', '[]', '[]', '[]',"
+                " '[]', '[]', '[]', '[]', '[]')")
+
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0], 1)
+
+    def test_the_isrc_matcher_honours_the_dismissal_too(self):
+        """One decision store, one meaning: the pinned row that keeps the pair
+        out of this queue is the same row the automatic pass refuses to
+        overrule - migrate1_48_0 promised exactly that."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", isrc=ISRC_A, plays=5)
+        self._track(db, "B" * 22, "Song", isrc=ISRC_A, plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertIsNone(self._canonical(db, "B" * 22))
+
+    def test_an_unknown_track_is_refused(self):
+        db = self._db()
+        with self.assertRaises(ValueError):
+            db.repo.dismissMergeCandidate("Z" * 22, decidedBy="timorzipa")
+
+    def test_a_person_can_change_their_mind_and_merge_after_all(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        merged = db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(merged, 1)
+        self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-merge")
+
+
+if __name__ == "__main__":
+    unittest.main()

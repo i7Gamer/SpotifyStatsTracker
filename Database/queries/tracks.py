@@ -3,7 +3,52 @@
 
 from __future__ import annotations
 
+import re
+
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
+
+# The manual review tier's duration gate, measured on a live copy
+# (2026-08-07): most same-recording pairs agree within 1s, and the pairs
+# differing by >10s are genuinely different cuts - 3s keeps different
+# recordings out while letting scan-time drift through. A duration of 0 means
+# "unknown" (a fabricated import row), which cannot disagree with anything.
+MERGE_REVIEW_DURATION_TOLERANCE_MS = 3000
+#< display cap only - the returned totals always count the full queue
+MERGE_REVIEW_PAGE_LIMIT = 50
+
+# A trailing " - X" or "(X)" title segment is a version marker - packaging,
+# not identity - when it contains one of these. "live" is deliberately NOT
+# here: a live cut is a different performance, and blurring that line is the
+# one mistake the review queue must never invite.
+TITLE_VERSION_MARKERS = (
+    "remaster", "mono", "stereo", "deluxe", "anniversary", "re-record",
+    "rerecord", "single version", "radio edit", "album version",
+    "bonus track", "extended", "edit", "mix", "version", "feat.", "ft.",
+)
+
+_PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+
+
+def normalizeTrackTitle(name: str) -> str:
+    """The identity half of a title: lowercased, version-marker suffixes gone.
+
+    A remaster differs from its original by NAME ("Psycho Killer" vs "Psycho
+    Killer - 2005 Remaster"), so exact matching finds only ~2/3 of the real
+    duplicate groups (427 vs 648, measured). Suffixes strip repeatedly -
+    "Song - Mono - 2009 Remaster" sheds both - and a title that is NOTHING
+    but a marker keeps its name rather than collapsing to the empty key."""
+    title = (name or "").strip().lower()
+    while True:
+        match = _PARENTHETICAL_SUFFIX_RE.search(title)
+        if match and any(marker in match.group(1) for marker in TITLE_VERSION_MARKERS):
+            title = title[:match.start()].strip()
+            continue
+        head, sep, tail = title.rpartition(" - ")
+        if sep and any(marker in tail for marker in TITLE_VERSION_MARKERS):
+            title = head.strip()
+            continue
+        break
+    return title or (name or "").strip().lower()
 
 
 class TrackQueries:
@@ -965,6 +1010,193 @@ class TrackQueries:
         if cur.rowcount:
             self.deleteAllWrapped()   #< the undo moves the same frozen numbers back
         return cur.rowcount
+
+    def getMergeReviewCandidates(self) -> dict:
+        """The title-similarity tier that ASKS: groups a person should look at.
+
+        The ISRC matcher merges on fact and was told not to touch remasters -
+        each is a new master with its own ISRC. This surfaces what that leaves:
+        same normalized title (see normalizeTrackTitle), same primary artist,
+        durations agreeing within MERGE_REVIEW_DURATION_TOLERANCE_MS. Nothing
+        here writes; the two verdicts live in mergeTrackManually and
+        dismissMergeCandidate.
+
+        What it refuses to propose, and why:
+        - a pinned track (any decided_by row): a person already answered, in
+          either direction, and re-asking makes the queue a nag;
+        - a track merged into some OTHER group: decided - the sticky rule
+          says decisions don't drift, so it is not poached back;
+        - a pair sharing a non-empty ISRC: same master, the automatic tier's
+          case - its checkbox preview already lists it, and a question with a
+          known answer doesn't belong in a review queue.
+
+        The anchor each group proposes merging INTO is elected exactly like
+        the ISRC tier's canonical (most played, then first-seen, then id) from
+        the group's unmerged members, so the two tiers never disagree about
+        which release survives. Returns {"groups" (capped at
+        MERGE_REVIEW_PAGE_LIMIT, biggest plays first), "totalGroups",
+        "totalMembers"} - totals count the whole queue, not the page."""
+        conn = self._conn()
+        #< one aggregate pass over plays joined back, same reasoning as
+        #  _planIsrcMerges: no play index leads with track_id, so a correlated
+        #  per-track COUNT would re-read every play per candidate
+        rows = conn.execute(
+            """
+            SELECT t.id, t.name, t.duration_ms, t.canonical_id, t.isrc,
+                   t.created_at, al.name AS album_name, ar.name AS artist_name,
+                   COALESCE(pc.play_count, 0) AS play_count
+            FROM tracks t
+            JOIN albums al ON al.id = t.album_id
+            LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            LEFT JOIN artists ar ON ar.id = ta.artist_id
+            LEFT JOIN (SELECT track_id, COUNT(*) AS play_count
+                       FROM plays GROUP BY track_id) pc ON pc.track_id = t.id
+            WHERE t.name IS NOT NULL AND t.name <> ''
+              AND t.id NOT IN (SELECT track_id FROM track_merge_decisions
+                               WHERE decided_by IS NOT NULL)
+            """
+        ).fetchall()
+
+        byKey = {}
+        for row in rows:
+            key = (normalizeTrackTitle(row["name"]),
+                   (row["artist_name"] or "").strip().lower())
+            byKey.setdefault(key, []).append(row)
+
+        def _describe(row):
+            return {"trackId": row["id"], "name": row["name"],
+                    "album": row["album_name"], "plays": row["play_count"],
+                    "durationMs": row["duration_ms"] or 0,
+                    "isrc": row["isrc"] or ""}
+
+        groups = []
+        for members in byKey.values():
+            if len(members) < 2:
+                continue
+            #< elected among UNMERGED members only, so the target is always a
+            #  genuine endpoint - a merged member's group already has a head,
+            #  and pointing at a member would be the chain no reader may walk
+            unmerged = [m for m in members if not m["canonical_id"]]
+            if not unmerged:
+                continue
+            anchor = max(unmerged, key=lambda m: (m["play_count"],
+                                                  -(m["created_at"] or 0), m["id"]))
+            anchorDuration = anchor["duration_ms"] or 0
+            toMerge = []
+            for m in unmerged:
+                if m["id"] == anchor["id"]:
+                    continue
+                duration = m["duration_ms"] or 0
+                if (duration and anchorDuration
+                        and abs(duration - anchorDuration) > MERGE_REVIEW_DURATION_TOLERANCE_MS):
+                    continue
+                if m["isrc"] and anchor["isrc"] and m["isrc"] == anchor["isrc"]:
+                    continue
+                toMerge.append(m)
+            if not toMerge:
+                continue
+            groups.append({
+                "canonical": _describe(anchor),
+                "members": [_describe(m) for m in toMerge],
+                "plays": sum(m["play_count"] for m in toMerge),
+            })
+
+        #< biggest first, same as the ISRC preview - the page leads with what
+        #  moves the most numbers
+        groups.sort(key=lambda g: -g["plays"])
+        return {
+            "groups": groups[:MERGE_REVIEW_PAGE_LIMIT],
+            "totalGroups": len(groups),
+            "totalMembers": sum(len(g["members"]) for g in groups),
+        }
+
+    def mergeTrackManually(self, trackId: str, canonicalId: str, decidedBy: str) -> int:
+        """A person's "same recording": point trackId at canonicalId's group.
+
+        The decision row (reason 'manual-merge', decided_by set) is the pinned
+        kind the automatic tier refuses to overrule in EITHER direction: no
+        later ISRC pass re-elects it away, and the toggle's off edge
+        (unmergeAllIsrcMerges) leaves it standing.
+
+        Two shapes the caller never has to think about:
+        - the target resolves first, so merging into a MEMBER of a group
+          lands on that group's canonical rather than creating a chain;
+        - a track that is itself a canonical brings its members along, and
+          their audit rows move with them - the no-chain invariant holds by
+          construction, not by hoping.
+
+        Idempotent for a track already in the target group (returns 0 and
+        drops no caches). Returns tracks newly pointed, dependents included.
+        Raises ValueError for an unknown track on either side."""
+        conn = self._conn()
+        root = self.resolveCanonicalTrackId(canonicalId)
+        known = {row["id"] for row in conn.execute(
+            "SELECT id FROM tracks WHERE id IN (?, ?)", (trackId, root))}
+        if trackId not in known:
+            raise ValueError(f"unknown track: {trackId}")
+        if root not in known:
+            raise ValueError(f"unknown track: {root}")
+        current = conn.execute(
+            "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()
+        if trackId == root or current["canonical_id"] == root:
+            return 0
+
+        now = time.time()
+        merged = 0
+        with conn:
+            #< dependents first: re-pointing them is what keeps "a canonical
+            #  never points anywhere itself" true through this merge
+            dependents = [r["id"] for r in conn.execute(
+                "SELECT id FROM tracks WHERE canonical_id = ?", (trackId,))]
+            for depId in dependents:
+                conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (root, depId))
+                conn.execute(
+                    "UPDATE track_merge_decisions SET canonical_id=? WHERE track_id=?",
+                    (root, depId))
+                merged += 1
+            conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (root, trackId))
+            conn.execute(
+                """
+                INSERT INTO track_merge_decisions
+                    (track_id, canonical_id, reason, evidence, decided_at, decided_by)
+                VALUES (?, ?, 'manual-merge', NULL, ?, ?)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    canonical_id=excluded.canonical_id, reason='manual-merge',
+                    evidence=NULL, decided_at=excluded.decided_at,
+                    decided_by=excluded.decided_by
+                """,
+                (trackId, root, now, decidedBy))
+            merged += 1
+        #< same invalidation as the automatic tier: the merge moves numbers
+        #  frozen inside every user's cached Wrapped years
+        self.deleteAllWrapped()
+        return merged
+
+    def dismissMergeCandidate(self, trackId: str, decidedBy: str) -> None:
+        """A person's "not the same recording", recorded so it STAYS answered.
+
+        The row (NULL canonical_id, decided_by set) is what migrate1_48_0
+        promised that shape would mean: a deliberate no, different from having
+        no row (never looked at), and what stops a rejected pair being
+        re-proposed forever - by this queue and by the ISRC matcher alike.
+
+        Unlike unmergeTrack this touches no pointer and moves no numbers, so
+        it deliberately drops no Wrapped caches. Raises ValueError for an
+        unknown track."""
+        conn = self._conn()
+        if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone():
+            raise ValueError(f"unknown track: {trackId}")
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO track_merge_decisions
+                    (track_id, canonical_id, reason, evidence, decided_at, decided_by)
+                VALUES (?, NULL, 'manual-reject', NULL, ?, ?)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    canonical_id=NULL, reason='manual-reject', evidence=NULL,
+                    decided_at=excluded.decided_at, decided_by=excluded.decided_by
+                """,
+                (trackId, time.time(), decidedBy))
 
     def updateTrackIsrcs(self, isrcByTrackId: dict[str, str]) -> None:
         """Store the ISRCs a backfill response carried. Blank values are skipped

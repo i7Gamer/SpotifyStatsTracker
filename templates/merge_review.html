@@ -1,0 +1,85 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{% extends "layout.html" %}
+{% block title %}Merge review - {{ super() }}{% endblock %}
+{% block content %}
+
+{% macro trackLength(durationMs) -%}
+  {%- if durationMs -%}
+    {%- set totalSeconds = durationMs // 1000 -%}
+    {{ totalSeconds // 60 }}:{{ '%02d' % (totalSeconds % 60) }}
+  {%- else -%}
+    ?:??
+  {%- endif -%}
+{%- endmacro %}
+
+<section class="hero">
+  <div class="hero-content">
+    <h1>Merge review</h1>
+    <p>Releases that look like the same recording &mdash; same title and artist, matching length &mdash;
+       but that ISRC cannot merge on its own: remasters carry their own ISRC, imported rows carry none.
+       Nothing here happens without you; both answers are remembered.</p>
+  </div>
+</section>
+
+{% if message %}
+<section class="card" style="margin-bottom: 1rem; padding: 0.8rem 1.5rem; min-height: auto; width: fit-content;">
+  <p style="margin: 0; color: var(--accent);">{{ message }}</p>
+</section>
+{% endif %}
+{% if error %}
+<section class="card" style="margin-bottom: 1rem; padding: 0.8rem 1.5rem; min-height: auto; width: fit-content;">
+  <p style="margin: 0; color: var(--danger, #e05252);">{{ error }}</p>
+</section>
+{% endif %}
+
+<section class="card" style="padding: 1.25rem 1.5rem;">
+  {% if not review.groups %}
+  <p style="color: var(--muted); margin: 0;">Nothing to review &mdash; no same-title, same-artist pairs
+     within the duration tolerance right now.
+     {% if not track_merge_enabled %}Exact ISRC duplicates are handled separately by the
+     &quot;Merge duplicate tracks&quot; checkbox on the Admin page.{% endif %}</p>
+  {% else %}
+  <p style="color: var(--muted); margin: 0 0 1rem;">
+    {{ review.totalMembers }} candidate release(s) across {{ review.totalGroups }} song(s)
+    {%- if review.totalGroups > (review.groups | length) %}, showing the
+    {{ review.groups | length }} with the most plays{% endif %}.
+    Merging counts them as one song everywhere; a merge can be split back apart
+    from the song&#39;s own page.
+  </p>
+
+  {% for group in review.groups %}
+  <article style="border-top: 1px solid var(--border, #333); padding: 0.9rem 0;">
+    <p style="margin: 0 0 0.35rem;">
+      <strong>{{ group.canonical.name }}</strong>
+      <span style="color: var(--muted);">&mdash; {{ group.canonical.album }},
+        {{ trackLength(group.canonical.durationMs) }}, {{ group.canonical.plays }} play(s)
+        &middot; kept as the song&#39;s page</span>
+    </p>
+    {% for member in group.members %}
+    <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.25rem 0 0.25rem 1rem;">
+      <span style="flex: 1; min-width: 14rem;">{{ member.name }}
+        <span style="color: var(--muted);">&mdash; {{ member.album }},
+          {{ trackLength(member.durationMs) }}, {{ member.plays }} play(s)</span>
+      </span>
+      <form method="post" action="{{ url_for('adminMergeReviewMerge') }}" style="margin: 0;"
+            onsubmit="return confirm('Merge these releases into one song? This changes every account and can be split back apart later.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="member" value="{{ member.trackId }}"/>
+        <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
+        <button type="submit" class="primary-button" style="padding: 3px 12px;">Same recording &mdash; merge</button>
+      </form>
+      <form method="post" action="{{ url_for('adminMergeReviewReject') }}" style="margin: 0;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="member" value="{{ member.trackId }}"/>
+        <button type="submit" class="primary-button" style="padding: 3px 12px; background: transparent; border: 1px solid var(--border, #555); color: var(--muted);">Not the same</button>
+      </form>
+    </div>
+    {% endfor %}
+  </article>
+  {% endfor %}
+  {% endif %}
+</section>
+
+{% endblock %}
