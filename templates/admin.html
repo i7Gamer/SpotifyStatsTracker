@@ -17,7 +17,7 @@
    the error/message banners on purpose: while this is up, anything else on the
    page may be describing the other build. #}
 {% if deploy_mismatch %}
-<section class="card deploy-mismatch" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto;">
+<section class="card deploy-mismatch" style="border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto;">
   <h2 style="margin: 0 0 0.4rem; font-family: var(--font-headings); color: var(--danger, #e05252);">Restart needed &mdash; this instance is half-deployed</h2>
   <p style="margin: 0; color: var(--muted);">
     {% if deploy_mismatch.diskVersion %}
@@ -33,19 +33,19 @@
 {% endif %}
 
 {% if error %}
-<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
+<section class="card" style="border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
   <p style="margin: 0; color: var(--danger, #e05252);">{{ error }}</p>
 </section>
 {% endif %}
 
 {% if message %}
-<section class="card" style="margin-bottom: 1.5rem; border: 1px solid var(--accent, #1db954); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
+<section class="card" style="border: 1px solid var(--accent, #1db954); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
   <p style="margin: 0; color: var(--accent, #1db954);">{{ message }}</p>
 </section>
 {% endif %}
 
 <!-- Registered Users & Sync Status: permanently pinned at the top -->
-<section class="card" style="margin-bottom: 1.5rem; overflow-x: auto;">
+<section class="card" style="overflow-x: auto;">
   <div class="card-header admin-card-header">
     <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users &amp; Sync Status</h2>
     <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Monitor real-time sync status and background thread states for all active user profiles, and manage who administers this instance.</p>
@@ -128,7 +128,7 @@
 </section>
 
 <!-- Admin Section Tabs -->
-<nav class="profile-subnav admin-subnav" aria-label="Admin sections" style="margin-bottom: 1.5rem;">
+<nav class="profile-subnav admin-subnav" aria-label="Admin sections">
   <a class="{{ 'active' if current_tab == 'overview' }}"
      {% if current_tab == 'overview' %}aria-current="page"{% endif %}
      href="{{ url_for('adminPage', tab='overview') }}">Overview</a>
@@ -144,11 +144,11 @@
 <div id="admin-tab-body" aria-live="polite" aria-atomic="false">
   {% if current_tab == 'overview' %}
     <!-- Activity Tiles -->
-    <div style="display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
+    <div class="admin-section-heading">
       <h2 style="margin: 0;">Activity</h2>
       <span style="color: var(--muted); font-size: 0.9rem;">Instance-wide signups and data-sharing activity.</span>
     </div>
-    <section class="grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem;">
+    <section class="grid admin-stats-grid">
       {% for icon, label, value, hint in [
         ("📈", "New users (30d)", registration_counts.last_30_days, "Accounts registered in the last 30 days"),
         ("⏳", "Pending shares", instance_share_counts.pending, "Share requests sent but not yet accepted"),

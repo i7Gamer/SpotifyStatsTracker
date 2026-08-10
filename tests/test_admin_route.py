@@ -1587,13 +1587,23 @@ class TestAdminInsightsLayout(AdminRouteTestBase):
         self._assertTile(body, "Wrapped links", 6)
 
     def test_activity_heading_and_description_render_inline(self):
+        """The description rides on the heading's baseline rather than on its
+        own row. The flex/baseline pair used to be an inline style here and is
+        now .admin-section-heading in style.css - it moved because its bottom
+        margin was a page gap that no rule could reach while it sat inline
+        (see TestPageRhythmAndInlineHero) - so the row is asserted where each
+        half of it now lives."""
         body = self._getAdmin(self._makeApp()).data.decode()
 
         self.assertIn("Instance-wide signups and data-sharing activity.", body)
         descAt = body.index("Instance-wide signups and data-sharing activity.")
-        container_snippet = body[descAt - 200:descAt + 100]
-        self.assertIn("display: flex", container_snippet)
-        self.assertIn("align-items: baseline", container_snippet)
+        self.assertIn("admin-section-heading", body[descAt - 200:descAt + 100])
+
+        with open(os.path.join(os.path.dirname(__file__), "..",
+                               "static", "css", "style.css"), encoding="utf-8") as fh:
+            rule = fh.read().split(".admin-section-heading {")[1].split("}")[0]
+        self.assertIn("display: flex", rule)
+        self.assertIn("align-items: baseline", rule)
 
 
 class TestAdminMailWorkerHealth(AdminRouteTestBase):

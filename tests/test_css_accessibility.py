@@ -233,6 +233,13 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         #  spaced as the page's. Its 20px vertical padding and its border do
         #  the work of separating them; the margin was only ever the gap.
         ".chart-section:not(:last-of-type)",
+        #< Admin's blocks. These used to carry their gaps as inline rem
+        #  margins, which no rule could reach and no test could see - one page
+        #  running 1.25/1.5/2.5rem at once. :not(:last-child) because a
+        #  trailing block needs no gap: .page's 40px bottom is the run-out,
+        #  and without it /merge-review's last card would gain one.
+        ".page > .card:not(:last-child)", ".admin-subnav",
+        ".admin-section-heading", ".admin-stats-grid", ".admin-card-grid",
     )
 
     def setUp(self):
@@ -270,6 +277,28 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         real body swaps in, so its gap is not free to be its own value - it
         has to be whatever .track-summary-grid and .chart-card leave behind."""
         self.assertIn("gap: 18px", self._block(".detail-skeleton"))
+
+    def test_admin_stacks_its_blocks_from_the_stylesheet_not_inline(self):
+        """Admin's top-level blocks - the <section>/<nav> at column 0, direct
+        children of <main class="page"> - carried their gaps as inline rem
+        margins: 1.5rem on four cards and the sub-nav, 2.5rem on the tile
+        grid, 1.25rem under the section heading. Inline beats every selector,
+        so the page could not be corrected from the stylesheet and no guard
+        could see it drift.
+
+        Only the MARGINS moved out. The borders, paddings and widths still
+        sitting inline on those same tags are not the rhythm."""
+        markup = _readFile(os.path.join(_ROOT, "templates", "admin.html"))
+        offenders = [
+            line for line in markup.splitlines()
+            if line.startswith(("<section", "<nav")) and "margin" in line
+        ]
+        self.assertEqual([], offenders)
+
+    def test_admins_between_cards_gaps_match_every_other_page(self):
+        for selector in (".admin-stats-grid", ".admin-card-grid"):
+            with self.subTest(selector=selector):
+                self.assertIn("gap: 18px", self._block(selector))
 
     def test_the_gap_under_the_nav_bar_is_the_same_rhythm(self):
         """.page's top padding IS the topbar -> hero distance: .topbar is

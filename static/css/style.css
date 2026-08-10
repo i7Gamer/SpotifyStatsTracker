@@ -1198,6 +1198,14 @@ progress::-moz-progress-bar {
   margin-bottom: 18px;
 }
 
+/* A card stacking directly on the page (Admin's banners and its user table)
+   rather than inside a container, same idiom as .track-list above. The
+   :not() is the point of the rule as much as the margin is: a block with
+   nothing after it needs no gap, and .page's 40px bottom is the run-out. */
+.page > .card:not(:last-child) {
+  margin-bottom: 18px;
+}
+
 .track-list + .track-list {
   margin-top: 18px;
 }
@@ -4971,10 +4979,34 @@ html.theme-red {
   margin-bottom: 1rem;
 }
 
+/* The three Admin block gaps that used to live inline on admin.html, where
+   no rule could reach them and no guard could see them drift. All three are
+   the page rhythm - the only thing that made them different was that they
+   were written in rem beside the paddings they sit next to. */
+.admin-subnav {
+  margin-bottom: 18px;   /* overrides .profile-subnav's intra-card 2rem */
+}
+
+/* The "Activity" heading and its one-line description, on a shared baseline.
+   Its bottom margin is the heading-to-content gap .page > h2 already sets. */
+.admin-section-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.admin-stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
 .admin-card-grid {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 1.5rem;
-  margin-bottom: 2.5rem;
+  gap: 18px;
+  margin-bottom: 18px;
   align-items: start;
 }
 
