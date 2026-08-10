@@ -1257,11 +1257,25 @@ class TrackQueries:
 
         Unlike unmergeTrack this touches no pointer and moves no numbers, so
         it deliberately drops no Wrapped caches. Raises ValueError for an
-        unknown track."""
+        unknown track, and for a track that is currently MERGED: the queue
+        only proposes unmerged members, so a dismissal arriving for a merged
+        one was aimed at a state that no longer exists - the queue open in two
+        tabs, or the matcher landing between render and click. Recording it
+        anyway would leave the pointer standing under a row claiming "not the
+        same recording": an audit that lies, one the toggle's off edge can
+        never clear (decided_by is set), and one the reject-yields rule could
+        flip straight back regardless. The "no" for a merged track is the
+        split (unmergeTrack), which pins - the route explains exactly that."""
         conn = self._conn()
-        if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone():
-            raise ValueError(f"unknown track: {trackId}")
         with conn:
+            #< inside the write's own transaction, so the state it checks is
+            #  the state the row lands in
+            row = conn.execute(
+                "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()
+            if not row:
+                raise ValueError(f"unknown track: {trackId}")
+            if row["canonical_id"]:
+                raise ValueError(f"track is merged: {trackId}")
             conn.execute(
                 """
                 INSERT INTO track_merge_decisions

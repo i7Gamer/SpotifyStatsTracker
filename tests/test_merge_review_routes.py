@@ -117,6 +117,27 @@ class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
         body = self._request(dash, "GET", "/admin/merge-review").data.decode()
         self.assertIn("Nothing to review", body)
 
+    def test_a_stale_reject_lands_back_on_the_queue_instead_of_recording(self):
+        """The realistic race: the queue open in two tabs, or the matcher
+        merging the pair between render and click. Unlike crafted junk this is
+        not a 400 - the admin did nothing wrong - but nothing is written
+        either: they land back on the queue (which no longer proposes the
+        merged member) with an explanation, and the merge stands."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+        dash.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="alice")
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "B" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("merged after this page loaded", unquote_plus(resp.headers["Location"]))
+        self.assertEqual(self._canonical(dash, "B" * 22), "A" * 22)
+        row = dash.repo._conn().execute(
+            "SELECT reason FROM track_merge_decisions WHERE track_id=?",
+            ("B" * 22,)).fetchone()
+        self.assertEqual(row["reason"], "manual-merge")
+
     def test_an_unknown_track_is_a_400_not_a_crash(self):
         dash = self._makeApp()
         self._seedPair(dash)

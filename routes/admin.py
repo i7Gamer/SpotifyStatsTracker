@@ -680,10 +680,23 @@ def register(app, dashboard):
     @requiresAdmin
     def adminMergeReviewReject(username, db):
         """Admin-only: a person's "not the same recording". Recorded, so the
-        pair leaves the queue for good and the ISRC matcher honours it too."""
+        pair leaves this queue for good (a later shared ISRC still outranks
+        it - see dismissMergeCandidate)."""
+        member = request.form.get("member", "")
+        #< the friendly answer for the realistic race - the queue open in two
+        #  tabs, or the matcher merging the pair between render and click. Not
+        #  the 400 crafted junk gets: the admin did nothing wrong, so they
+        #  land back on the queue (re-rendered without the merged member) and
+        #  are told where the "no" for a merged track lives. The repo's own
+        #  in-transaction check stays the backstop for anything slipping this
+        #  read.
+        if member and dashboard.repo.resolveCanonicalTrackId(member) != member:
+            return redirect(url_for(
+                "adminMergeReview",
+                error="That release was merged after this page loaded, so nothing was "
+                      "recorded. A wrong merge can be split from the song's own page."))
         try:
-            dashboard.repo.dismissMergeCandidate(request.form.get("member", ""),
-                                                 decidedBy=username)
+            dashboard.repo.dismissMergeCandidate(member, decidedBy=username)
         except ValueError:
             abort(400)
         return redirect(url_for("adminMergeReview",

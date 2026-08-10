@@ -441,6 +441,27 @@ class TestDismissal(MergeReviewTestCase):
         with self.assertRaises(ValueError):
             db.repo.dismissMergeCandidate("Z" * 22, decidedBy="timorzipa")
 
+    def test_a_merged_track_cannot_be_dismissed(self):
+        """The queue only proposes UNMERGED members, so a dismissal arriving
+        for a merged track was aimed at a state that no longer exists - the
+        queue open in two tabs, or the matcher landing between render and
+        click. Recording it anyway would leave the pointer standing under a
+        row claiming "not the same recording": an audit that lies, one the
+        toggle's off edge can never clear (decided_by is set), and one the
+        reject-yields rule could flip straight back regardless. The "no" for
+        a merged track is the split (unmergeTrack), which pins."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        with self.assertRaises(ValueError):
+            db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        #< nothing moved and the audit still tells the truth
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-merge")
+
     def test_a_person_can_change_their_mind_and_merge_after_all(self):
         db = self._db()
         self._track(db, "A" * 22, "Song", plays=5)
