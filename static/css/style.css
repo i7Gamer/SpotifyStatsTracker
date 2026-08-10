@@ -2334,16 +2334,23 @@ progress::-moz-progress-bar {
   padding-right: 1px;
 }
 
-/* 16px circle, 44px target. The box stays 16px so the settings rows keep
+/* 16px circle, 24px target. The box stays 16px so the settings rows keep
    their alignment, and a transparent pseudo-element does the touching -
-   growing the circle itself would have moved every label beside it. */
+   growing the circle itself would have moved every label beside it.
+
+   24px (WCAG 2.5.8, AA) rather than the 44px (2.5.5, AAA) the drawer rows
+   use, because this control has a neighbour and they do not: the hint sits
+   8px from its label in .admin-check-label and 6.4px in the settings loop,
+   and a 44px area reaches 13px past the circle - measured in Chrome 148 -
+   so it overhangs the label and eats clicks meant for the checkbox. 24px
+   reaches 3px and clears both gaps. */
 .setting-hint summary::before {
   content: '';
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 44px;
-  height: 44px;
+  width: 24px;
+  height: 24px;
   transform: translate(-50%, -50%);
 }
 

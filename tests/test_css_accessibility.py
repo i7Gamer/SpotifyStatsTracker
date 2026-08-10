@@ -61,8 +61,16 @@ class TestOverlaySurfaceLegibility(unittest.TestCase):
     #  read through it. 0.97 over white composites to ~#181818 (16.4:1 against
     #  --text), which is the same as opaque for every practical purpose.
     _MIN_OVERLAY_ALPHA = 0.95
-    #< the touch-target floor already used by .scroll-to-top and the pager
-    _MIN_TOUCH_TARGET = "44px"
+    #< WCAG 2.5.5 (AAA), the floor already used by .scroll-to-top and the
+    #  pager. Right for a control with room around it, which a full-width
+    #  drawer row has.
+    _ROOMY_TOUCH_TARGET = "44px"
+    #< WCAG 2.5.8 (AA). Right for a control that does NOT have room: the
+    #  setting-hint sits 8px from its label (.admin-check-label) and 6.4px in
+    #  the settings loop, so a 44px hit area overhangs the neighbour by 13px
+    #  and eats clicks meant for the checkbox. 24px reaches 3px and clears
+    #  both gaps - measured, not assumed.
+    _TIGHT_TOUCH_TARGET = "24px"
 
     def setUp(self):
         self.css = _readFile(_CSS_PATH)
@@ -171,7 +179,7 @@ class TestOverlaySurfaceLegibility(unittest.TestCase):
         mobile = self._mobileNavBlock()
         for selector in (".nav-links a", ".dropdown-content a"):
             with self.subTest(selector=selector):
-                self.assertIn(f"min-height: {self._MIN_TOUCH_TARGET}",
+                self.assertIn(f"min-height: {self._ROOMY_TOUCH_TARGET}",
                               self._block(selector, mobile))
 
     def test_menu_items_are_primary_text_not_muted(self):
@@ -183,11 +191,18 @@ class TestOverlaySurfaceLegibility(unittest.TestCase):
                 self.assertIn("color: var(--text)", self._block(selector, mobile))
 
     def test_the_hint_toggle_has_a_touchable_hit_area(self):
-        """The circle stays 16px so the row's alignment is unchanged; a
-        transparent pseudo-element does the touching."""
+        """The circle stays 16px so the settings rows keep their alignment; a
+        transparent pseudo-element does the touching.
+
+        Sized to the AA target, not the AAA one the drawer rows use. Measured
+        in Chrome 148 against both arrangements in admin.html: a 44px hit area
+        reaches 13px past the circle, which is more than either gap to the
+        neighbouring label (8px / 6.4px), so it silently swallows clicks meant
+        for the checkbox. 24px reaches 3px and overlaps neither."""
         block = self._block(".setting-hint summary::before")
-        self.assertIn(f"width: {self._MIN_TOUCH_TARGET}", block)
-        self.assertIn(f"height: {self._MIN_TOUCH_TARGET}", block)
+        self.assertIn(f"width: {self._TIGHT_TOUCH_TARGET}", block)
+        self.assertIn(f"height: {self._TIGHT_TOUCH_TARGET}", block)
+        self.assertNotIn(self._ROOMY_TOUCH_TARGET, block)
 
 
 class TestPageRhythmAndInlineHero(unittest.TestCase):
