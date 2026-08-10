@@ -1008,7 +1008,12 @@ class PlayQueries:
         extraClauses += self._trackSetClause(params, self.ALBUM_TRACKS_SUBQUERY,
                                              [albumId] if albumId is not None else None)
         extraClauses += self._idSetClause(params, "t.id", trackIds)
-        extraClauses += self._searchNarrowClause(params, searchQuery, "t.id")
+        #< `trackIds` above needs no canonical hop: getTaggedTrackIds already
+        #  hands over whole merge groups. The search set cannot - it is
+        #  resolved from the catalog by name, so it holds whichever releases
+        #  matched - hence the grouped key, which is `c.id` only when merging
+        extraClauses += self._searchNarrowClause(params, searchQuery, "t.id",
+                                                 canonicalColumn="c.id" if e == "c" else None)
         if fullPlaysOnly:
             extraClauses += self._fullPlaysClause(params)
         params += [limitValue, offset]
@@ -1093,8 +1098,11 @@ class PlayQueries:
         if fullPlaysOnly:
             joinClause = self._tracksJoin()
             fullPlaysClause = self._fullPlaysClause(params)
-        #< appended last, so it must also be the last clause in the SQL below
-        searchClause = self._searchNarrowClause(params, searchQuery, "p.track_id")
+        #< appended last, so it must also be the last clause in the SQL below.
+        #  On the grouped key like getSongsPage's, or the count would size the
+        #  pager off a different population than the list it sits under
+        searchClause = self._searchNarrowClause(params, searchQuery, "p.track_id",
+                                                canonicalColumn="COALESCE(t.canonical_id, t.id)")
         countJoin = joinClause or self._tracksJoin()   #< see the branch above
         row = conn.execute(
             f"""
@@ -1535,7 +1543,16 @@ class PlayQueries:
         # to the same id set getSongsPage uses, and the tracks/albums joins it
         # needed go with it. Inline it cost 219ms unsearched -> 880ms for a term
         # matching nothing on the real library.
-        where += self._searchNarrowClause(params, searchQuery, "p.track_id")
+        #
+        #< onto the grouped key wherever this scan merges, exactly as
+        #  getSongsPage does it - and a skip RATE makes it sharper than a plain
+        #  total, being a ratio whose two halves must come from one population.
+        #  Recomputed from these same params by both callers (the list's
+        #  skipKey, the count's unconditional c.id), so they cannot disagree
+        where += self._searchNarrowClause(
+            params, searchQuery, "p.track_id",
+            canonicalColumn=("c.id" if self._mergesCanonically(trackId, artistId, albumId)
+                             else None))
         if fullPlaysOnly:
             where += self._fullPlayOrSkipClause(params)
         return joins, where

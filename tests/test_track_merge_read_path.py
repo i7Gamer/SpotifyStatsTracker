@@ -180,6 +180,83 @@ class TestTheOtherGlobalCounts(TrackMergeReadPathTestCase):
         self.assertEqual(rows[0]["skips"], 4)
 
 
+class TestSearchSpansTheMergeGroup(TrackMergeReadPathTestCase):
+    """A search decides WHICH songs are listed. It must not also decide which
+    of a song's plays are counted.
+
+    The matched-id set lands on the PLAYED track while the aggregate groups by
+    the canonical, so a term matching only one release turned the group's row
+    into that release's subtotal - under the canonical's title, so the row said
+    "Shared Song" either way and only the number moved. The same boundary
+    Repository.getTaggedTrackIds expands across ("a tagged song's row shows a
+    fraction of its count") and the rediscovery/fresh-find narrowings already
+    fixed; this is the third crossing of it.
+
+    Only 'The Single' and 'The Album' tell the two releases apart here - the
+    track's own name is shared, which is what a merge means."""
+
+    def test_a_term_matching_one_release_still_counts_the_whole_song(self):
+        db = self._seed(self._makeDb({}, []))
+
+        matchesSingle = self._songs(db, searchQuery="single")
+        matchesAlbum = self._songs(db, searchQuery="album")
+
+        self.assertEqual([r["plays"] for r in matchesSingle], [12])
+        self.assertEqual([r["plays"] for r in matchesAlbum], [12])
+        #< and it is the canonical's row in both cases, as it is unsearched
+        self.assertEqual(matchesSingle[0]["id"], ALBUM_CUT)
+
+    def test_a_term_matching_only_the_merged_away_release_still_finds_the_song(self):
+        """The single lost the election, so its id appears in no list - but it
+        is still where the words 'The Single' live, and a song you can only
+        name by that release is still a song you can find."""
+        db = self._seed(self._makeDb({}, []))
+
+        self.assertEqual([r["id"] for r in self._songs(db, searchQuery="single")], [ALBUM_CUT])
+
+    def test_the_searched_count_agrees_with_the_searched_page(self):
+        db = self._seed(self._makeDb({}, []))
+
+        for term in ("single", "album", "shared"):
+            self.assertEqual(db.repo.getSongsCount("alice", searchQuery=term),
+                             len(self._songs(db, searchQuery=term)), term)
+
+    def test_an_unmerged_library_searches_exactly_as_it_did(self):
+        """The expansion is a no-op without a merge - COALESCE(canonical_id,
+        id) is the id - which is what keeps tests/test_search_two_phase's
+        row-for-row equality true."""
+        db = self._seed(self._makeDb({}, []), merge=False)
+
+        self.assertEqual([(r["id"], r["plays"]) for r in self._songs(db, searchQuery="single")],
+                         [(SINGLE, 3)])
+        self.assertEqual([(r["id"], r["plays"]) for r in self._songs(db, searchQuery="album")],
+                         [(ALBUM_CUT, 9)])
+
+    def test_an_album_scoped_search_keeps_its_own_rows(self):
+        """The album page asks "what is on this album", so it does not merge -
+        and must not gain the sibling release's plays through the search set
+        either."""
+        db = self._seed(self._makeDb({}, []))
+
+        rows = self._songs(db, albumId="albSingle", searchQuery="shared")
+
+        self.assertEqual([(r["id"], r["plays"]) for r in rows], [(SINGLE, 3)])
+
+    def test_a_searched_skip_list_counts_the_whole_song_too(self):
+        """getMostSkippedTracks crosses the same boundary, and a skip RATE is
+        the ratio of two numbers that must come from the same population."""
+        db = self._seed(self._makeDb({}, []))
+        TestTheOtherGlobalCounts._skip(self, db, SINGLE, 4)
+        TestTheOtherGlobalCounts._skip(self, db, ALBUM_CUT, 6)
+
+        rows = db.repo.getMostSkippedTracks("alice", limit=10, searchQuery="single")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["skips"], 10)
+        self.assertEqual(rows[0]["plays"], 12)
+        self.assertEqual(db.repo.getSkippedTracksCount("alice", searchQuery="single"), 1)
+
+
 class TestTrendCards(TrackMergeReadPathTestCase):
     def test_an_obsession_split_across_two_releases_still_counts(self):
         """The trend cards pick ONE track over a threshold, so a song whose

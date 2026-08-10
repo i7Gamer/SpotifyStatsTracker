@@ -363,7 +363,8 @@ class SqlFragments:
     # ran once per play rather than once against the catalog. They are id sets
     # now - see _albumSearchNarrowClause and _searchNarrowClause.
 
-    def _searchNarrowClause(self, params: list, searchQuery: str | None, column: str) -> str:
+    def _searchNarrowClause(self, params: list, searchQuery: str | None, column: str,
+                             canonicalColumn: str | None = None) -> str:
         """A song search, as a track-id set instead of an inline predicate.
 
         The predicate used to sit inside the per-play aggregate, so its artist
@@ -385,11 +386,40 @@ class SqlFragments:
         gets: a single-letter query matches almost the whole catalog, and SQLite's
         parameter ceiling cannot be raised (see _jsonIdSetClause).
 
+        `canonicalColumn` is the grouped key of a query that MERGES (the `c.id`
+        of _canonicalTrackJoin, or the COALESCE spelled out). Given one, the
+        narrowing moves onto it and the matched ids are mapped to their
+        canonicals in SQL, so a term matching one release of a merge group
+        selects the whole group: a search decides WHICH songs are listed, and
+        must not also decide which of a song's plays are counted. Without it
+        the group's row carried the matching release's subtotal under the
+        canonical's title, so only the number moved - the same boundary
+        getTaggedTrackIds expands across, and the rediscovery/fresh-find
+        narrowings spell out (see Database/queries/trends.py).
+
+        The mapping is a subquery rather than a Python expansion on purpose:
+        _expandToMergeGroups binds one parameter per id, and this set is
+        exactly the one that cannot (see _jsonIdSetClause). Free when nothing
+        is merged - COALESCE(canonical_id, id) is then the id, and the join
+        makes the two columns equal - which is what keeps
+        tests/test_search_two_phase's row-for-row equality true.
+
+        MEASURED at the worst case it has (8,000 tracks all matching, 4,000
+        merge groups, 120k plays): 165.3ms on t.id -> 153.1ms here, best of
+        five. It does not cost anything because it does not change the driver -
+        plays still leads on idx_plays_user_time, the id set is still one
+        materialised LIST SUBQUERY, and `m` is a primary-key seek per entry.
+
         An empty query narrows nothing. A query matching no track yields `AND 0`
         from _jsonIdSetClause, which is correct and skips the aggregate entirely."""
         if not self.searchWords(searchQuery):
             return ""
-        return self._jsonIdSetClause(params, column, self.getMatchingTrackIds(searchQuery))
+        clause = self._jsonIdSetClause(params, column, self.getMatchingTrackIds(searchQuery))
+        if not canonicalColumn or not clause or clause == " AND 0":
+            return clause
+        #< the matched ids are still the ones bound; only the test moves
+        return (f" AND {canonicalColumn} IN (SELECT COALESCE(m.canonical_id, m.id) FROM tracks m"
+                f" WHERE m.id IN (SELECT value FROM json_each(?)))")
 
     def _albumSearchNarrowClause(self, params: list, searchQuery: str | None,
                                   column: str = "al.id") -> str:
