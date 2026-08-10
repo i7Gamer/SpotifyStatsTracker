@@ -748,6 +748,35 @@ class TrackQueries:
         ).fetchall()
         return [row["id"] for row in rows]
 
+    # The per-track play tally both merge tiers rank by, as ONE aggregate pass
+    # over plays joined back - never a correlated per-candidate COUNT. No play
+    # index leads with track_id (both lead with username), so the correlated
+    # form re-read every play for each candidate: measured 8 s at 840
+    # candidates over 134k plays, paid on every admin page view while the
+    # toggle is off. LEFT JOIN, because a track nobody has played yet must
+    # stay in its group at zero.
+    _PLAY_TALLY_JOIN = ("LEFT JOIN (SELECT track_id, COUNT(*) AS play_count "
+                        "FROM plays GROUP BY track_id) pc ON pc.track_id = t.id")
+
+    @staticmethod
+    def _electCanonical(candidates: list):
+        """Which release of a group the others fold into: most played, then
+        first seen, then id.
+
+        One rule, two tiers. The ISRC matcher elects from a group's unpinned
+        members and the review queue elects the anchor it proposes merging
+        INTO, and they must not disagree about which release survives - a
+        person answering the queue would otherwise place a song somewhere the
+        next automatic pass would have chosen differently. Both said so in
+        prose while spelling the tuple twice; this is the same reason
+        _planIsrcMerges exists as a seam between the preview and the run.
+
+        Rows need play_count, created_at and id. The last two are pure
+        tie-breakers, there so the answer is deterministic rather than
+        whatever order SQLite happened to return."""
+        return max(candidates,
+                   key=lambda row: (row["play_count"], -(row["created_at"] or 0), row["id"]))
+
     def resolveCanonicalTrackId(self, trackId: str) -> str:
         """The track a merged id should be read as, or the id itself.
 
@@ -923,19 +952,12 @@ class TrackQueries:
         # to decide. Fabricated ids are already excluded by getTracksMissingIsrc
         # never filling them, but the length test costs nothing and keeps this
         # honest if an ISRC ever arrives by another route.
-        #< the play tally is one aggregate pass over plays joined back, never a
-        #  correlated per-candidate COUNT: no play index leads with track_id
-        #  (both lead with username), so the correlated form re-read every play
-        #  for each candidate - measured 8 s at 840 candidates over 134k plays,
-        #  paid on every admin page view while the toggle is off. LEFT JOIN,
-        #  because a track nobody has played yet must stay in its group at zero
         rows = conn.execute(
-            """
+            f"""
             SELECT t.id, t.isrc, t.canonical_id, t.created_at,
                    COALESCE(pc.play_count, 0) AS play_count
             FROM tracks t
-            LEFT JOIN (SELECT track_id, COUNT(*) AS play_count
-                       FROM plays GROUP BY track_id) pc ON pc.track_id = t.id
+            {self._PLAY_TALLY_JOIN}
             WHERE t.isrc IS NOT NULL AND t.isrc <> ''
               AND t.isrc IN (SELECT isrc FROM tracks
                              WHERE isrc IS NOT NULL AND isrc <> ''
@@ -981,9 +1003,9 @@ class TrackQueries:
                 continue
 
             #< rule 2: whatever this group already agreed on wins. Any member
-            #  already pointing somewhere names the canonical; otherwise
-            #  elect the most-played, tie-broken by first-seen then id so the
-            #  answer is deterministic rather than whatever SQLite returned
+            #  already pointing somewhere names the canonical; otherwise the
+            #  election is _electCanonical's, shared with the review queue so
+            #  the two tiers cannot disagree about which release survives
             existing = {m["canonical_id"] for m in members if m["canonical_id"]}
             if len(existing) == 1:
                 canonicalId = existing.pop()
@@ -992,10 +1014,7 @@ class TrackQueries:
                 #  ran, or a hand edit. Left alone rather than guessed at
                 continue
             else:
-                canonicalId = max(
-                    members,
-                    key=lambda m: (m["play_count"], -(m["created_at"] or 0), m["id"]),
-                )["id"]
+                canonicalId = self._electCanonical(members)["id"]
 
             toMerge = [m for m in members
                        if m["id"] != canonicalId and m["canonical_id"] != canonicalId]
@@ -1085,18 +1104,16 @@ class TrackQueries:
           case - its checkbox preview already lists it, and a question with a
           known answer doesn't belong in a review queue.
 
-        The anchor each group proposes merging INTO is elected exactly like
-        the ISRC tier's canonical (most played, then first-seen, then id) from
-        the group's unmerged members, so the two tiers never disagree about
-        which release survives. Returns {"groups" (capped at
+        The anchor each group proposes merging INTO comes from the ISRC tier's
+        own election (_electCanonical), applied to the group's unmerged
+        members - the same function rather than the same description, so the
+        two tiers cannot disagree about which release survives. Returns
+        {"groups" (capped at
         MERGE_REVIEW_PAGE_LIMIT, biggest plays first), "totalGroups",
         "totalMembers"} - totals count the whole queue, not the page."""
         conn = self._conn()
-        #< one aggregate pass over plays joined back, same reasoning as
-        #  _planIsrcMerges: no play index leads with track_id, so a correlated
-        #  per-track COUNT would re-read every play per candidate
         rows = conn.execute(
-            """
+            f"""
             SELECT t.id, t.name, t.duration_ms, t.canonical_id, t.isrc,
                    t.created_at, al.name AS album_name, ar.name AS artist_name,
                    COALESCE(pc.play_count, 0) AS play_count
@@ -1104,8 +1121,7 @@ class TrackQueries:
             JOIN albums al ON al.id = t.album_id
             LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
-            LEFT JOIN (SELECT track_id, COUNT(*) AS play_count
-                       FROM plays GROUP BY track_id) pc ON pc.track_id = t.id
+            {self._PLAY_TALLY_JOIN}
             WHERE t.name IS NOT NULL AND t.name <> ''
               AND t.id NOT IN (SELECT track_id FROM track_merge_decisions
                                WHERE decided_by IS NOT NULL)
@@ -1134,8 +1150,7 @@ class TrackQueries:
             unmerged = [m for m in members if not m["canonical_id"]]
             if not unmerged:
                 continue
-            anchor = max(unmerged, key=lambda m: (m["play_count"],
-                                                  -(m["created_at"] or 0), m["id"]))
+            anchor = self._electCanonical(unmerged)
             anchorDuration = anchor["duration_ms"] or 0
             toMerge = []
             for m in unmerged:

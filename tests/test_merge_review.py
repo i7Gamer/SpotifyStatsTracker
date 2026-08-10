@@ -155,6 +155,32 @@ class TestReviewCandidates(MergeReviewTestCase):
 
         self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 0)
 
+    def test_both_tiers_elect_the_same_release_to_survive(self):
+        """The two tiers meet whenever a group's ISRCs arrive after a person
+        has already been asked about it, and a person who answered the queue
+        must not have placed the song somewhere the matcher would then move
+        it. They share _electCanonical rather than a description of it; this
+        is the assertion that would fail if one of them grew its own rule.
+
+        The tie-breakers are what a restatement gets wrong, so the group is
+        built to need all three: equal plays, then equal created_at."""
+        db = self._db()
+        self._track(db, "B" * 22, "Song", plays=4, createdAt=500.0)
+        self._track(db, "A" * 22, "Song", plays=4, createdAt=500.0)
+        self._track(db, "C" * 22, "Song", plays=1, createdAt=100.0)
+
+        anchor = db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"]
+        #< the same three tracks, now carrying the ISRC that hands them to the
+        #  automatic tier instead
+        db.repo.updateTrackIsrcs({t * 22: ISRC_A for t in "ABC"})
+        canonical = db.repo.previewMergeTracksByIsrc()["groups"][0]["canonical"]["trackId"]
+
+        self.assertEqual(anchor, canonical)
+        #< the last tie-break is the id under max(), so the HIGHEST wins. Which
+        #  direction is arbitrary - only that both tiers pick the same one
+        #  matters - but it is asserted so a rewrite has to say it moved
+        self.assertEqual(anchor, "B" * 22)
+
     def test_a_pair_sharing_an_isrc_belongs_to_the_automatic_tier(self):
         """Same ISRC = same master = the checkbox's job, and its preview
         already lists it. The queue exists for what ISRC can NOT decide."""
