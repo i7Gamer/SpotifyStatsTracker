@@ -257,6 +257,71 @@ class TestSearchSpansTheMergeGroup(TrackMergeReadPathTestCase):
         self.assertEqual(db.repo.getSkippedTracksCount("alice", searchQuery="single"), 1)
 
 
+class TestGenreCoverageAgreesWithGenreStats(TrackMergeReadPathTestCase):
+    """The coverage gate and the genre pages must count the same population.
+
+    _genreMembershipJoin reads a merged song's genres off the CANONICAL -
+    membership is a property of the song - but getGenreCoverageCounts kept
+    testing the PLAYED id, so the gate that decides whether /genres and the
+    Wrapped genre cards unlock measured something the pages behind it do not.
+
+    Not a transient backfill gap: the Last.fm lookup goes by track NAME, and a
+    merge group's whole point is that its releases are named differently
+    ("Psycho Killer" vs "Psycho Killer - 2005 Remaster"), so one member
+    answering where the other does not is the steady state."""
+
+    def _genre(self, db, trackId):
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO track_genres (track_id, genre, inherited, position) "
+                         "VALUES (?, 'rock', 0, 0)", (trackId,))
+
+    def test_the_gate_counts_a_song_covered_by_its_canonical(self):
+        """The canonical carries the genre, so every play in the group is a
+        play the genre pages can place - all 12 of them, not the 9 that
+        happened to land on that release."""
+        db = self._seed(self._makeDb({}, []))
+        self._genre(db, ALBUM_CUT)
+
+        coverage = db.repo.getGenreCoverageCounts("alice", 1)
+        distribution = db.repo.getGenrePlayCounts("alice", 1)
+
+        self.assertEqual(coverage["total"], 12)
+        self.assertEqual(coverage["song_covered"], 12)
+        self.assertEqual([(g["genre"], g["plays"]) for g in distribution], [("rock", 12)])
+
+    def test_the_gate_does_not_credit_a_genre_the_stats_cannot_reach(self):
+        """The reverse, and the one that misleads: only the merged-away single
+        carries the genre, so the stats find nothing (they read the canonical)
+        - and the gate must not report 3 covered plays over a page that
+        renders an empty chart."""
+        db = self._seed(self._makeDb({}, []))
+        self._genre(db, SINGLE)
+
+        coverage = db.repo.getGenreCoverageCounts("alice", 1)
+
+        self.assertEqual(coverage["song_covered"], 0)
+        self.assertEqual(db.repo.getGenrePlayCounts("alice", 1), [])
+
+    def test_an_unmerged_library_counts_coverage_exactly_as_it_did(self):
+        db = self._seed(self._makeDb({}, []), merge=False)
+        self._genre(db, SINGLE)
+
+        coverage = db.repo.getGenreCoverageCounts("alice", 1)
+
+        self.assertEqual(coverage["total"], 12)
+        self.assertEqual(coverage["song_covered"], 3)
+
+    def test_own_genre_coverage_moves_with_it(self):
+        """song_own is the same question asked of non-inherited rows only, and
+        it feeds the same gate - so it cannot stay on the played id while
+        song_covered moves."""
+        db = self._seed(self._makeDb({}, []))
+        self._genre(db, ALBUM_CUT)
+
+        self.assertEqual(db.repo.getGenreCoverageCounts("alice", 1)["song_own"], 12)
+
+
 class TestTrendCards(TrackMergeReadPathTestCase):
     def test_an_obsession_split_across_two_releases_still_counts(self):
         """The trend cards pick ONE track over a threshold, so a song whose

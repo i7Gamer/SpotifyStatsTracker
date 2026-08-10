@@ -29,10 +29,20 @@ class GenreQueries:
         denominator (it just can't be album/artist covered), matching the old
         plays-only outer scan.
 
+        The two TRACK sets are probed by the same key the genre stats read
+        their rows under - the canonical once anything is merged, see
+        _genreMembershipJoin. They gate those very pages, so measuring a
+        different population is how the gate comes to report 80% over a chart
+        that renders empty (the merged-away release carried the genre, and the
+        stats look at the canonical). Albums and artists are untouched: neither
+        is merged, and an album's genres stay the played release's own.
+
         `inherited` is the resolved 0/1 toggle, not None - see
         Database._resolveIncludeInherited, which owns that fallback."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        #< free while nothing is merged: COALESCE(canonical_id, id) is the id
+        songKey = "COALESCE(t.canonical_id, t.id)" if self._anyTrackMerges() else "p.track_id"
         params.extend([inherited, inherited])
         row = self._conn().execute(
             f"""
@@ -57,8 +67,8 @@ class GenreQueries:
             FROM played p
             LEFT JOIN tracks t          ON t.id = p.track_id
             LEFT JOIN track_artists ta  ON ta.track_id = p.track_id AND ta.position = 0
-            LEFT JOIN covered_tracks  ct  ON ct.track_id   = p.track_id
-            LEFT JOIN own_tracks      ot  ON ot.track_id   = p.track_id
+            LEFT JOIN covered_tracks  ct  ON ct.track_id   = {songKey}
+            LEFT JOIN own_tracks      ot  ON ot.track_id   = {songKey}
             LEFT JOIN covered_albums  ca  ON ca.album_id   = t.album_id
             LEFT JOIN own_albums      oa  ON oa.album_id   = t.album_id
             LEFT JOIN covered_artists car ON car.artist_id = ta.artist_id
