@@ -2949,7 +2949,9 @@ progress::-moz-progress-bar {
 }
 
 .chart-section:not(:last-of-type) {
-  margin-bottom: 24px;
+  /* the page rhythm, one level down: what separates these is the 20px
+     padding above and the border, not the size of this gap */
+  margin-bottom: 18px;
 }
 
 /* Inside a paired-chart row the two sections drop their own vertical padding so
@@ -4303,11 +4305,13 @@ html.theme-red {
 
 /* Placeholder for the detail pages' deferred body (templates/_detail_skeleton.html,
    swapped out by static/js/detail-page.js). Heights approximate the card, chart
-   panel and list that replace them, so the page doesn't jump when they do. */
+   panel and list that replace them, so the page doesn't jump when they do.
+   The gap is not an approximation: it is exactly the rhythm the real blocks
+   stack at, so it is the one part of this placeholder that lands unmoved. */
 .detail-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 18px;
 }
 
 .detail-skeleton-block {

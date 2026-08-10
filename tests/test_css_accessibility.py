@@ -228,6 +228,11 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         #  and .chart-card is the panel above the list on /charts and on both
         #  detail pages.
         ".dashboard-live", ".chart-card",
+        #< one level down from the page - these stack INSIDE .chart-card - but
+        #  the same rhythm, so a chart panel's internal stack reads as evenly
+        #  spaced as the page's. Its 20px vertical padding and its border do
+        #  the work of separating them; the margin was only ever the gap.
+        ".chart-section:not(:last-of-type)",
     )
 
     def setUp(self):
@@ -259,6 +264,12 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
                          ".dashboard-summary-cards"):
             with self.subTest(selector=selector):
                 self.assertIn("gap: 18px", self._block(selector))
+
+    def test_the_detail_skeleton_stacks_at_the_rhythm_it_is_standing_in_for(self):
+        """The placeholder's whole job is that the page does not jump when the
+        real body swaps in, so its gap is not free to be its own value - it
+        has to be whatever .track-summary-grid and .chart-card leave behind."""
+        self.assertIn("gap: 18px", self._block(".detail-skeleton"))
 
     def test_the_gap_under_the_nav_bar_is_the_same_rhythm(self):
         """.page's top padding IS the topbar -> hero distance: .topbar is
