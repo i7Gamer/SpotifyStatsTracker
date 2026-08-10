@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: 2026 i7Gamer
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""The song hero's "Also released on ..." line is one readable sentence.
+
+Every other whitespace join in that block is trimmed by hand ({%- ... -#}),
+because the sentence is assembled from a loop and inline elements. The one
+between the admin Split <button> and its </form> was not, and an inline form
+renders that newline as a space - so the closing period detached:
+
+    Also released on Psycho Killer (Single) split . Plays across all ...
+
+Found in the browser, which is the only place it shows: the markup looks
+correct in the file, and every route test asserting on this block passes
+either way. Rendered through a bare Jinja environment rather than a route so
+the assertion pins the template itself.
+"""
+import os
+import re
+import sys
+import unittest
+
+import jinja2
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TEMPLATES = os.path.join(_ROOT, "templates")
+
+_RELEASES = [
+    {"trackId": "A" * 22, "album": {"id": "albSingle", "name": "Psycho Killer (Single)"}},
+    {"trackId": "C" * 22, "album": {"id": "albBest", "name": "The Best Of"}},
+]
+
+
+def _heroSentence(isAdmin, releases=_RELEASES):
+    """The rendered text of the merged-releases block, whitespace-collapsed the
+    way a browser collapses it."""
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(_TEMPLATES), autoescape=True)
+    env.globals["url_for"] = lambda *args, **kwargs: "#"
+    env.globals["csrf_token"] = lambda: "token"
+    source = env.loader.get_source(env, "song_detail.html")[0]
+    #< the block alone: the full page extends layout.html and pulls in the
+    #  whole chrome, none of which this is about
+    start = source.index('<div class="hero-merged-releases">')
+    end = source.index("</div>", start) + len("</div>")
+    rendered = env.from_string(source[start:end]).render(
+        mergedReleases=releases, isAdmin=isAdmin)
+    #< tags drop to NOTHING, not to a space: a browser collapses whitespace in
+    #  text nodes, and markup between two words contributes none of its own.
+    #  Substituting a space here would fabricate the very gap being asserted
+    #  against, and pass whatever the template did.
+    return " ".join(re.sub(r"<[^>]+>", "", rendered).split())
+
+
+class MergedReleasesSentenceTestCase(unittest.TestCase):
+    def test_the_period_is_not_orphaned_from_the_last_release(self):
+        sentence = _heroSentence(isAdmin=True)
+
+        self.assertNotIn(" .", sentence, sentence)
+        self.assertIn("The Best Of split.", sentence)
+
+    def test_the_same_holds_for_a_reader_who_sees_no_split_control(self):
+        sentence = _heroSentence(isAdmin=False)
+
+        self.assertNotIn(" .", sentence, sentence)
+        self.assertIn("The Best Of.", sentence)
+
+    def test_the_releases_still_read_as_a_list(self):
+        sentence = _heroSentence(isAdmin=False)
+
+        self.assertIn("Also released on Psycho Killer (Single) and The Best Of.", sentence)
+
+    def test_a_single_release_needs_no_conjunction(self):
+        sentence = _heroSentence(isAdmin=False, releases=_RELEASES[:1])
+
+        self.assertIn("Also released on Psycho Killer (Single).", sentence)
+        self.assertNotIn(" and ", sentence)
+
+
+if __name__ == "__main__":
+    unittest.main()

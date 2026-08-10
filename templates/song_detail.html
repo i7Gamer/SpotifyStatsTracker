@@ -52,8 +52,11 @@
             {#- admin-only, because a merge is instance-wide: splitting moves
                 every account's numbers, the same reason the toggle lives on
                 /admin. Records a manual verdict the matcher never overrules. -#}
-            <button type="submit" class="hero-split-button" title="Not the same recording? Split this release back out.">split</button>
-          </form>{% endif %}{% endfor %}.
+            {#- </form> hugs the button: the form is inline, so a newline here
+                would collapse into a space and detach the closing period from
+                the sentence ("The Best Of split ."). Every other join in this
+                block is trimmed for the same reason. -#}
+            <button type="submit" class="hero-split-button" title="Not the same recording? Split this release back out.">split</button></form>{% endif %}{% endfor %}.
         Plays across all of them are counted together.
       </div>
       {% endif %}
