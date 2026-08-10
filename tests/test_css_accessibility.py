@@ -40,6 +40,156 @@ class TestNavKeyboardCss(unittest.TestCase):
         self.assertIn("padding-right: 1px;", self.css)
 
 
+class TestOverlaySurfaceLegibility(unittest.TestCase):
+    """The 2026-08-10 overlay pass: surfaces that float over CONTENT are not
+    allowed to be glass.
+
+    --glass-bg (0.65 alpha) reads fine over the fixed body gradient, which is
+    what the topbar and the desktop dropdowns sit on. The mobile nav drawer and
+    the admin setting-hint popovers sit over a scrolling page instead - over a
+    light album cover a 0.65 panel composites to roughly #545454, which drops
+    --muted text to ~2.9:1, under the 4.5:1 floor. The setting-hint was worse
+    still: 0.45 alpha and no backdrop-filter at all, so the checkbox labels
+    behind it showed through the tooltip as text-over-text.
+
+    --overlay-bg is the near-opaque counterpart. The blur stays (it is the
+    design language) but it is no longer load-bearing for legibility, which
+    matters because some Android WebViews drop backdrop-filter entirely and
+    would otherwise be left with the raw alpha."""
+
+    #< the point of the token: opaque enough that what is behind it cannot be
+    #  read through it. 0.97 over white composites to ~#181818 (16.4:1 against
+    #  --text), which is the same as opaque for every practical purpose.
+    _MIN_OVERLAY_ALPHA = 0.95
+    #< the touch-target floor already used by .scroll-to-top and the pager
+    _MIN_TOUCH_TARGET = "44px"
+
+    def setUp(self):
+        self.css = _readFile(_CSS_PATH)
+
+    def _block(self, selector, source=None):
+        """The declarations of the FIRST rule for `selector`, comments stripped.
+
+        Brace-matched, so a rule nested inside a media query slices out too,
+        and the selector may head a comma-separated list (`.dropdown-content a,
+        .dropdown-content ... button {`). Comments go because these tests
+        assert on what a declaration says, and the comments beside them
+        legitimately name the values they replaced."""
+        source = self.css if source is None else source
+        import re
+        match = re.search(re.escape(selector) + r"\s*(?:,[^{}]*)?\{", source)
+        self.assertIsNotNone(match, f"{selector} missing from style.css")
+        depth, start = 1, match.end()
+        for index in range(start, len(source)):
+            if source[index] == "{":
+                depth += 1
+            elif source[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return re.sub(r"/\*.*?\*/", "", source[start:index], flags=re.DOTALL)
+        self.fail(f"unbalanced braces after {selector}")
+
+    def _mobileNavBlock(self):
+        """Everything at the <=1024px breakpoint, joined. There are two such
+        media queries and the drawer spans both: .nav-links lives in the first,
+        the .dropdown-content flattening in the second."""
+        import re
+        blocks = []
+        for match in re.finditer(r"@media \(max-width: 1024px\)\s*\{", self.css):
+            depth, start = 1, match.end()
+            for index in range(start, len(self.css)):
+                if self.css[index] == "{":
+                    depth += 1
+                elif self.css[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        blocks.append(self.css[start:index])
+                        break
+        self.assertTrue(blocks, "no <=1024px media query in style.css")
+        return "\n".join(blocks)
+
+    def test_the_overlay_token_is_effectively_opaque(self):
+        import re
+        match = re.search(r"--overlay-bg:\s*rgba\([^)]*,\s*([\d.]+)\s*\)", self.css)
+        self.assertIsNotNone(match, "--overlay-bg missing or not an rgba()")
+        self.assertGreaterEqual(float(match.group(1)), self._MIN_OVERLAY_ALPHA)
+
+    def test_the_mobile_drawer_is_an_overlay_surface_not_a_glass_one(self):
+        block = self._block(".nav-links", self._mobileNavBlock())
+        self.assertIn("background: var(--overlay-bg)", block)
+        self.assertNotIn("var(--glass-bg)", block)
+
+    def test_the_drawer_keeps_the_blur(self):
+        """Both prefixes: -webkit- is still what iOS Safari reads."""
+        block = self._block(".nav-links", self._mobileNavBlock())
+        self.assertIn("backdrop-filter: blur", block)
+        self.assertIn("-webkit-backdrop-filter: blur", block)
+
+    def test_the_setting_hint_popover_is_an_overlay_surface(self):
+        block = self._block(".setting-hint p")
+        self.assertIn("background: var(--overlay-bg)", block)
+        self.assertNotIn("var(--surface)", block)
+        self.assertIn("backdrop-filter: blur", block)
+
+    def test_the_setting_hint_popover_uses_full_strength_text(self):
+        """0.8rem is small text, which is exactly where the 4.5:1 minimum
+        stops being generous."""
+        self.assertIn("color: var(--text)", self._block(".setting-hint p"))
+
+    def test_the_drawer_runs_to_the_bottom_of_the_viewport(self):
+        block = self._block(".nav-links", self._mobileNavBlock())
+        self.assertIn("top: 100%", block)
+        self.assertIn("--topbar-current-height", block)
+        #< dvh, not vh: vh on a phone measures the viewport WITHOUT the
+        #  browser's collapsing chrome, so the last item lands under it
+        self.assertIn("100dvh", block)
+        #< the height is no longer something the .active state grows into
+        self.assertNotIn("max-height", block)
+        self.assertNotIn("max-height", self._block(".nav-links.active", self._mobileNavBlock()))
+
+    def test_no_rule_hardcodes_the_topbar_height_as_an_offset(self):
+        """The literal this replaces. .topbar is flex-wrap and grows a row for
+        any of the four badges, so 62px was wrong whenever one was showing -
+        and it never agreed with --topbar-height (52px) either."""
+        self.assertNotIn("top: 62px", self.css)
+
+    def test_the_drawer_contains_its_own_scrolling(self):
+        block = self._block(".nav-links", self._mobileNavBlock())
+        self.assertIn("overflow-y: auto", block)
+        self.assertIn("overscroll-behavior: contain", block)
+
+    def test_an_open_drawer_locks_the_page_behind_it(self):
+        """Scoped INSIDE the media query: opening at 900px and resizing past
+        the breakpoint would otherwise leave the page unscrollable with no
+        drawer left to close."""
+        self.assertIn("overflow: hidden", self._block("body.nav-open", self._mobileNavBlock()))
+
+    def test_every_menu_item_meets_the_touch_target_floor(self):
+        """Both selectors: most of this menu (Top Songs/Artists/Albums,
+        Charts, Genres, Wrapped, Profile, Import, Admin) is dropdown-content,
+        not a top-level .nav-links link."""
+        mobile = self._mobileNavBlock()
+        for selector in (".nav-links a", ".dropdown-content a"):
+            with self.subTest(selector=selector):
+                self.assertIn(f"min-height: {self._MIN_TOUCH_TARGET}",
+                              self._block(selector, mobile))
+
+    def test_menu_items_are_primary_text_not_muted(self):
+        """They are the only controls on the screen while the drawer is open;
+        --muted reads as "secondary" and is the weaker contrast of the two."""
+        mobile = self._mobileNavBlock()
+        for selector in (".nav-links a", ".dropdown-content a"):
+            with self.subTest(selector=selector):
+                self.assertIn("color: var(--text)", self._block(selector, mobile))
+
+    def test_the_hint_toggle_has_a_touchable_hit_area(self):
+        """The circle stays 16px so the row's alignment is unchanged; a
+        transparent pseudo-element does the touching."""
+        block = self._block(".setting-hint summary::before")
+        self.assertIn(f"width: {self._MIN_TOUCH_TARGET}", block)
+        self.assertIn(f"height: {self._MIN_TOUCH_TARGET}", block)
+
+
 class TestPageRhythmAndInlineHero(unittest.TestCase):
     """The 2026-08-10 spacing polish, pinned.
 
@@ -181,17 +331,25 @@ class TestMobileNavToggleAnnouncesItsState(unittest.TestCase):
                       "the menu starts closed, so the initial state must say so")
         self.assertIn('aria-controls="nav-menu"', navToggle)
 
-    def test_both_paths_that_change_the_menu_update_the_attribute(self):
-        """Two of them: the button itself, and a link click that closes the
-        menu without going through the button's handler. A fix landing in only
-        the first leaves the attribute stuck at "true" after navigating."""
+    def test_one_writer_owns_the_menu_state_so_the_attribute_cannot_drift(self):
+        """Was: count syncNavExpanded() and require one call per path. The
+        paths are four now (button, link, Escape, tap-outside) and counting
+        them is the weaker guard - what matters is that no path flips the
+        class on its own. setNavOpen is the single writer and it always
+        re-syncs, so a fifth path cannot forget to."""
         chrome = _readFile(_LAYOUT_CHROME_PATH)
         navBlock = chrome[chrome.index("const navToggle"):]
 
         self.assertIn("aria-expanded", navBlock)
         #< "syncNavExpanded();" is a CALL - the declaration ends in " {"
-        self.assertEqual(navBlock.count("syncNavExpanded();"), 2,
-                         "both the toggle click and the link click must re-sync it")
+        self.assertEqual(navBlock.count("syncNavExpanded();"), 1,
+                         "more than one call means a path is flipping the class itself")
+        for stray in ("navMenu.classList.add", "navMenu.classList.remove",
+                      "navMenu.classList.toggle"):
+            with self.subTest(stray=stray):
+                self.assertNotIn(stray, navBlock, f"{stray} bypasses setNavOpen")
+        #< the declaration plus the four paths
+        self.assertGreaterEqual(navBlock.count("setNavOpen("), 5)
 
 class TestAdminUtilityClasses(unittest.TestCase):
     def setUp(self):

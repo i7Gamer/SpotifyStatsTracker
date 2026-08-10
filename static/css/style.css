@@ -34,6 +34,17 @@
   --border-color: #2d2d2d;
   --glass-bg: rgba(18, 18, 18, 0.65);
   --glass-border: rgba(255, 255, 255, 0.06);
+  /* The near-opaque counterpart to --glass-bg, for surfaces that float over
+     CONTENT rather than over the fixed body gradient: the mobile nav drawer
+     and the admin setting-hint popovers. Glass at 0.65 composites to roughly
+     #545454 over a light album cover, which drops --muted text to ~2.9:1 -
+     under the 4.5:1 floor. At 0.97 the same backdrop gives ~#181818 (16.4:1
+     against --text) while still reading as a layer rather than a slab.
+     The blur stays on these surfaces, but it is no longer what makes them
+     legible: some Android WebViews drop backdrop-filter entirely, and that
+     used to leave nothing but the raw alpha. */
+  --overlay-bg: rgba(18, 18, 18, 0.97);
+  --overlay-border: rgba(255, 255, 255, 0.12);
   --glow-color-1: rgba(251, 113, 123, 0.15);
   --glow-color-2: rgba(29, 185, 84, 0.1);
   --glow-color-3: rgba(25, 25, 25, 0.3);
@@ -2310,6 +2321,7 @@ progress::-moz-progress-bar {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   width: 16px;
   height: 16px;
   border-radius: 50%;
@@ -2320,6 +2332,19 @@ progress::-moz-progress-bar {
   font-weight: 700;
   user-select: none;
   padding-right: 1px;
+}
+
+/* 16px circle, 44px target. The box stays 16px so the settings rows keep
+   their alignment, and a transparent pseudo-element does the touching -
+   growing the circle itself would have moved every label beside it. */
+.setting-hint summary::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
 }
 
 .setting-hint summary::-webkit-details-marker {
@@ -2340,12 +2365,19 @@ progress::-moz-progress-bar {
   max-width: 70vw;
   margin: 0;
   padding: 0.6rem 0.75rem;
-  background: var(--surface);
-  border: 1px solid var(--glass-border);
+  /* Was --surface (0.45 alpha) with no backdrop-filter at all, so the checkbox
+     labels underneath read straight through the tooltip - text over text, not
+     merely low contrast. --text rather than --muted for the same reason the
+     drawer's links got it: 0.8rem is small text, which is where the 4.5:1
+     minimum stops being generous. */
+  background: var(--overlay-bg);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid var(--overlay-border);
   border-radius: 8px;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
   font-size: 0.8rem;
-  color: var(--muted);
+  color: var(--text);
   line-height: 1.4;
   text-align: left;
   z-index: 5;
@@ -2611,40 +2643,71 @@ progress::-moz-progress-bar {
     display: flex;
   }
 
+  /* A full-height drawer, not a dropdown. The height was a fixed 400px, then
+     max-height: 80vh, and the top was the literal 62px - none of which is the
+     answer, because .topbar is flex-wrap and grows a whole row for any of the
+     four badges. `top: 100%` is the bar's own bottom edge whatever height it
+     happens to be, and the height below it is the viewport minus the height
+     layout-chrome.js measured. dvh, not vh: vh on a phone measures the
+     viewport WITHOUT the browser's collapsing chrome, which would put the
+     last item under it.
+     Stays position: absolute deliberately - .topbar's backdrop-filter makes it
+     the containing block for fixed descendants too, so `fixed` would resolve
+     against the bar rather than the viewport and collapse to nothing. */
   .nav-links {
     position: absolute;
-    top: 62px;
+    top: 100%;
     left: 0;
     right: 0;
+    height: calc(100vh - var(--topbar-current-height, var(--topbar-height)));
+    height: calc(100dvh - var(--topbar-current-height, var(--topbar-height)));
     flex-direction: column;
     flex-wrap: nowrap;
-    background: var(--glass-bg);
+    justify-content: flex-start;
+    align-items: stretch;
+    background: var(--overlay-bg);
     backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
-    border-bottom: 1px solid var(--glass-border);
-    gap: 16px;
-    padding: 16px 24px;
-    max-height: 0;
-    overflow: hidden;
+    border-bottom: none;
+    gap: 4px;
+    padding: 12px 24px calc(24px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+    /* the drawer covers the page, so a flick past its end must not start
+       scrolling what is underneath it */
+    overscroll-behavior: contain;
     visibility: hidden;
     opacity: 0;
-    transition: max-height 0.3s ease, visibility 0.3s ease, opacity 0.3s ease;
+    /* was a max-height transition, which animates a layout property and janks;
+       the panel is full-height now, so there is nothing to grow anyway */
+    transform: translateY(-8px);
+    transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
   }
 
   .nav-links.active {
-    /* was a fixed 400px, which fit the original 6 links but overflowed and
-       wrapped into a broken second column once Top Albums/Wrapped brought the
-       count to 8 - vh-based + scroll keeps this from recurring as more links
-       are added. */
-    max-height: 80vh;
-    overflow-y: auto;
     visibility: visible;
     opacity: 1;
+    transform: none;
   }
 
+  /* While the drawer is open the page under it cannot be reached, so it should
+     not scroll either. Scoped to this breakpoint on purpose: above it the
+     burger is display:none and the class could never be cleared by hand. */
+  body.nav-open {
+    overflow: hidden;
+  }
+
+  /* These are the only controls on the screen while the drawer is open, so
+     they get full-strength text and a real touch target - --muted at ~34px
+     read as secondary text you had to aim at. */
   .nav-links a {
-    padding: 8px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 8px 12px;
+    border-radius: 10px;
     text-align: center;
+    color: var(--text);
   }
 
   .nav-links a:last-child {
@@ -3959,12 +4022,22 @@ html.theme-red {
     display: none;
   }
 
+  /* Most of the drawer is these, not top-level .nav-links children: Top
+     Songs/Artists/Albums, Charts, Genres, Wrapped, Profile, Import, Admin and
+     Log out are all dropdown-content. They get the same full-strength text and
+     44px target as their siblings - styling only the top-level links would
+     have left three quarters of the menu muted and ~34px tall. */
   .dropdown-content a,
   .dropdown-content .dropdown-logout-form button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
     text-align: center;
-    padding: 8px 0;
+    padding: 8px 12px;
+    border-radius: 10px;
     font-size: 1rem;
-    color: var(--muted);
+    color: var(--text);
   }
 
   .dropdown-content a:hover,

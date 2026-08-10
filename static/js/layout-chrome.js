@@ -142,26 +142,71 @@ const LISTENER_STATUS_POLL_MS = 10 * 1000;
 
   if (!navToggle || !navMenu) return;
 
+  const topbar = document.querySelector('.topbar');
+  // Locks the page under the open drawer. The rule is scoped inside the
+  // <=1024px media query, so opening at 900px and then resizing past the
+  // breakpoint cannot leave the page unscrollable with no drawer to close.
+  const NAV_OPEN_CLASS = 'nav-open';
+  // The drawer starts where the topbar ends and runs to the bottom of the
+  // viewport, so its height is (viewport - topbar). .topbar is flex-wrap and
+  // grows a second row for any of the four badges (share request, accepted
+  // share, milestone, Spotify reauth), so that height is not a constant: the
+  // literal this replaces said 62px, --topbar-height says 52px, and with a
+  // badge showing neither was right.
+  const TOPBAR_HEIGHT_VAR = '--topbar-current-height';
+
+  function publishTopbarHeight() {
+    if (!topbar) return;   //< nothing to measure, and the CSS fallback covers it
+    document.documentElement.style.setProperty(TOPBAR_HEIGHT_VAR, topbar.offsetHeight + 'px');
+  }
+
   // Both class flips are purely visual, so the button has to say what it did
   // (see the aria-expanded note in layout.html). Driven off navMenu's own
-  // class rather than a counter, so the link handler below - which closes the
-  // menu without going through here - can reuse it and never disagree.
+  // class rather than a counter, so every path that closes the menu - link,
+  // Escape, tap-outside - agrees on the state it left behind.
   function syncNavExpanded() {
     navToggle.setAttribute('aria-expanded', String(navMenu.classList.contains('active')));
   }
 
-  navToggle.addEventListener('click', () => {
-    navMenu.classList.toggle('active');
-    navToggle.classList.toggle('active');
+  function isNavOpen() {
+    return navMenu.classList.contains('active');
+  }
+
+  function setNavOpen(open) {
+    const flip = open ? 'add' : 'remove';
+    navMenu.classList[flip]('active');
+    navToggle.classList[flip]('active');
+    document.body.classList[flip](NAV_OPEN_CLASS);
+    //< re-measured on open rather than only at load: a badge can appear on a
+    //  page the drawer was already installed on
+    if (open) publishTopbarHeight();
     syncNavExpanded();
-  });
+  }
+
+  publishTopbarHeight();
+  window.addEventListener('resize', publishTopbarHeight);
+
+  navToggle.addEventListener('click', () => setNavOpen(!isNavOpen()));
 
   navMenu.querySelectorAll('a').forEach(link => {
-    link.addEventListener('click', () => {
-      navMenu.classList.remove('active');
-      navToggle.classList.remove('active');
-      syncNavExpanded();
-    });
+    link.addEventListener('click', () => setNavOpen(false));
+  });
+
+  // The drawer is opaque and covers the whole page below the topbar, so
+  // without these two the only way out is the burger itself.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !isNavOpen()) return;
+    setNavOpen(false);
+    navToggle.focus();   //< focus would otherwise be left inside a hidden panel
+  });
+
+  // "Outside" is the strip of topbar still visible above the drawer - small,
+  // but it is the only region left, and the click that OPENED the drawer
+  // bubbles here too, which is what the navToggle check is for.
+  document.addEventListener('click', (event) => {
+    if (!isNavOpen()) return;
+    if (navMenu.contains(event.target) || navToggle.contains(event.target)) return;
+    setNavOpen(false);
   });
 })();
 

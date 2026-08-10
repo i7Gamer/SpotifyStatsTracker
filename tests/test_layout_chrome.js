@@ -37,6 +37,10 @@ function makeElement() {
     textContent: '',
     attributes: {},
     links: [],
+    //< what the drawer's height is measured from; a badge wrapping the topbar
+    //  to a second row is exactly the case the old 62px literal got wrong
+    offsetHeight: 0,
+    focused: 0,
     classList: {
       add(name) { classes.add(name); },
       remove(name) { classes.delete(name); },
@@ -46,6 +50,8 @@ function makeElement() {
     setAttribute(name, value) { this.attributes[name] = value; },
     addEventListener(type, fn) { (this.handlers = this.handlers || {})[type] = fn; },
     querySelectorAll() { return this.links; },
+    contains(node) { return node === this || this.links.indexOf(node) !== -1; },
+    focus() { this.focused += 1; },
   };
 }
 
@@ -55,19 +61,26 @@ function makeElement() {
 function loadChrome(options) {
   options = options || {};
   const calls = { intervals: [], timeouts: [], clearedTimeouts: [], clearedIntervals: [],
-                  fetched: [], listeners: {} };
+                  fetched: [], listeners: {}, windowListeners: {}, cssVars: {} };
   const elements = options.elements || {};
+  const selectors = options.selectors || {};
+  const body = makeElement();
 
   global.window = {
     location: { pathname: '/history', search: options.search || '' },
     clearTimeout(id) { calls.clearedTimeouts.push(id); },
     setTimeout(fn, ms) { calls.timeouts.push({ fn, ms }); return calls.timeouts.length; },
+    addEventListener(type, fn) { calls.windowListeners[type] = fn; },
   };
   global.document = {
     hidden: !!options.hidden,
+    body: body,
+    documentElement: { style: { setProperty(name, value) { calls.cssVars[name] = value; } } },
     getElementById(id) { return elements[id] || null; },
+    querySelector(selector) { return selectors[selector] || null; },
     addEventListener(type, fn) { calls.listeners[type] = fn; },
   };
+  calls.body = body;
   global.setInterval = function (fn, ms) { calls.intervals.push({ fn, ms }); return calls.intervals.length; };
   global.clearInterval = function (id) { calls.clearedIntervals.push(id); };
   global.fetch = function (url) {
@@ -369,6 +382,121 @@ run('following a link closes the menu and says so', () => {
 
   assert.strictEqual(navMenu.classList.contains('active'), false);
   assert.strictEqual(navToggle.attributes['aria-expanded'], 'false');
+});
+
+// The drawer covers the whole page below the topbar and is opaque, so the ways
+// out of it are the only ways out: the burger (now an X), a link, Escape, and
+// the strip of topbar still visible above it.
+
+function makeNav(options) {
+  options = options || {};
+  const navToggle = makeElement();
+  const navMenu = makeElement();
+  const topbar = makeElement();
+  topbar.offsetHeight = options.topbarHeight || 52;
+  const chrome = loadChrome({
+    elements: { 'nav-toggle': navToggle, 'nav-menu': navMenu },
+    selectors: { '.topbar': topbar },
+  });
+  return { navToggle, navMenu, topbar, chrome };
+}
+
+run('Escape closes the open drawer and hands focus back to the burger', () => {
+  const nav = makeNav();
+  nav.navToggle.handlers.click();
+
+  nav.chrome.listeners.keydown({ key: 'Escape' });
+
+  assert.strictEqual(nav.navMenu.classList.contains('active'), false);
+  assert.strictEqual(nav.navToggle.attributes['aria-expanded'], 'false');
+  //< without this, focus is left on a link inside a hidden panel
+  assert.strictEqual(nav.navToggle.focused, 1);
+});
+
+run('Escape on a closed drawer does not steal focus', () => {
+  const nav = makeNav();
+
+  nav.chrome.listeners.keydown({ key: 'Escape' });
+
+  assert.strictEqual(nav.navToggle.focused, 0);
+});
+
+run('a key that is not Escape leaves the open drawer alone', () => {
+  const nav = makeNav();
+  nav.navToggle.handlers.click();
+
+  nav.chrome.listeners.keydown({ key: 'e' });
+
+  assert.strictEqual(nav.navMenu.classList.contains('active'), true);
+});
+
+run('a tap on what is left of the topbar closes the drawer', () => {
+  const nav = makeNav();
+  nav.navToggle.handlers.click();
+
+  nav.chrome.listeners.click({ target: makeElement() });
+
+  assert.strictEqual(nav.navMenu.classList.contains('active'), false);
+});
+
+run('a tap inside the drawer leaves it open', () => {
+  const nav = makeNav();
+  const link = makeElement();
+  nav.navMenu.links = [link];
+  nav.navToggle.handlers.click();
+
+  nav.chrome.listeners.click({ target: link });
+
+  assert.strictEqual(nav.navMenu.classList.contains('active'), true);
+});
+
+run('the click that opened the drawer does not immediately close it', () => {
+  const nav = makeNav();
+  nav.navToggle.handlers.click();
+
+  //< the same click bubbles to document; the burger must count as "inside"
+  nav.chrome.listeners.click({ target: nav.navToggle });
+
+  assert.strictEqual(nav.navMenu.classList.contains('active'), true);
+});
+
+run('opening the drawer locks the page behind it and closing releases it', () => {
+  const nav = makeNav();
+
+  nav.navToggle.handlers.click();
+  assert.strictEqual(nav.chrome.body.classList.contains('nav-open'), true);
+
+  nav.navToggle.handlers.click();
+  assert.strictEqual(nav.chrome.body.classList.contains('nav-open'), false);
+});
+
+run('the drawer is measured off the real topbar, not a constant', () => {
+  //< 88px is the topbar with a badge wrapped onto a second row - the case the
+  //  62px literal it replaces got wrong, and --topbar-height (52px) too
+  const nav = makeNav({ topbarHeight: 88 });
+
+  assert.strictEqual(nav.chrome.cssVars['--topbar-current-height'], '88px');
+});
+
+run('a resize re-measures the topbar', () => {
+  const nav = makeNav({ topbarHeight: 52 });
+
+  nav.topbar.offsetHeight = 88;   //< rotating to landscape unwraps the badge row
+  nav.chrome.windowListeners.resize();
+
+  assert.strictEqual(nav.chrome.cssVars['--topbar-current-height'], '88px');
+});
+
+run('a page without a topbar still opens its menu', () => {
+  //< the public share layout has no .topbar-scoped burger at all; guard the
+  //  measurement rather than throwing past the rest of the handler
+  const navToggle = makeElement();
+  const navMenu = makeElement();
+  loadChrome({ elements: { 'nav-toggle': navToggle, 'nav-menu': navMenu } });
+
+  navToggle.handlers.click();
+
+  assert.strictEqual(navMenu.classList.contains('active'), true);
 });
 
 (async () => {
