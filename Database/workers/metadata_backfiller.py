@@ -204,6 +204,14 @@ class _CatalogBatch:
 class MetadataBackfillMixin:
     """The Spotify Web-API metadata backfiller (missing album/track dates, artistless tracks)."""
 
+    # When this user's catalog lookups may resume, per _standDownCatalogLookups.
+    # A class attribute so it has a declared home and a documented default -
+    # the two readers used getattr(self, ..., 0.0) because nothing ever
+    # initialised it. Deliberately NOT reset per worker run, unlike
+    # _backfillTokenFailures: a quota window belongs to Spotify and outlives a
+    # restart, so a restarted worker must not walk back into an exhausted one.
+    _catalogBackoffUntil = 0.0
+
     def _spendCatalogBatch(self, kind: str, ids: list, headers: dict,
                             stop_event: threading.Event, onOk) -> _CatalogBatch:
         """Ask Spotify about `ids`, one GET /v1/<kind>/<id> each, and apply one
@@ -428,7 +436,7 @@ class MetadataBackfillMixin:
         # idle two accounts that still have quota. The one setup where sharing
         # WOULD be right is every account pointed at a single app - if that ever
         # happens here, key this on the client_id rather than on the instance.
-        if _dbmod.time.time() < getattr(self, "_catalogBackoffUntil", 0.0):
+        if _dbmod.time.time() < self._catalogBackoffUntil:
             return
 
         import requests
@@ -648,7 +656,7 @@ class MetadataBackfillMixin:
                     #  request and a token round-trip to rediscover the wall.
                     #  Read fresh each cycle, so a wall the ISRC step raised
                     #  moments ago already covers this step's turn
-                    quotaWalled = _dbmod.time.time() < getattr(self, "_catalogBackoffUntil", 0.0)
+                    quotaWalled = _dbmod.time.time() < self._catalogBackoffUntil
                     access_token = None if quotaWalled else getAccessToken()
                     self._noteTokenHealth(getAccessToken, hasWebApiCreds)
                     if access_token:

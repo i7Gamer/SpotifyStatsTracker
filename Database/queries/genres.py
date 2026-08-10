@@ -77,15 +77,19 @@ class GenreQueries:
         ).fetchone()
         return dict(row)
 
-    def _genreMembershipJoin(self) -> str:
+    def _genreMembershipJoin(self, merged: bool | None = None) -> str:
         """The plays->track_genres join, canonical-aware only when it has to be.
 
         A merged song's genres are the CANONICAL's rows - genre membership is a
         property of the song - but the tracks hop that implements that costs a
         PK probe per play row (+87% measured on the distribution query). While
         no merge exists the two spellings are equivalent, so the fast direct
-        join runs until one does. See _anyTrackMerges."""
-        if self._anyTrackMerges():
+        join runs until one does. See _anyTrackMerges.
+
+        `merged` lets a caller that already asked pass the answer in: the probe
+        is an unindexed column scan over the catalog, and one statement should
+        not pay for it twice to build two halves of itself."""
+        if self._anyTrackMerges() if merged is None else merged:
             return ("JOIN tracks trk ON trk.id = p.track_id\n"
                     "            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)")
         return "JOIN track_genres g ON g.track_id = p.track_id"
@@ -539,15 +543,19 @@ class GenreQueries:
         params: list = [includeInherited, genre, username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         params.append(limit)
+        #< asked ONCE for the statement: the probe is an unindexed column scan
+        #  over the whole catalog, and this used to run it twice - here and
+        #  again inside _genreMembershipJoin - to answer the same question
+        merged = self._anyTrackMerges()
         rows = conn.execute(
             f"""
             SELECT t.id AS id, t.name AS name, t.image_id AS image_id,
                    ar.name AS artist_name, COUNT(p.id) AS play_count
             FROM plays p
-            {self._genreMembershipJoin()} AND (? OR g.inherited = 0) AND g.genre = ?
+            {self._genreMembershipJoin(merged)} AND (? OR g.inherited = 0) AND g.genre = ?
             -- the CANONICAL row: this is a global list, so a song split across
             -- releases is one row with the group's whole count
-            JOIN tracks t ON t.id = {"COALESCE(trk.canonical_id, trk.id)" if self._anyTrackMerges() else "p.track_id"}
+            JOIN tracks t ON t.id = {"COALESCE(trk.canonical_id, trk.id)" if merged else "p.track_id"}
             LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
             LEFT JOIN artists ar ON ar.id = ta.artist_id
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}

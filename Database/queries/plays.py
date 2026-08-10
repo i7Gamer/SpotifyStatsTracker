@@ -1527,12 +1527,20 @@ class PlayQueries:
     def _skippedTrackFilters(self, params: list, trackId: str | None, artistId: str | None,
                               albumId: str | None, searchQuery: str | None,
                               trackIds: list[str] | None, fullPlaysOnly: bool) -> tuple[str, str]:
-        """(joins, WHERE) for the per-track skip scan - mirrors getSongsPage()'s
-        filters, and is shared by the list and its count so the pager can never
-        size itself for a different list than the one on screen.
+        """(joins, WHERE, tracksJoined) for the per-track skip scan - mirrors
+        getSongsPage()'s filters, and is shared by the list and its count so
+        the pager can never size itself for a different list than the one on
+        screen.
 
         Joins are added only when a filter needs them, so an unfiltered page
-        stays the plain plays scan it was."""
+        stays the plain plays scan it was - hence `tracksJoined`, which says
+        whether `t` is already in scope. Both callers need to know, because the
+        canonical join hangs off `t` and they must not join it twice; they used
+        to answer it by searching the generated SQL for the substring
+        `" tracks t "`, which is a guess about a string this function owns the
+        truth of - and the fallback beside it (`startswith("JOIN tracks")`)
+        would have SUPPRESSED a needed join the day this emitted a differently
+        aliased one."""
         joins = ""
         where = ""
         if trackId is not None:
@@ -1546,8 +1554,9 @@ class PlayQueries:
         # _trackSetClause - this scan measured ~1.2s for a well-played artist.
         where += self._trackSetClause(params, self.ARTIST_TRACKS_SUBQUERY,
                                       [artistId] if artistId is not None else None)
-        if albumId is not None or fullPlaysOnly:
-            joins += " JOIN tracks t ON t.id = p.track_id"
+        tracksJoined = albumId is not None or fullPlaysOnly
+        if tracksJoined:
+            joins += self._tracksJoin()
         if albumId is not None:
             where += " AND t.album_id = ?"
             params.append(albumId)
@@ -1570,7 +1579,7 @@ class PlayQueries:
                              else None))
         if fullPlaysOnly:
             where += self._fullPlayOrSkipClause(params)
-        return joins, where
+        return joins, where, tracksJoined
 
     def _skippedArtistFilters(self, params: list, artistId: str | None, searchQuery: str | None,
                                artistIds: list[str] | None, fullPlaysOnly: bool) -> tuple[str, str]:
@@ -1656,7 +1665,7 @@ class PlayQueries:
         libCte = self._libraryRateCte(username, params, startTs, endTs) if rankByLibraryRate else ""
         params.append(username)
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        joins, filterClause = self._skippedTrackFilters(
+        joins, filterClause, tracksJoined = self._skippedTrackFilters(
             params, trackId, artistId, albumId, searchQuery, trackIds, fullPlaysOnly)
         if rankByLibraryRate:
             params += [priorWeight, priorWeight]
@@ -1669,7 +1678,7 @@ class PlayQueries:
         skipKey = "p.track_id"
         skipJoins = joins
         if self._mergesCanonically(trackId, artistId, albumId):
-            if " tracks t " not in skipJoins and not skipJoins.strip().startswith("JOIN tracks"):
+            if not tracksJoined:   #< the canonical join hangs off `t`
                 skipJoins += self._tracksJoin()
             skipJoins += self._canonicalTrackJoin()
             skipKey = "c.id"
@@ -1715,12 +1724,12 @@ class PlayQueries:
         dropped in silence."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
-        joins, filterClause = self._skippedTrackFilters(
+        joins, filterClause, tracksJoined = self._skippedTrackFilters(
             params, None, None, None, searchQuery, trackIds, fullPlaysOnly)
         #< always global (this takes no entity narrowing), and it has to merge
         #  the same way the list does or the pager sizes a different population
         countJoins = joins
-        if " tracks t " not in countJoins and not countJoins.strip().startswith("JOIN tracks"):
+        if not tracksJoined:   #< the canonical join hangs off `t`
             countJoins += self._tracksJoin()
         countJoins += self._canonicalTrackJoin()
         row = self._conn().execute(
