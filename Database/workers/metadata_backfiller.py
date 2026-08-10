@@ -53,6 +53,11 @@ ERROR_BODY_LOG_LIMIT = 500
 # asked for 50 times instead of once.
 SPOTIFY_REQUEST_PACE_SECONDS = 0.2   #< between per-id requests; ~10s of a 300s cycle
 
+# Per catalog request. Long enough that a slow-but-alive API still answers,
+# short enough that a black-holed connection cannot hold a batch of fifty past
+# the cycle it belongs to.
+SPOTIFY_REQUEST_TIMEOUT_SECONDS = 10
+
 # Give up on a batch after this many failures IN A ROW. With one request per
 # batch a systemic failure cost one request per cycle; with fifty it costs
 # fifty, from each of three workers, every five minutes, forever - which is
@@ -174,8 +179,101 @@ class _CycleAccessToken:
         return self._minted
 
 
+class _CatalogBatch:
+    """What one pass over a batch of catalog ids came back with.
+
+    `attempted` are the ids that got a DEFINITIVE answer (a 200, or a 404 -
+    Spotify has no such entity and never will) and so may leave the queue.
+    Anything else stays queued: a 429 or a 5xx stamped as attempted would park
+    the id for the whole retry window over a transient.
+
+    `failures` is COUNTED rather than derived from len(ids) - len(attempted),
+    because the batch can stop early: the ids after a break were never ASKED
+    about, and calling them failures reports "50 of 50 failed" over five real
+    ones, in the line that exists to be believed. `firstFailure` is the first
+    one's detail, for the same line."""
+
+    __slots__ = ("attempted", "failures", "firstFailure")
+
+    def __init__(self, attempted, failures, firstFailure):
+        self.attempted = attempted
+        self.failures = failures
+        self.firstFailure = firstFailure
+
+
 class MetadataBackfillMixin:
     """The Spotify Web-API metadata backfiller (missing album/track dates, artistless tracks)."""
+
+    def _spendCatalogBatch(self, kind: str, ids: list, headers: dict,
+                            stop_event: threading.Event, onOk) -> _CatalogBatch:
+        """Ask Spotify about `ids`, one GET /v1/<kind>/<id> each, and apply one
+        failure policy to the answers.
+
+        Both catalog steps run this: the ISRC step over tracks and the album
+        metadata step over albums. They spend the same per-app quota and want
+        the same behaviour under refusal, and they used to say so twice - ~35
+        lines of identical control flow either side of a different URL and a
+        different thing done with a 200's body. The album copy was the one
+        without tests for the abort or the batch-stop, which is what a
+        duplicated policy costs: a fix lands on one of them.
+
+        `onOk(entityId, resp)` handles a 200's body and is called INSIDE the
+        per-id try, so a 200 whose JSON is malformed is a failure of that id
+        and not of the batch.
+
+        The policy, in full:
+          * one id at a time, because the bulk `?ids=` endpoints were withdrawn
+            (see SPOTIFY_REQUEST_PACE_SECONDS' note);
+          * the stop event is checked BETWEEN ids, so shutdown lands inside a
+            fifty-request batch rather than waiting it out;
+          * an exception is caught per id, so one reset connection does not
+            cost the rest of the batch its turn;
+          * a 429 arms the shared stand-down (one per-app budget, one wall) and
+            ends the batch - the quota window outlasts the cycle;
+          * CONSECUTIVE_FAILURE_ABORT failures in a row end it too. Consecutive
+            rather than cumulative: an intermittent 503 among successes is the
+            API being busy, not a systemic refusal."""
+        import requests
+
+        attempted = []
+        failures = 0
+        firstFailure = None
+        consecutiveFailures = 0
+
+        for entityId in ids:
+            if stop_event.is_set():
+                break
+
+            rateLimited = False
+            try:
+                resp = requests.get(f"https://api.spotify.com/v1/{kind}/{entityId}",
+                                    headers=headers, timeout=SPOTIFY_REQUEST_TIMEOUT_SECONDS)
+                if resp.status_code == 200:
+                    onOk(entityId, resp)
+                    attempted.append(entityId)
+                    consecutiveFailures = 0
+                elif resp.status_code == 404:
+                    attempted.append(entityId)
+                    consecutiveFailures = 0
+                else:
+                    if firstFailure is None:
+                        firstFailure = _responseDetail(resp)
+                    failures += 1
+                    consecutiveFailures += 1
+                    rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
+                    if rateLimited:
+                        self._standDownCatalogLookups(resp)
+            except Exception as e:
+                if firstFailure is None:
+                    firstFailure = f"request failed: {e}"
+                failures += 1
+                consecutiveFailures += 1
+
+            if rateLimited or consecutiveFailures >= CONSECUTIVE_FAILURE_ABORT:
+                break
+            stop_event.wait(SPOTIFY_REQUEST_PACE_SECONDS)
+
+        return _CatalogBatch(attempted, failures, firstFailure)
 
     def getSpotifyApiWorkerStatus(self) -> dict:
         """Same shape as getLastfmWorkerStatus, for the Spotify API metadata
@@ -365,72 +463,23 @@ class MetadataBackfillMixin:
 
             headers = {"Authorization": f"Bearer {access_token}"}
             isrcByTrackId = {}
-            attempted_ids = []   #< got a DEFINITIVE answer; only these leave the queue
-            consecutiveFailures = 0
-            #< counted, not derived from len(target_ids) - len(attempted_ids):
-            #  once the batch can stop early, the ids after the break were never
-            #  ASKED about, and calling them failures reports "50 of 50 failed"
-            #  over five real failures - in the line that exists to be believed
-            failures = 0
-            firstFailure = None
 
-            for track_id in target_ids:
-                #< between tracks, not only before the batch: a batch is up to
-                #  fifty requests long now, and shutdown has to be able to land
-                #  inside one rather than wait it out
-                if stop_event.is_set():
-                    break
+            def _recordIsrc(track_id, resp):
+                #< a track Spotify HAS but has no ISRC for is still ANSWERED,
+                #  and _spendCatalogBatch counts it attempted either way -
+                #  re-asking every cycle forever is what the bulk form's null
+                #  entries meant. Only the value is conditional
+                isrc = (resp.json().get("external_ids") or {}).get("isrc")
+                if isrc:
+                    isrcByTrackId[track_id] = isrc
 
-                rateLimited = False
-                try:
-                    resp = requests.get(f"https://api.spotify.com/v1/tracks/{track_id}",
-                                        headers=headers, timeout=10)
-                    if resp.status_code == 200:
-                        isrc = (resp.json().get("external_ids") or {}).get("isrc")
-                        if isrc:
-                            isrcByTrackId[track_id] = isrc
-                        #< attempted either way: a track Spotify HAS but has no
-                        #  ISRC for is answered, and re-asking every cycle
-                        #  forever is what the bulk form's null entries meant
-                        attempted_ids.append(track_id)
-                        consecutiveFailures = 0
-                    elif resp.status_code == 404:
-                        #< equally definitive, and the bulk form said it with a
-                        #  null entry: Spotify has no such track and never will
-                        attempted_ids.append(track_id)
-                        consecutiveFailures = 0
-                    else:
-                        # Not a definitive "no ISRC" - a 429/5xx stamped as
-                        # attempted would park this track for the whole retry
-                        # window over a transient, so it stays queued.
-                        if firstFailure is None:
-                            firstFailure = _responseDetail(resp)
-                        failures += 1
-                        consecutiveFailures += 1
-                        #< the API asking for less. The rest of the batch stops,
-                        #  and so do the cycles after it - a quota window
-                        #  outlasts the five minutes until the next one
-                        rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
-                        if rateLimited:
-                            self._standDownCatalogLookups(resp)
-                except Exception as e:
-                    #< caught HERE, per track, and not by the batch's handler
-                    #  below: one reset connection used to cost the other
-                    #  forty-nine their turn, which is the whole reason a batch
-                    #  is fifty requests now rather than one
-                    if firstFailure is None:
-                        firstFailure = f"request failed: {e}"
-                    failures += 1
-                    consecutiveFailures += 1
-
-                if rateLimited or consecutiveFailures >= CONSECUTIVE_FAILURE_ABORT:
-                    break
-                stop_event.wait(SPOTIFY_REQUEST_PACE_SECONDS)
+            batch = self._spendCatalogBatch("tracks", target_ids, headers,
+                                            stop_event, _recordIsrc)
 
             self.repo.updateTrackIsrcs(isrcByTrackId)
-            self.repo.markTracksIsrcAttempted(attempted_ids)
+            self.repo.markTracksIsrcAttempted(batch.attempted)
 
-            if firstFailure is not None:
+            if batch.firstFailure is not None:
                 # One line for the batch, not one per track: fifty requests can
                 # fail fifty times and the log is read by a person.
                 #
@@ -443,7 +492,7 @@ class MetadataBackfillMixin:
                 # cycle with nothing in the log to say why.
                 _dbmod.logger.warning(
                     "[Backfiller-%s] ISRC lookup failed for %d of %d track(s); first was %s",
-                    self.user, failures, len(target_ids), firstFailure)
+                    self.user, batch.failures, len(target_ids), batch.firstFailure)
 
             if isrcByTrackId:
                 _dbmod.logger.info("[Backfiller-%s] Recorded ISRCs for %d/%d track(s)",
@@ -603,56 +652,24 @@ class MetadataBackfillMixin:
                     access_token = None if quotaWalled else getAccessToken()
                     self._noteTokenHealth(getAccessToken, hasWebApiCreds)
                     if access_token:
-                        import requests
-
                         # One request per album: the bulk `?ids=` form this used
                         # to call was withdrawn on 2026-07-31 and has answered
                         # 403 Forbidden ever since, which is why every cycle
                         # between then and now degraded to the cookie client.
+                        #
+                        # The same policy the ISRC step spends its half of the
+                        # quota under - one refusal rule, one stand-down, one
+                        # abort - see _spendCatalogBatch. A 404 counts as
+                        # attempted here for the reason it does there: an album
+                        # Spotify has no data for is ANSWERED, and would
+                        # otherwise be re-queued every cycle forever.
                         headers = {"Authorization": f"Bearer {access_token}"}
-                        consecutiveFailures = 0
-                        albumFailures = 0   #< real failures, not "everything unstamped" - see the ISRC step
-                        firstFailure = None
-
-                        for album_id in target_ids:
-                            if stop_event.is_set():
-                                break
-                            rateLimited = False
-                            try:
-                                resp = requests.get(f"https://api.spotify.com/v1/albums/{album_id}",
-                                                    headers=headers, timeout=10)
-                                if resp.status_code == 200:
-                                    fetched_albums.append(resp.json())
-                                    attempted_ids.append(album_id)
-                                    consecutiveFailures = 0
-                                elif resp.status_code == 404:
-                                    #< an album Spotify has no data for. The bulk
-                                    #  form said this with a null entry, and it
-                                    #  counted as attempted for the same reason:
-                                    #  otherwise it is re-queued every cycle forever
-                                    attempted_ids.append(album_id)
-                                    consecutiveFailures = 0
-                                else:
-                                    if firstFailure is None:
-                                        firstFailure = _responseDetail(resp)
-                                    albumFailures += 1
-                                    consecutiveFailures += 1
-                                    rateLimited = resp.status_code == SPOTIFY_RATE_LIMIT_STATUS
-                                    #< the same budget the ISRC step spends, so
-                                    #  a refusal here arms the shared wall too
-                                    if rateLimited:
-                                        self._standDownCatalogLookups(resp)
-                            except Exception as e:
-                                #< per album, so one reset does not cost the rest
-                                #  of the batch its turn
-                                if firstFailure is None:
-                                    firstFailure = f"request failed: {e}"
-                                albumFailures += 1
-                                consecutiveFailures += 1
-
-                            if rateLimited or consecutiveFailures >= CONSECUTIVE_FAILURE_ABORT:
-                                break
-                            stop_event.wait(SPOTIFY_REQUEST_PACE_SECONDS)
+                        batch = self._spendCatalogBatch(
+                            "albums", target_ids, headers, stop_event,
+                            lambda album_id, resp: fetched_albums.append(resp.json()))
+                        #< extend, not assign: the cookie-client fallback below
+                        #  stamps into this same list
+                        attempted_ids.extend(batch.attempted)
 
                         # Only when the Web API answered NOTHING. Falling back
                         # after a partial success would hand the cookie client
@@ -661,7 +678,7 @@ class MetadataBackfillMixin:
                         # and come back next cycle either way.
                         use_fallback = not attempted_ids
 
-                        if firstFailure is not None:
+                        if batch.firstFailure is not None:
                             #< still behind the gate, and one line for the batch
                             #  rather than one per album: this path degrades to
                             #  the cookie client and logs that it did, so the
@@ -672,7 +689,7 @@ class MetadataBackfillMixin:
                             if flaskDebugEnabled():
                                 _dbmod.logger.warning(
                                     "[Backfiller-%s] Spotify Web API returned %s for %d of %d album(s).",
-                                    self.user, firstFailure, albumFailures, len(target_ids)
+                                    self.user, batch.firstFailure, batch.failures, len(target_ids)
                                 )
                     elif hasWebApiCreds and not quotaWalled:
                         #< not while walled: the token was deliberately never

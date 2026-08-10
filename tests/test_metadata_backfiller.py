@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from conftest import DatabaseTestCase
 from Database.database import Database
-from Database.workers.metadata_backfiller import TOKEN_REFRESH_REAUTH_THRESHOLD
+from Database.workers.metadata_backfiller import (
+    CONSECUTIVE_FAILURE_ABORT, TOKEN_REFRESH_REAUTH_THRESHOLD,
+)
 from test_track_isrc_backfill import REAL_ID, _insertTrack
 
 
@@ -907,6 +909,33 @@ class TestAlbumLookupsShareTheQuotaStandDown(DatabaseTestCase):
         #< the walled batch answered nothing, so the cookie client still serves
         #  this cycle - standing down is about quota, not about giving up
         mock_spotify.assert_called_once_with()
+
+    @patch("Database.database.logger")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_run_of_failures_gives_up_on_the_album_batch(self, mock_get, mock_spotify,
+                                                            mock_refresh, mock_logger):
+        """The album step aborts on a failure streak like the ISRC step does -
+        the two share _spendCatalogBatch, and this is the assertion that fails
+        if one of them grows its own loop again.
+
+        Untested on this side while the policy was duplicated, which is what a
+        duplicated policy costs: the ISRC copy had five tests for its failure
+        behaviour and this one had none, so a fix to either was free to miss
+        the other. 5xx rather than 429, so it is the streak being asserted and
+        not the stand-down that ends a batch by another route."""
+        db, _ = self._db(albumIds=[f"alb{i}" for i in range(CONSECUTIVE_FAILURE_ABORT + 5)])
+        failure = MagicMock()
+        failure.status_code = 500
+        failure.text = '{"error":{"status":500,"message":"Server error"}}'
+        failure.headers = {}
+        mock_get.return_value = failure
+        mock_spotify.return_value.album.return_value = self._albumPayload("alb0")
+
+        db._metadataBackfillLoop()
+
+        self.assertEqual(mock_get.call_count, CONSECUTIVE_FAILURE_ABORT)
 
     @patch("Database.database.logger")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
