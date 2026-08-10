@@ -243,7 +243,13 @@ button {
 .page {
   width: min(1400px, 100%);
   margin: 0 auto;
-  padding: 24px 16px 40px;
+  /* The top padding IS the gap under the sticky .topbar - nothing else sits
+     between them and .hero has no margin-top - so it is part of the 18px
+     rhythm below, not a page inset. At 24px the FIRST gap on every page was
+     the only one that disagreed with the rest of the stack.
+     The 40px bottom is not the rhythm: it is the run-out under the last
+     block, where .scroll-to-top parks. */
+  padding: 18px 16px 40px;
 }
 
 .hero {
@@ -2920,7 +2926,9 @@ progress::-moz-progress-bar {
 }
 
 .chart-card {
-  margin-bottom: 24px;
+  /* the page rhythm: this panel stacks directly above the list on /charts
+     and on both detail pages */
+  margin-bottom: 18px;
 }
 
 .card.chart-card:hover {
@@ -4209,7 +4217,9 @@ html.theme-red {
 /* Dashboard live cards (now playing + streak / on this day / discover) - their
    own panel above the filter form + results, since they're filter-independent. */
 .dashboard-live {
-  margin-bottom: 24px;
+  /* the page rhythm - this panel is the dashboard's .hero stand-in and
+     stacks above the filter card exactly the way a .hero does */
+  margin-bottom: 18px;
   padding: 16px 20px;
   border-radius: 20px;
   background: linear-gradient(135deg, var(--accent-glow), rgba(255, 255, 255, 0.03));
@@ -4234,7 +4244,7 @@ html.theme-red {
 .dashboard-summary-cards {
   display: flex;
   flex-wrap: nowrap;
-  gap: 20px;
+  gap: 18px;   /* the between-cards rhythm, same as .track-list */
   overflow-x: auto;
 }
 

@@ -222,6 +222,12 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         ".hero", ".filter-section", ".import-card", ".biography-card",
         ".track-summary-grid", ".track-summary-grid-3",
         ".track-list + .track-list",
+        #< the 2026-08-10 sweep's leftovers: page-level panels that stack
+        #  exactly like .hero does but were not in the first pass.
+        #  .dashboard-live IS the dashboard's top panel (its .hero stand-in),
+        #  and .chart-card is the panel above the list on /charts and on both
+        #  detail pages.
+        ".dashboard-live", ".chart-card",
     )
 
     def setUp(self):
@@ -245,9 +251,24 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
 
     def test_the_between_cards_gap_is_the_same_18px(self):
         for selector in (".track-list", ".track-summary-grid",
-                         ".track-summary-grid-3", ".dashboard-summary"):
+                         ".track-summary-grid-3", ".dashboard-summary",
+                         #< the row that actually holds the dashboard's live
+                         #  cards. Nested inside .dashboard-summary, which the
+                         #  first pass moved to 18px while this one - the gap
+                         #  you can see - stayed at 20px.
+                         ".dashboard-summary-cards"):
             with self.subTest(selector=selector):
                 self.assertIn("gap: 18px", self._block(selector))
+
+    def test_the_gap_under_the_nav_bar_is_the_same_rhythm(self):
+        """.page's top padding IS the topbar -> hero distance: .topbar is
+        sticky with a border, <main class="page"> follows it, and .hero has no
+        margin-top. It sat at 24px while every block below it stacked at 18px,
+        so the first gap on every page was the odd one out.
+
+        The bottom (40px) is not the rhythm - it is the run-out under the last
+        block, and the scroll-to-top button parks in it."""
+        self.assertIn("padding: 18px 16px 40px", self._block(".page"))
 
     def test_the_top_pages_hero_is_the_inline_variant(self):
         for template in ("top_songs.html", "top_artists.html", "top_albums.html"):
