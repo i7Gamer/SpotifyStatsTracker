@@ -150,7 +150,7 @@ class TestTheSplitButton(unittest.TestCase):
     row the matcher refuses to overrule - so it holds across every later pass
     and across the toggle being cycled."""
 
-    def _post(self, isAdmin=True, loggedIn=True, manager=None):
+    def _post(self, isAdmin=True, loggedIn=True, manager=None, unmergeError=None):
         from unittest.mock import MagicMock, patch
         from _app_factory import AppTestCase
 
@@ -160,7 +160,7 @@ class TestTheSplitButton(unittest.TestCase):
         dash = case._makeApp()
         dash.repo.isAdmin = MagicMock(return_value=isAdmin)
         dash.repo.resolveCanonicalTrackId = MagicMock(return_value=ALBUM_CUT)
-        dash.repo.unmergeTrack = MagicMock()
+        dash.repo.unmergeTrack = MagicMock(side_effect=unmergeError)
         if manager is not None:
             #< attached BEFORE the request: a manager only records calls made
             #  after attachment, so attaching afterwards asserts on nothing
@@ -199,3 +199,11 @@ class TestTheSplitButton(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 403)
         dash.repo.unmergeTrack.assert_not_called()
+
+    def test_an_unknown_track_is_a_400_not_a_crash(self):
+        """unmergeTrack refuses ids that are not tracks (ValueError); the
+        route answers 400 the way the review queue's verdict routes do,
+        instead of letting the raise become a 500."""
+        resp, dash = self._post(unmergeError=ValueError("unknown track"))
+
+        self.assertEqual(resp.status_code, 400)

@@ -19,11 +19,17 @@ MERGE_REVIEW_PAGE_LIMIT = 50
 # A trailing " - X" or "(X)" title segment is a version marker - packaging,
 # not identity - when it contains one of these. "live" is deliberately NOT
 # here: a live cut is a different performance, and blurring that line is the
-# one mistake the review queue must never invite.
+# one mistake the review queue must never invite. Bare "mix" and "edit" fell
+# to the same rule: "Remix" contains "mix", so they proposed every remix and
+# club edit against its original - a different recording, the live case
+# again. The explicit same-recording forms keep their own entries ("radio
+# edit", the "stereo"/"mono" mixes); the cost is that a bare "- Edit" or
+# "- 2019 Mix" suffix is no longer proposed, recall traded for not inviting
+# the one wrong merge.
 TITLE_VERSION_MARKERS = (
     "remaster", "mono", "stereo", "deluxe", "anniversary", "re-record",
     "rerecord", "single version", "radio edit", "album version",
-    "bonus track", "extended", "edit", "mix", "version", "feat.", "ft.",
+    "bonus track", "extended", "version", "feat.", "ft.",
 )
 
 _PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
@@ -814,21 +820,31 @@ class TrackQueries:
         Three rules keep it from overreaching, and they are the whole reason
         this is more than a GROUP BY:
 
-        1. A manual decision outranks it. A person who judged a pair NOT the
-           same recording has said so in track_merge_decisions with a
-           decided_by, and an automatic pass that re-merged them would make the
-           review queue pointless and the disagreement invisible.
+        1. A manual PLACEMENT outranks it. A person who split a track out
+           (manual-split) overruled this very ISRC and an automatic pass that
+           re-merged it would make the disagreement invisible; a manual-merge
+           placed it somewhere on purpose and is not poached. A review-queue
+           dismissal (manual-reject) is the one manual row that yields: it
+           judged a title-similarity guess on a pair that HAD no shared ISRC -
+           the queue never proposes one that does - so a shared ISRC arriving
+           later is the fact the guess stood in for, and fact wins. The
+           override resets decided_by, keeping it toggle-revertible.
         2. An existing canonical is STICKY. Re-electing every pass would move
            the canonical - and every link to it - as play counts drift.
-        3. Never a chain, and this one is an invariant rather than a step. A
-           canonical is only ever a track with no pointer of its own: either it
-           was elected from members that all had none, or it is the single value
-           already agreed on - and if THAT track pointed anywhere, its target
-           would be a second value in `existing` and the group would have been
-           skipped by the conflict branch. So no reader ever walks a linked list
-           of unknown depth. (An earlier version also NULLed the canonical's own
-           pointer "to be safe"; mutation testing showed the line could not be
-           reached, which is how the invariant above got noticed at all.)
+        3. Never a chain, and both halves of that are guarded. The canonical's
+           half is an invariant rather than a step: it is only ever a track
+           with no pointer of its own - either elected from members that all
+           had none, or the single value already agreed on, and if THAT track
+           pointed anywhere its target would be a second value in `existing`
+           and the group would have been skipped by the conflict branch. (An
+           earlier version also NULLed the canonical's own pointer "to be
+           safe"; mutation testing showed the line could not be reached, which
+           is how the invariant got noticed at all.) The MEMBERS' half is a
+           step: a member can itself be a manual merge's anchor - the planner
+           cannot see that, since the hand-merged track carries no ISRC - so
+           pointing the member away carries its dependents along, exactly as
+           mergeTrackManually does. Either way no reader ever walks a linked
+           list of unknown depth.
 
         Idempotent: a second run merges nothing and rewrites nothing. Returns
         {"groups", "merged"} - groups considered, tracks newly pointed."""
@@ -843,8 +859,31 @@ class TrackQueries:
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
                 for member in group["members"]:
+                    #< a member can be a manual merge's own anchor (the planner
+                    #  only sees ISRC-carrying tracks, so a hand-merged remaster
+                    #  pointing at this member is invisible to it). Its
+                    #  dependents move too, audit rows included, or the
+                    #  member's new pointer strands them one hop away - the
+                    #  same carry-along mergeTrackManually does, because every
+                    #  reader resolves exactly one hop. Not counted in
+                    #  `merged`: already collapsed, merely re-homed - which
+                    #  also keeps the preview's number equal to the run's.
+                    for row in conn.execute(
+                            "SELECT id FROM tracks WHERE canonical_id = ?",
+                            (member["trackId"],)).fetchall():
+                        conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
+                                     (canonicalId, row["id"]))
+                        conn.execute(
+                            "UPDATE track_merge_decisions SET canonical_id=? WHERE track_id=?",
+                            (canonicalId, row["id"]))
                     conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
                                  (canonicalId, member["trackId"]))
+                    #< decided_by=NULL in the UPDATE arm too: the one manual
+                    #  row this can land on is a manual-reject (rule 1 keeps
+                    #  every other kind out of `members`), and the override
+                    #  must become a plain matcher row - left as the person's,
+                    #  it would dodge unmergeAllIsrcMerges and strand the
+                    #  merge past the toggle's off edge
                     conn.execute(
                         """
                         INSERT INTO track_merge_decisions
@@ -852,7 +891,8 @@ class TrackQueries:
                         VALUES (?, ?, 'isrc', ?, ?, NULL)
                         ON CONFLICT(track_id) DO UPDATE SET
                             canonical_id=excluded.canonical_id, reason=excluded.reason,
-                            evidence=excluded.evidence, decided_at=excluded.decided_at
+                            evidence=excluded.evidence, decided_at=excluded.decided_at,
+                            decided_by=NULL
                         """,
                         (member["trackId"], canonicalId, group["isrc"], now),
                     )
@@ -905,8 +945,17 @@ class TrackQueries:
         if not rows:
             return {"groups": [], "merged": 0}
 
+        #< manual-reject is deliberately NOT in this set. That verdict was
+        #  reached in the review queue, which by construction only proposes
+        #  pairs WITHOUT a shared ISRC - so it answered a title-similarity
+        #  guess, not the fact. A shared ISRC arriving later IS the fact, and
+        #  fact outranks guess (the merge below also resets decided_by, so the
+        #  override stays an ordinary, toggle-revertible matcher row). A
+        #  manual SPLIT is the opposite statement - a person overruling the
+        #  ISRC itself - and stays pinned, manual-merge placements likewise.
         pinned = {row["track_id"] for row in conn.execute(
-            "SELECT track_id FROM track_merge_decisions WHERE decided_by IS NOT NULL")}
+            "SELECT track_id FROM track_merge_decisions "
+            "WHERE decided_by IS NOT NULL AND reason != 'manual-reject'")}
         #< names only for the duplicate groups under consideration - the whole
         #  ISRC-carrying catalog is ~25k rows once the backfill completes, and
         #  this planner runs every backfill cycle while the toggle is on
@@ -970,8 +1019,14 @@ class TrackQueries:
         Both halves matter: clearing canonical_id alone would last exactly until
         the next matcher pass re-merged it. The decision row flips to a manual
         "not the same recording" verdict - decided_by names who - which is
-        precisely the row the matcher refuses to overrule."""
+        precisely the row the matcher refuses to overrule.
+
+        Raises ValueError for an unknown track, like its siblings - without
+        the check the decision INSERT hits the tracks(id) FOREIGN KEY
+        instead, which the route cannot turn into a 400."""
         conn = self._conn()
+        if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone():
+            raise ValueError(f"unknown track: {trackId}")
         with conn:
             conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (trackId,))
             conn.execute(
@@ -1178,7 +1233,12 @@ class TrackQueries:
         The row (NULL canonical_id, decided_by set) is what migrate1_48_0
         promised that shape would mean: a deliberate no, different from having
         no row (never looked at), and what stops a rejected pair being
-        re-proposed forever - by this queue and by the ISRC matcher alike.
+        re-proposed by this queue forever. The ISRC matcher honours it only
+        while the pair still has no shared ISRC: the no answered a
+        title-similarity guess (this queue proposes nothing that shares one),
+        so a shared ISRC arriving later outranks it - see mergeTracksByIsrc's
+        rule 1. A split (unmergeTrack) is how a person overrules the ISRC
+        itself, and THAT the matcher never touches.
 
         Unlike unmergeTrack this touches no pointer and moves no numbers, so
         it deliberately drops no Wrapped caches. Raises ValueError for an

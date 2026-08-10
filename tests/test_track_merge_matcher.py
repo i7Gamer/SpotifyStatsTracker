@@ -204,6 +204,35 @@ class TestTheMatcherDoesNotOverreach(TrackMergeTestCase):
             self.assertIsNone(self._canonical(db, target),
                               f"{trackId} points at {target}, which points on again")
 
+    def test_a_member_with_its_own_dependents_brings_them_along(self):
+        """An admin merged A into C by hand (a remaster - no ISRC of its own);
+        the backfill then learns C and D share a master and elects D. C moves,
+        so A must move WITH it: a canonical that itself points somewhere is a
+        chain, and every reader resolves exactly one hop
+        (resolveCanonicalTrackId, _canonicalTrackJoin, _expandToMergeGroups) -
+        left behind, A falls out of the group and its song renders twice.
+        Same move mergeTrackManually makes for the mirror case."""
+        db = self._db()
+        self._track(db, "A" * 22, plays=1)               #< the hand-merged remaster
+        self._track(db, "C" * 22, isrc=ISRC_A, plays=8)
+        self._track(db, "D" * 22, isrc=ISRC_A, plays=25)
+        db.repo.mergeTrackManually("A" * 22, "C" * 22, decidedBy="timorzipa")
+
+        summary = db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "A" * 22), "D" * 22)
+        self.assertEqual(self._canonical(db, "C" * 22), "D" * 22)
+        self.assertIsNone(self._canonical(db, "D" * 22))
+        #< the audit row moved with it and stays the person's own verdict
+        decision = self._decision(db, "A" * 22)
+        self.assertEqual(decision["canonical_id"], "D" * 22)
+        self.assertEqual(decision["reason"], "manual-merge")
+        self.assertEqual(decision["decided_by"], "timorzipa")
+        #< A was already merged - re-homed, not newly collapsed - so the
+        #  summary (and the admin message built from it) counts only C, which
+        #  also keeps the preview's number equal to the run's
+        self.assertEqual(summary["merged"], 1)
+
     def test_running_it_again_changes_nothing(self):
         db = self._db()
         self._track(db, "A" * 22, isrc=ISRC_A, plays=10)
@@ -296,6 +325,15 @@ class TestEveryMergeCanBeUndone(TrackMergeTestCase):
 
         self.assertIsNone(self._canonical(db, "B" * 22))
         self.assertEqual(self._decision(db, "B" * 22)["decided_by"], "timorzipa")
+
+    def test_unmerging_an_unknown_track_is_refused(self):
+        """The same ValueError its siblings raise (dismissMergeCandidate,
+        mergeTrackManually), so the route can answer 400. Without the check
+        the decision INSERT hits the tracks(id) FOREIGN KEY instead and the
+        split button 500s."""
+        db = self._db()
+        with self.assertRaises(ValueError):
+            db.repo.unmergeTrack("Z" * 22, decidedBy="timorzipa")
 
     def test_undoing_the_whole_run_clears_every_automatic_merge(self):
         db = self._db()

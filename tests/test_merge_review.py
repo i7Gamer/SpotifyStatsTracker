@@ -88,6 +88,18 @@ class TestTitleNormalization(unittest.TestCase):
         which is the line this whole feature must never blur."""
         self.assertEqual(normalizeTrackTitle("Song (Live)"), "song (live)")
 
+    def test_a_remix_is_not_the_same_recording_either(self):
+        """Same rule as live: a remix or club edit is a different recording,
+        so bare "mix" and "edit" are not markers - only the explicit
+        same-recording forms strip ("radio edit", "stereo mix" via "stereo",
+        and so on). "Remix" contains "mix", so a bare "mix" marker was
+        quietly proposing every remix against its original."""
+        for raw in ("Song (Club Mix)", "Song - Remix", "Song (VIP Edit)"):
+            self.assertEqual(normalizeTrackTitle(raw), raw.lower(), raw)
+        #< the explicit forms still strip
+        self.assertEqual(normalizeTrackTitle("Song - Radio Edit"), "song")
+        self.assertEqual(normalizeTrackTitle("Song (Stereo Mix)"), "song")
+
     def test_a_plain_title_survives_unchanged(self):
         self.assertEqual(normalizeTrackTitle("Don't Stop Believin'"), "don't stop believin'")
 
@@ -359,18 +371,44 @@ class TestDismissal(MergeReviewTestCase):
         self.assertEqual(
             conn.execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0], 1)
 
-    def test_the_isrc_matcher_honours_the_dismissal_too(self):
-        """One decision store, one meaning: the pinned row that keeps the pair
-        out of this queue is the same row the automatic pass refuses to
-        overrule - migrate1_48_0 promised exactly that."""
+    def test_a_later_shared_isrc_outranks_the_dismissal(self):
+        """The dismissal answered the QUEUE's question - same title, no shared
+        ISRC, since the queue never proposes a pair that has one. When the
+        backfill later delivers a shared ISRC, the fact that guess was
+        standing in for has arrived, and fact outranks guess: the pair merges,
+        and the row becomes an ordinary matcher decision (decided_by NULL) so
+        the toggle's off edge undoes it like any other ISRC merge. A manual
+        SPLIT is the opposite verdict - a person overruling the ISRC itself -
+        and stays pinned (test_a_manual_decision_is_never_overwritten)."""
         db = self._db()
-        self._track(db, "A" * 22, "Song", isrc=ISRC_A, plays=5)
-        self._track(db, "B" * 22, "Song", isrc=ISRC_A, plays=2)
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
         db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        #< the fact arrives afterwards, via the backfill's own write path
+        db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
 
         db.repo.mergeTracksByIsrc()
 
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        decision = self._decision(db, "B" * 22)
+        self.assertEqual(decision["reason"], "isrc")
+        self.assertIsNone(decision["decided_by"])
+
+    def test_the_overriding_merge_is_undone_by_the_toggle_like_any_other(self):
+        """What decided_by NULL buys: the person's no was outranked, not
+        turned into a merge nothing can take back - the toggle's off edge
+        clears it along with every other matcher merge."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
+        db.repo.mergeTracksByIsrc()
+
+        db.repo.unmergeAllIsrcMerges()
+
         self.assertIsNone(self._canonical(db, "B" * 22))
+        self.assertIsNone(self._decision(db, "B" * 22))
 
     def test_an_unknown_track_is_refused(self):
         db = self._db()

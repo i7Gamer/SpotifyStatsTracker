@@ -636,7 +636,10 @@ def register(app, dashboard):
         #< resolved BEFORE the split: afterwards the member resolves to itself,
         #  and the admin is standing on the canonical's page
         canonicalId = dashboard.repo.resolveCanonicalTrackId(track_id)
-        dashboard.repo.unmergeTrack(track_id, decidedBy=username)
+        try:
+            dashboard.repo.unmergeTrack(track_id, decidedBy=username)
+        except ValueError:
+            abort(400)   #< an id that names no track, same answer as the review queue's verdicts
         return redirect(url_for("songDetailPage", track_id=canonicalId,
                                 success="Split out of the merge - this stays a separate song from now on."))
     app.add_url_rule("/admin/split_track/<track_id>", "adminSplitTrack", adminSplitTrack, methods=["POST"])
