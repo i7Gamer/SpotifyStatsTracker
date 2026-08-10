@@ -612,6 +612,13 @@ button {
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 15px var(--accent-glow);
 }
 
+/* A card you work inside rather than click as a whole: the lift/scale slides
+   the row you are aiming at out from under the cursor. The glow stays - only
+   the motion goes. */
+.card-static:hover {
+  transform: none;
+}
+
 
 .card h2 {
   margin-top: 0;

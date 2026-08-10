@@ -626,10 +626,10 @@
           </form>
           {# The other half of duplicate handling: ISRC merges what it can
              prove; this queue asks about what it can't (remasters, imports). #}
-          <p style="color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0;">
+          <p style="color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0.5rem;">
             Duplicates ISRC cannot decide (remasters, imported rows):
-            <a href="{{ url_for('adminMergeReview') }}">Merge review</a>
           </p>
+          <a href="{{ url_for('adminMergeReview') }}" class="primary-button button-small">Merge review</a>
         </div>
       </article>
 
