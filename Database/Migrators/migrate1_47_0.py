@@ -23,7 +23,11 @@ class Migrator(BaseMigrator):
 
     Nothing to backfill here: a NULL stamp means "never asked", which is the
     correct starting state for every existing row, so the whole catalog is
-    queued on upgrade and drains at one 50-id request per backfill cycle."""
+    queued on upgrade and drains at TRACK_BATCH_SIZE ids per backfill cycle.
+    (That was one bulk `?ids=` request when this migrator was written. Spotify
+    withdrew those endpoints on 2026-07-31, so it is now the same 50 ids asked
+    for one at a time - see Database/workers/metadata_backfiller.py. The drain
+    rate is unchanged; only the request count is.)"""
 
     def migrate(self):
         self.checkPreconditions()
