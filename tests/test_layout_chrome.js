@@ -38,7 +38,10 @@ function makeElement() {
     attributes: {},
     links: [],
     //< what the drawer's height is measured from; a badge wrapping the topbar
-    //  to a second row is exactly the case the old 62px literal got wrong
+    //  to a second row is exactly the case the old 62px literal got wrong.
+    //  clientHeight is the PADDING box - see the topbar-border test below for
+    //  why the drawer needs that one and not offsetHeight.
+    clientHeight: 0,
     offsetHeight: 0,
     focused: 0,
     classList: {
@@ -393,7 +396,9 @@ function makeNav(options) {
   const navToggle = makeElement();
   const navMenu = makeElement();
   const topbar = makeElement();
-  topbar.offsetHeight = options.topbarHeight || 52;
+  topbar.clientHeight = options.topbarHeight || 52;
+  //< the border box, always >= clientHeight: .topbar has a 1px bottom border
+  topbar.offsetHeight = (options.topbarHeight || 52) + (options.topbarBorder || 0);
   const chrome = loadChrome({
     elements: { 'nav-toggle': navToggle, 'nav-menu': navMenu },
     selectors: { '.topbar': topbar },
@@ -481,10 +486,34 @@ run('the drawer is measured off the real topbar, not a constant', () => {
 run('a resize re-measures the topbar', () => {
   const nav = makeNav({ topbarHeight: 52 });
 
-  nav.topbar.offsetHeight = 88;   //< rotating to landscape unwraps the badge row
+  nav.topbar.clientHeight = 88;   //< rotating to landscape unwraps the badge row
   nav.chrome.windowListeners.resize();
 
   assert.strictEqual(nav.chrome.cssVars['--topbar-current-height'], '88px');
+});
+
+run('the measurement excludes the topbar border, which the drawer sits inside of', () => {
+  // The drawer is positioned with `top: 100%`, and a percentage top resolves
+  // against the containing block's PADDING box. .topbar has a 1px bottom
+  // border, so publishing offsetHeight (the border box) made the drawer start
+  // 1px high and stop 1px short of the viewport bottom - measured at 375x812,
+  // where the bar was 177px/176px and the drawer ended at 811 of 812.
+  const nav = makeNav({ topbarHeight: 176, topbarBorder: 1 });
+
+  assert.strictEqual(nav.topbar.offsetHeight, 177);   //< the value NOT to publish
+  assert.strictEqual(nav.chrome.cssVars['--topbar-current-height'], '176px');
+});
+
+run('opening the drawer re-measures before it is shown', () => {
+  // The safety net: the var is otherwise only written at load and on resize,
+  // so any layout change in between (a badge arriving) would open a drawer
+  // sized to the old bar.
+  const nav = makeNav({ topbarHeight: 52 });
+  nav.topbar.clientHeight = 177;   //< a badge wrapped the bar since load
+
+  nav.navToggle.handlers.click();
+
+  assert.strictEqual(nav.chrome.cssVars['--topbar-current-height'], '177px');
 });
 
 run('a page without a topbar still opens its menu', () => {

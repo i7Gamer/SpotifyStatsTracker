@@ -157,7 +157,12 @@ const LISTENER_STATUS_POLL_MS = 10 * 1000;
 
   function publishTopbarHeight() {
     if (!topbar) return;   //< nothing to measure, and the CSS fallback covers it
-    document.documentElement.style.setProperty(TOPBAR_HEIGHT_VAR, topbar.offsetHeight + 'px');
+    // clientHeight, NOT offsetHeight: the drawer is placed with `top: 100%`,
+    // and a percentage top resolves against the containing block's PADDING
+    // box. .topbar has a 1px bottom border, so the border box is one pixel
+    // taller than where the drawer actually starts - publishing it left a 1px
+    // strip of page showing under the drawer at the bottom of the viewport.
+    document.documentElement.style.setProperty(TOPBAR_HEIGHT_VAR, topbar.clientHeight + 'px');
   }
 
   // Both class flips are purely visual, so the button has to say what it did
