@@ -73,6 +73,24 @@ def isPlainTitle(name: str) -> bool:
     return normalizeTrackTitle(name) == (name or "").strip().lower()
 
 
+def _titleRank(row) -> tuple:
+    """How well a release's TITLE reads as the song itself, biggest is best.
+
+    The stable half of _electCanonical, split out because being stable is what
+    it is used for: a name either carries a version marker or it does not, and
+    the answer is the same on every pass. Play counts drift, which is why an
+    existing canonical is sticky against them - but a group whose head is
+    beaten HERE can step down once and settle, so the ISRC tier compares this
+    prefix alone before it touches a head it already elected.
+
+    A blank name loses on the first key rather than sweeping the other two:
+    "" survives normalization untouched and is the shortest string there is,
+    so a blanked or fallback row would otherwise read as the plainest title in
+    the group and take the song's page."""
+    name = (row["name"] or "").strip()
+    return (bool(name), bool(name) and isPlainTitle(name), -len(name))
+
+
 class TrackQueries:
     """TrackQueries: tracks data-access methods, mixed into Repository."""
 
@@ -803,17 +821,9 @@ class TrackQueries:
         Rows need name, play_count, created_at and id. The last two are pure
         tie-breakers, there so the answer is deterministic rather than
         whatever order SQLite happened to return."""
-        def rank(row):
-            name = (row["name"] or "").strip()
-            #< a nameless row - a blanked or fallback record - would otherwise
-            #  sweep the title keys outright: "" survives normalization
-            #  untouched, so it reads as the plainest title there is, and it is
-            #  the shortest. The review queue filters those out in SQL; the
-            #  ISRC tier does not, and the whole point of this rule is that the
-            #  winner becomes a page a person can read
-            return (bool(name), bool(name) and isPlainTitle(name), -len(name),
-                    row["play_count"], -(row["created_at"] or 0), row["id"])
-        return max(candidates, key=rank)
+        return max(candidates, key=lambda row: (
+            *_titleRank(row),
+            row["play_count"], -(row["created_at"] or 0), row["id"]))
 
     def resolveCanonicalTrackId(self, trackId: str) -> str:
         """The track a merged id should be read as, or the id itself.
@@ -896,22 +906,31 @@ class TrackQueries:
            the queue never proposes one that does - so a shared ISRC arriving
            later is the fact the guess stood in for, and fact wins. The
            override resets decided_by, keeping it toggle-revertible.
-        2. An existing canonical is STICKY. Re-electing every pass would move
-           the canonical - and every link to it - as play counts drift.
-        3. Never a chain, and both halves of that are guarded. The canonical's
-           half is an invariant rather than a step: it is only ever a track
-           with no pointer of its own - either elected from members that all
-           had none, or the single value already agreed on, and if THAT track
-           pointed anywhere its target would be a second value in `existing`
-           and the group would have been skipped by the conflict branch. (An
-           earlier version also NULLed the canonical's own pointer "to be
-           safe"; mutation testing showed the line could not be reached, which
-           is how the invariant got noticed at all.) The MEMBERS' half is a
-           step: a member can itself be a manual merge's anchor - the planner
+        2. An existing canonical is STICKY - against PLAYS, which is what it
+           was written against: re-electing on them every pass would move the
+           canonical, and every link to it, as counts drift. Titles do not
+           drift, so a head beaten on _titleRank alone by its own group steps
+           down once and settles there. Without that, every group merged
+           before the title rule existed keeps a song page reading "- 2005
+           Remaster", since a merged group is otherwise never re-elected.
+        3. Never a chain, and all three halves of that are guarded. The
+           canonical's half is an invariant rather than a step in the ordinary
+           case: it is only ever a track with no pointer of its own - either
+           elected from members that all had none, or the single value already
+           agreed on, and if THAT track pointed anywhere its target would be a
+           second value in `existing` and the group would have been skipped by
+           the conflict branch. (An earlier version NULLed the canonical's own
+           pointer "to be safe"; mutation testing showed the line could not be
+           reached, which is how the invariant got noticed at all. Rule 2's
+           title move is what finally reaches it - a promoted track was a
+           member a moment ago - so the clear is back, guarded by the plan
+           saying a move happened rather than by hoping.) The MEMBERS' half is
+           a step: a member can itself be a manual merge's anchor - the planner
            cannot see that, since the hand-merged track carries no ISRC - so
            pointing the member away carries its dependents along, exactly as
-           mergeTrackManually does. Either way no reader ever walks a linked
-           list of unknown depth.
+           mergeTrackManually does. The old HEAD's half is the same step: it
+           becomes an ordinary member, and everything that pointed at it rides
+           along on the one write.
 
         Idempotent: a second run merges nothing and rewrites nothing. Returns
         {"groups", "merged"} - groups considered, tracks newly pointed."""
@@ -925,6 +944,20 @@ class TrackQueries:
         with conn:
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
+                if group["reHeadedFrom"]:
+                    #< the one canonical that arrives pointing somewhere: it was
+                    #  a member of this very group until the title rule promoted
+                    #  it. BEFORE anything else, or the carry-along below reads
+                    #  it as a dependent of the head it is replacing and points
+                    #  it at itself. Its decision row goes with the pointer - a
+                    #  canonical was not merged, it is what the others were
+                    #  merged into - but only if the matcher wrote it: a
+                    #  person's manual-reject is a verdict about a different
+                    #  question (see rule 1) and is not this run's to discard.
+                    conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?",
+                                 (canonicalId,))
+                    conn.execute("DELETE FROM track_merge_decisions "
+                                 "WHERE track_id=? AND decided_by IS NULL", (canonicalId,))
                 for member in group["members"]:
                     #< a member can be a manual merge's own anchor (the planner
                     #  only sees ISRC-carrying tracks, so a hand-merged remaster
@@ -1043,8 +1076,24 @@ class TrackQueries:
             #  election is _electCanonical's, shared with the review queue so
             #  the two tiers cannot disagree about which release survives
             existing = {m["canonical_id"] for m in members if m["canonical_id"]}
+            reHeadedFrom = None
             if len(existing) == 1:
                 canonicalId = existing.pop()
+                #< rule 2's ONE exception, and the reason it is safe: sticky
+                #  is written against DRIFT, and only the play half of the
+                #  election drifts. A title does not - a release either carries
+                #  a version marker or it does not, on every pass - so a head
+                #  beaten on _titleRank alone can step down once and settle
+                #  there. Without it every group merged before the title rule
+                #  existed keeps a song page reading "- 2005 Remaster" forever,
+                #  since a merged group is never re-elected. Only a head inside
+                #  its own group may be moved: one outside it is either pinned
+                #  (rule 1 says a pinned track takes no part) or points
+                #  somewhere this planner cannot see.
+                head = next((m for m in members if m["id"] == canonicalId), None)
+                best = self._electCanonical(members)
+                if head is not None and _titleRank(best) > _titleRank(head):
+                    reHeadedFrom, canonicalId = canonicalId, best["id"]
             elif existing:
                 #< two canonicals for one recording: a merge from before this
                 #  ran, or a hand edit. Left alone rather than guessed at
@@ -1052,13 +1101,25 @@ class TrackQueries:
             else:
                 canonicalId = self._electCanonical(members)["id"]
 
+            #< the old head's own members are left out of the list: pointing it
+            #  at the new one carries them along (dependents move with their
+            #  canonical, exactly as they do for a member), so listing them
+            #  here would write them twice and count each as newly collapsed
+            #  when nothing about their grouping changed. A set rather than a
+            #  != : with no move, reHeadedFrom is None and so is an unmerged
+            #  member's pointer, which would have excluded every one of them.
+            carried = {reHeadedFrom} if reHeadedFrom else set()
             toMerge = [m for m in members
-                       if m["id"] != canonicalId and m["canonical_id"] != canonicalId]
+                       if m["id"] != canonicalId and m["canonical_id"] != canonicalId
+                       and m["canonical_id"] not in carried]
             if not toMerge:
                 continue   #< everything already points where it should
             groups.append({
                 "isrc": isrc,
                 "canonical": {"trackId": canonicalId, "name": names.get(canonicalId, "")},
+                #< the run needs this to clear the promoted track's OWN pointer:
+                #  it is the one canonical that arrives here pointing somewhere
+                "reHeadedFrom": reHeadedFrom,
                 "members": [{"trackId": m["id"], "name": names.get(m["id"], ""),
                              "plays": m["play_count"]} for m in toMerge],
                 "plays": sum(m["play_count"] for m in toMerge),

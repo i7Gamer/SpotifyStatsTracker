@@ -254,6 +254,188 @@ class TestTheMatcherDoesNotOverreach(TrackMergeTestCase):
         self.assertIsNone(self._canonical(db, "A" * 22))
 
 
+class TestTheHeadMovesToTheNormalVersion(TrackMergeTestCase):
+    """Rule 2's one exception: a head beaten on TITLE by its own group steps
+    down.
+
+    Sticky exists because play counts drift, and re-electing on them every
+    pass would walk the canonical - and every link to it - around forever. A
+    title does not drift: a release either carries a version marker or it does
+    not, and the answer is the same on every pass. So the title half of the
+    election can be applied to a group that already has a head, once, and it
+    settles - while plays stay exactly as sticky as they were.
+
+    What it fixes: every group merged before the title rule existed is headed
+    by whatever was played most, so the song's page can read "- 2005
+    Remaster" with the original sitting underneath it as a member."""
+
+    def _mergedUnderThePlaysOnlyRule(self, db, headId, *memberIds):
+        """A group as an earlier run left it: plays elected the head."""
+        conn = db.repo._conn()
+        with conn:
+            for memberId in memberIds:
+                conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (headId, memberId))
+                conn.execute(
+                    "INSERT INTO track_merge_decisions (track_id, canonical_id, reason,"
+                    " evidence, decided_at, decided_by) VALUES (?, ?, 'isrc', ?, 1000.0, NULL)",
+                    (memberId, headId, ISRC_A))
+
+    def test_a_group_headed_by_a_remaster_moves_to_the_plain_release(self):
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Psycho Killer - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Psycho Killer", plays=13)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "A" * 22), "B" * 22)
+        self.assertIsNone(self._canonical(db, "B" * 22))
+
+    def test_the_promoted_release_keeps_no_trace_of_having_been_a_member(self):
+        """A canonical carries no decision row - it was not merged, it is what
+        the others were merged into - so the row from when it WAS a member has
+        to go, or the audit says it points at a track that now points at it."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertIsNone(self._decision(db, "B" * 22))
+        #< and the release that stepped down is now an ordinary matcher merge
+        decision = self._decision(db, "A" * 22)
+        self.assertEqual(decision["canonical_id"], "B" * 22)
+        self.assertEqual(decision["reason"], "isrc")
+        self.assertIsNone(decision["decided_by"])
+
+    def test_the_old_heads_own_members_come_with_it(self):
+        """The head moving is the same carry-along a member moving already
+        needs: left behind, they point at a track that points on again."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._track(db, "C" * 22, isrc=ISRC_A, name="Song (Deluxe Edition)", plays=5)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22, "C" * 22)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "C" * 22), "B" * 22)
+        self.assertEqual(self._decision(db, "C" * 22)["canonical_id"], "B" * 22)
+        for trackId, in db.repo._conn().execute(
+                "SELECT id FROM tracks WHERE canonical_id IS NOT NULL"):
+            target = self._canonical(db, trackId)
+            self.assertIsNone(self._canonical(db, target),
+                              f"{trackId} points at {target}, which points on again")
+
+    def test_a_hand_merged_dependent_of_the_old_head_comes_along_too(self):
+        """It carries no ISRC, so the planner cannot see it at all - the same
+        blind spot a member's own dependents already have."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._track(db, "D" * 22, name="Song - Mono", plays=1)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22)
+        db.repo.mergeTrackManually("D" * 22, "A" * 22, decidedBy="timorzipa")
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "D" * 22), "B" * 22)
+        #< moved, but still the person's own verdict
+        decision = self._decision(db, "D" * 22)
+        self.assertEqual(decision["canonical_id"], "B" * 22)
+        self.assertEqual(decision["reason"], "manual-merge")
+        self.assertEqual(decision["decided_by"], "timorzipa")
+
+    def test_the_move_settles_after_one_run(self):
+        """A title is the same on every pass, which is the whole licence for
+        touching a head at all - so the second run has nothing left to do."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._track(db, "C" * 22, isrc=ISRC_A, name="Song (Deluxe Edition)", plays=5)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22, "C" * 22)
+
+        first = db.repo.mergeTracksByIsrc()
+        second = db.repo.mergeTracksByIsrc()
+
+        #< only the head itself was newly pointed; C was carried, not collapsed
+        self.assertEqual(first["merged"], 1)
+        self.assertEqual(second["merged"], 0)
+        self.assertEqual(self._canonical(db, "A" * 22), "B" * 22)
+
+    def test_plays_alone_still_never_move_a_head(self):
+        """The sticky rule is intact where it was written for. The member out-
+        plays the head 100 to 1 and carries a marker; nothing moves."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song", plays=1)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=100)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22)
+
+        summary = db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(summary["merged"], 0)
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+
+    def test_two_equally_plain_releases_leave_the_head_where_it_is(self):
+        """The title rule is silent here, and silence must not be read as a
+        reason to move: this is exactly the drift rule 2 forbids."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song", plays=1)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=100)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+
+    def test_a_head_a_person_pinned_is_left_where_they_put_it(self):
+        """Rule 1 outranks this: a pinned track takes no part, and promoting
+        one of its members would move the pinned track onto something a person
+        said it is not the same as."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._track(db, "C" * 22, isrc=ISRC_A, name="Song (Deluxe Edition)", plays=5)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22, "C" * 22)
+        db.repo.unmergeTrack("A" * 22, decidedBy="timorzipa")   #< pins the head
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "B" * 22), "A" * 22)
+        self.assertEqual(self._canonical(db, "C" * 22), "A" * 22)
+
+    def test_the_preview_says_the_move_is_coming(self):
+        """The admin page's number has to be the run's number, moves
+        included - looking first is what makes the checkbox a decision."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22)
+
+        preview = db.repo.previewMergeTracksByIsrc()
+
+        self.assertEqual(preview["groups"][0]["canonical"]["trackId"], "B" * 22)
+        self.assertEqual([m["trackId"] for m in preview["groups"][0]["members"]], ["A" * 22])
+        self.assertEqual(preview["merged"], db.repo.mergeTracksByIsrc()["merged"])
+
+    def test_the_move_is_undone_by_the_toggle_like_any_other_merge(self):
+        """Nothing it writes is destructive, so the off edge still returns the
+        group to three separate songs."""
+        db = self._db()
+        self._track(db, "A" * 22, isrc=ISRC_A, name="Song - 2005 Remaster", plays=70)
+        self._track(db, "B" * 22, isrc=ISRC_A, name="Song", plays=13)
+        self._track(db, "C" * 22, isrc=ISRC_A, name="Song (Deluxe Edition)", plays=5)
+        self._mergedUnderThePlaysOnlyRule(db, "A" * 22, "B" * 22, "C" * 22)
+        db.repo.mergeTracksByIsrc()
+
+        db.repo.unmergeAllIsrcMerges()
+
+        for trackId in ("A" * 22, "B" * 22, "C" * 22):
+            self.assertIsNone(self._canonical(db, trackId), trackId)
+            self.assertIsNone(self._decision(db, trackId), trackId)
+
+
 class TestTheDecisionTrail(TrackMergeTestCase):
     def test_every_merge_records_why(self):
         """Reversible by design: the ISRC that justified the merge is kept, so
