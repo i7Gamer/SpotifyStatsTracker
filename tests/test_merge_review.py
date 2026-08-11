@@ -851,6 +851,40 @@ class TestSeeingAndUndoingDismissals(MergeReviewTestCase):
         self.assertEqual(db.repo.getMergeReviewCandidates()["totalGroups"], 1)
         self.assertEqual(db.repo.getDismissedMergeCandidates()["total"], 0)
 
+    def test_one_admin_can_take_back_another_admins_no(self):
+        """DELIBERATE, and pinned here because nothing else says so: the
+        verdict is not owned by whoever reached it.
+
+        A merge is instance-wide - it moves every account's numbers at once -
+        so the log of what was kept apart is instance-wide too, and any admin
+        can revisit any call. Scoping the undo to its author would leave a
+        decision nobody remaining can undo the moment that admin is gone,
+        which is the same "cannot change your mind" this whole log exists to
+        fix. decided_by stays the record of WHO, on the row and on the page;
+        it is not a permission."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        db.repo.undismissMergeCandidate("B" * 22)   #< no caller identity at all
+
+        self.assertIsNone(self._decision(db, "B" * 22))
+
+    def test_the_log_shows_every_admins_rows_and_names_who(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Other", plays=1)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+        db.repo.dismissMergeCandidate("C" * 22, decidedBy="kevin")
+
+        listing = db.repo.getDismissedMergeCandidates()
+
+        self.assertEqual(listing["total"], 2)
+        self.assertEqual({entry["decidedBy"] for entry in listing["entries"]},
+                         {"timorzipa", "kevin"})
+
     def test_undoing_moves_no_numbers_so_it_drops_no_caches(self):
         """Same reasoning as the dismissal it undoes: no pointer moves, so
         nothing frozen in a cached year changed."""

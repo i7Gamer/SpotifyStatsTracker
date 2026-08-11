@@ -361,6 +361,28 @@ class TestTheDismissalLog(MergeReviewRouteTestCase):
         self.assertIn("Same recording", body)
         self.assertNotIn("Kept separate", body)
 
+    def test_another_admins_no_is_listed_with_its_own_take_it_back_button(self):
+        """The page half of the deliberate open scope (see
+        test_one_admin_can_take_back_another_admins_no): bob's row is listed
+        under bob's name and carries the same button alice's would, and alice
+        pressing it works. Asserted end to end because a scope can be lost in
+        two places - the query that lists and the delete that acts - and
+        either one alone would leave a row visible but unfixable."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+        dash.repo.dismissMergeCandidate("B" * 22, decidedBy="bob", againstId="A" * 22)
+
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+        self.assertIn("bob", body)
+        self.assertIn("/admin/merge_review/undismiss", body)
+
+        #< _request signs in as alice, not bob
+        resp = self._request(dash, "POST", "/admin/merge_review/undismiss",
+                             data={"member": "B" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(dash.repo.getDismissedMergeCandidates()["total"], 0)
+
     def test_undismissing_something_nobody_dismissed_is_a_400(self):
         dash = self._makeApp()
         self._seedPair(dash)
