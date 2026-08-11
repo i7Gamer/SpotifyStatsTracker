@@ -1406,8 +1406,15 @@ def register(app, dashboard):
             #  for a rule this GET-only endpoint has not got (BuildError).
             #  Either escapes the view as a 500, on a URL anyone can build off
             #  an "Also released on" link. The page's own id always wins.
+            #
+            #  `endpoint` is named rather than covered by the underscore test
+            #  because it is the one collision that does not wear one: it is
+            #  url_for's first POSITIONAL parameter, already given above as
+            #  "songDetailPage", so ?endpoint= is the same TypeError as
+            #  ?track_id= by a different door.
             carried = {key: value for key, value in request.args.items()
-                       if key != "track_id" and not key.startswith("_")}
+                       if key not in ("track_id", "endpoint")
+                       and not key.startswith("_")}
             return redirect(url_for("songDetailPage", track_id=answeredId, **carried))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto

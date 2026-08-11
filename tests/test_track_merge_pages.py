@@ -155,11 +155,18 @@ class TestTheSongPageRedirectsAMergedId(unittest.TestCase):
     def test_a_reserved_url_for_keyword_does_not_500_either(self):
         """Same splat, the other half: url_for's keyword-only _method/_scheme/
         _external/_anchor are not query params, and binding one sends the URL
-        builder looking for a rule this GET-only endpoint has not got."""
-        for param in ("_method=POST", "_external=1", "_scheme=gopher"):
+        builder looking for a rule this GET-only endpoint has not got.
+
+        `endpoint` is the one that is not underscored - it is url_for's first
+        POSITIONAL parameter, already supplied here as "songDetailPage", so a
+        query param of that name is the same TypeError as ?track_id= and was
+        the case the underscore filter could not reach."""
+        for param in ("_method=POST", "_external=1", "_scheme=gopher",
+                      "endpoint=songDetailPage", "endpoint=nonexistent"):
             resp = self._page(ALBUM_CUT, query="?" + param)
 
             self.assertEqual(resp.status_code, 302, param)
+            self.assertIn(ALBUM_CUT, resp.headers["Location"], param)
 
 
 if __name__ == "__main__":
