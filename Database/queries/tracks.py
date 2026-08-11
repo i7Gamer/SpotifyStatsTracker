@@ -797,6 +797,39 @@ class TrackQueries:
                         "FROM plays GROUP BY track_id) pc ON pc.track_id = t.id")
 
     @staticmethod
+    def _clearContradictedRejection(conn, canonicalId: str) -> None:
+        """Drop a "not the same recording" that this merge has just disproved.
+
+        Only the release being MERGED has its decision row rewritten - it is
+        the one the verdict is about. That left the opposite direction alone:
+        rejecting the plain release against a remaster and then merging the
+        remaster INTO it kept the rejection, so the "Kept separate" log went
+        on naming a release that had since joined its group. The title rule
+        makes it the likely direction rather than the odd one, since the
+        election prefers exactly the plain release a person rules the remaster
+        against.
+
+        Deleted, not rewritten, for undismissMergeCandidate's reason: there is
+        no row meaning "un-rejected", and the state that lets the queue ask
+        again is the one where nobody has answered. Splitting the pair back
+        apart does not bring it back - the same one-way trip the member arm
+        already makes when a merge overwrites its row.
+
+        Narrow on purpose: ONLY a rejection whose counterpart is now in this
+        group. "B is not the same as C" is not contradicted by A merging into
+        B, and a rejection naming nothing (recorded before against_id existed)
+        cannot be contradicted by anything. against_id can only be a member,
+        never the canonical itself - dismissMergeCandidate refuses both a
+        self-reference and a counterpart already merged into the track."""
+        conn.execute(
+            """
+            DELETE FROM track_merge_decisions
+            WHERE track_id = ? AND reason = 'manual-reject'
+              AND against_id IN (SELECT id FROM tracks WHERE canonical_id = ?)
+            """,
+            (canonicalId, canonicalId))
+
+    @staticmethod
     def _electCanonical(candidates: list):
         """Which release of a group the others fold into: a named release over
         a blank one, then the plainest title, then the shortest, then most
@@ -1001,6 +1034,9 @@ class TrackQueries:
                         (member["trackId"], canonicalId, group["isrc"], now),
                     )
                     merged += 1
+                #< after the members, so the group it tests against is the one
+                #  this run just made
+                self._clearContradictedRejection(conn, canonicalId)
         if merged:
             #< a merge moves numbers frozen inside every user's cached Wrapped
             #  years, and past years never notice on their own - see
@@ -1339,6 +1375,8 @@ class TrackQueries:
                 """,
                 (trackId, root, now, decidedBy))
             merged += 1
+            #< last, so it tests against the group this merge just made
+            self._clearContradictedRejection(conn, root)
         #< same invalidation as the automatic tier: the merge moves numbers
         #  frozen inside every user's cached Wrapped years
         self.deleteAllWrapped()
@@ -1397,9 +1435,21 @@ class TrackQueries:
                 #  page carries no verdict buttons), and a log entry reading
                 #  "X, not the same as X" is unre-checkable by construction
                 raise ValueError(f"track cannot be rejected against itself: {trackId}")
-            if againstId and not conn.execute(
-                    "SELECT 1 FROM tracks WHERE id=?", (againstId,)).fetchone():
-                raise ValueError(f"unknown track: {againstId}")
+            if againstId:
+                against = conn.execute(
+                    "SELECT canonical_id FROM tracks WHERE id=?", (againstId,)).fetchone()
+                if not against:
+                    raise ValueError(f"unknown track: {againstId}")
+                if against["canonical_id"] == trackId:
+                    #< the counterpart is already IN this track's group, so the
+                    #  verdict would be born contradicted - the same state
+                    #  _clearContradictedRejection deletes on the way in. The
+                    #  queue cannot post it (it proposes only unmerged pairs);
+                    #  refusing here is what makes the contradiction
+                    #  unrepresentable from BOTH ends rather than just cleaned
+                    #  up from one.
+                    raise ValueError(
+                        f"already merged into {trackId}: {againstId}")
             conn.execute(
                 """
                 INSERT INTO track_merge_decisions
@@ -1423,10 +1473,12 @@ class TrackQueries:
         also means the page offered no way to find one again, and a decision
         you cannot find is one you cannot change your mind about.
 
-        Reads only the person's own rows (reason 'manual-reject'). A dismissal
-        that a later shared ISRC overruled is no longer one: mergeTracksByIsrc
-        rewrites it to an ordinary matcher merge, and that is undone by the
-        toggle or a split, not from here.
+        Reads the human "no" rows only (reason 'manual-reject'), and every
+        admin's - a merge is instance-wide, so the log of what was kept apart
+        is too; decidedBy names who on each row. A dismissal that a later
+        shared ISRC overruled is no longer one: mergeTracksByIsrc rewrites it
+        to an ordinary matcher merge, and that is undone by the toggle or a
+        split, not from here.
 
         "against" is what the release was ruled against - the one keeping the
         song's page at the time - and is None where the row does not say: it
@@ -1441,9 +1493,9 @@ class TrackQueries:
         the total counts the whole list, not the page."""
         conn = self._conn()
         rows = conn.execute(
-            f"""
+            """
             SELECT t.id, t.name, t.duration_ms, d.decided_at, d.decided_by,
-                   al.name AS album_name, COALESCE(pc.play_count, 0) AS play_count,
+                   al.name AS album_name,
                    ag.id AS against_id, ag.name AS against_name,
                    agal.name AS against_album
             FROM track_merge_decisions d
@@ -1451,14 +1503,27 @@ class TrackQueries:
             LEFT JOIN albums al ON al.id = t.album_id
             LEFT JOIN tracks ag ON ag.id = d.against_id
             LEFT JOIN albums agal ON agal.id = ag.album_id
-            {self._PLAY_TALLY_JOIN}
             WHERE d.reason = 'manual-reject'
             ORDER BY d.decided_at DESC, t.id
             """
         ).fetchall()
+        page = rows[:MERGE_DISMISSED_PAGE_LIMIT]
+        #< the tally is a SECOND query rather than _PLAY_TALLY_JOIN's subquery,
+        #  because that one groups the whole plays table before the join can
+        #  discard it - a full scan on every render of this page, paid even
+        #  when nobody has ever dismissed anything. Here the common case costs
+        #  nothing at all, and the rest bounds itself: at most
+        #  MERGE_DISMISSED_PAGE_LIMIT ids, nowhere near SQLite's param ceiling.
+        plays = {}
+        if page:
+            placeholders = ",".join("?" for _ in page)
+            plays = dict(conn.execute(
+                f"SELECT track_id, COUNT(*) FROM plays WHERE track_id IN "
+                f"({placeholders}) GROUP BY track_id",
+                [row["id"] for row in page]))
         return {
             "entries": [{"trackId": row["id"], "name": row["name"],
-                         "album": row["album_name"], "plays": row["play_count"],
+                         "album": row["album_name"], "plays": plays.get(row["id"], 0),
                          "durationMs": row["duration_ms"] or 0,
                          "decidedAt": row["decided_at"],
                          "decidedBy": row["decided_by"],
@@ -1466,7 +1531,7 @@ class TrackQueries:
                                       "name": row["against_name"],
                                       "album": row["against_album"]}
                                      if row["against_id"] else None)}
-                        for row in rows[:MERGE_DISMISSED_PAGE_LIMIT]],
+                        for row in page],
             "total": len(rows),
         }
 

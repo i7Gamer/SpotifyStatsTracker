@@ -667,6 +667,14 @@ def register(app, dashboard):
             "merge_review.html",
             review=dashboard.repo.getMergeReviewCandidates(),
             dismissed=dismissed,
+            #< which release a person picked to keep the song's page, carried
+            #  across the redirect each verdict causes. A group of three takes
+            #  more than one click, and the pick used to live only in the page
+            #  it was made on: the next render re-elected from the survivors
+            #  and suggested a third release. Never echoed - the template
+            #  falls back to its own suggestion unless this names a release in
+            #  the group, the same rule merge-review.js applies client-side.
+            main=request.args.get("main", ""),
             track_merge_enabled=dashboard.repo.isTrackMergeEnabled(),
             message=request.args.get("message"),
             error=request.args.get("error"),
@@ -678,14 +686,18 @@ def register(app, dashboard):
     def adminMergeReviewMerge(username, db):
         """Admin-only: a person's "same recording" for one proposed member.
         Admin-gated like the toggle and the split, and for the same reason: a
-        merge is instance-wide, so it moves every account's numbers."""
+        merge is instance-wide, so it moves every account's numbers.
+
+        Redirects carrying the same `canonical` back as `main`: the group may
+        still have releases left to rule on, and the pick that named this
+        target has to survive the reload or the next click re-elects."""
+        canonical = request.form.get("canonical", "")
         try:
             merged = dashboard.repo.mergeTrackManually(
-                request.form.get("member", ""), request.form.get("canonical", ""),
-                decidedBy=username)
+                request.form.get("member", ""), canonical, decidedBy=username)
         except ValueError:
             abort(400)
-        return redirect(url_for("adminMergeReview",
+        return redirect(url_for("adminMergeReview", main=canonical or None,
                                 message=f"Merged {merged} release(s) into one song."))
     app.add_url_rule("/admin/merge_review/merge", "adminMergeReviewMerge",
                      adminMergeReviewMerge, methods=["POST"])
@@ -699,8 +711,10 @@ def register(app, dashboard):
         The form carries the same `canonical` field the merge verb does - the
         release keeping the song's page, which the picker rewrites when a
         person chooses another - so the row records what the "no" was ruled
-        AGAINST and the log can say so later."""
+        AGAINST and the log can say so later, and comes back as `main` so the
+        pick survives the reload (see adminMergeReviewMerge)."""
         member = request.form.get("member", "")
+        canonical = request.form.get("canonical", "")
         #< the friendly answer for the realistic race - the queue open in two
         #  tabs, or the matcher merging the pair between render and click. Not
         #  the 400 crafted junk gets: the admin did nothing wrong, so they
@@ -710,17 +724,17 @@ def register(app, dashboard):
         #  read.
         if member and dashboard.repo.resolveCanonicalTrackId(member) != member:
             return redirect(url_for(
-                "adminMergeReview",
+                "adminMergeReview", main=canonical or None,
                 error="That release was merged after this page loaded, so nothing was "
                       "recorded. A wrong merge can be split from the song's own page."))
         try:
             dashboard.repo.dismissMergeCandidate(
-                member, decidedBy=username,
-                againstId=request.form.get("canonical", ""))
+                member, decidedBy=username, againstId=canonical)
         except ValueError:
             abort(400)
-        return redirect(url_for("adminMergeReview",
-                                message="Kept separate - this release will not be suggested again."))
+        return redirect(url_for(
+            "adminMergeReview", main=canonical or None,
+            message="Kept separate - this release will not be suggested again."))
     app.add_url_rule("/admin/merge_review/reject", "adminMergeReviewReject",
                      adminMergeReviewReject, methods=["POST"])
 

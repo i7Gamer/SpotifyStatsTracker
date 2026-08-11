@@ -52,6 +52,14 @@
 
   {% for group in review.groups %}
   {% set groupIndex = loop.index %}
+  {#- The release currently keeping the song's page: the server's suggestion
+      unless a person picked another and the redirect carried it back. A pick
+      naming no release in THIS group is not a pick - the same fallback
+      mergeReviewRowStates applies, so the first render and the script's first
+      pass cannot disagree, and nothing arbitrary from the query string ever
+      reaches the page. -#}
+  {% set groupIds = [group.canonical.trackId] + (group.members | map(attribute='trackId') | list) %}
+  {% set picked = main if main in groupIds else group.canonical.trackId %}
   <article class="merge-group" data-merge-group>
     <p class="merge-group-title">
       <strong>{{ group.canonical.name }}</strong>
@@ -72,19 +80,20 @@
              name="merge-main-{{ groupIndex }}" value="{{ release.trackId }}"
              title="Keep this release as the song&#39;s page"
              aria-label="Keep {{ release.name }} ({{ release.album }}) as the song&#39;s page"
-             {% if loop.first %}checked{% endif %}/>
+             {% if release.trackId == picked %}checked{% endif %}/>
       <label class="merge-release-label" for="{{ radioId }}">{{ release.name }}
         <span class="merge-release-meta">&mdash; {{ release.album }},
           {{ trackLength(release.durationMs) }}, {{ release.plays }} play(s)</span>
       </label>
       <span class="merge-main-badge" data-merge-main-badge
-            {% if not loop.first %}hidden{% endif %}>kept as the song&#39;s page</span>
-      <div class="merge-release-actions" data-merge-actions {% if loop.first %}hidden{% endif %}>
+            {% if release.trackId != picked %}hidden{% endif %}>kept as the song&#39;s page</span>
+      <div class="merge-release-actions" data-merge-actions
+           {% if release.trackId == picked %}hidden{% endif %}>
         <form method="post" action="{{ url_for('adminMergeReviewMerge') }}"
               onsubmit="return confirm('Merge these releases into one song? This changes every account and can be split back apart later.');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
           <input type="hidden" name="member" value="{{ release.trackId }}"/>
-          <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
+          <input type="hidden" name="canonical" value="{{ picked }}"/>
           <button type="submit" class="primary-button button-small">Same recording &mdash; merge</button>
         </form>
         {#- carries `canonical` too, so the recorded "no" says what it was
@@ -92,7 +101,7 @@
         <form method="post" action="{{ url_for('adminMergeReviewReject') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
           <input type="hidden" name="member" value="{{ release.trackId }}"/>
-          <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
+          <input type="hidden" name="canonical" value="{{ picked }}"/>
           <button type="submit" class="button button-small">Not the same</button>
         </form>
       </div>
@@ -110,7 +119,7 @@
 <section class="card card-static" style="padding: 1.25rem 1.5rem;">
   <h2 style="margin: 0 0 0.4rem; font-size: 1.1rem;">Kept separate</h2>
   <p style="color: var(--muted); margin: 0 0 1rem;">
-    {{ dismissed.total }} release(s) you have ruled &quot;not the same recording&quot;
+    {{ dismissed.total }} release(s) ruled &quot;not the same recording&quot;
     {%- if dismissed.total > (dismissed.entries | length) %}, showing the
     {{ dismissed.entries | length }} most recent{% endif %}.
     None of them is suggested again while it is listed here. Putting one back

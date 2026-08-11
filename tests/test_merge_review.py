@@ -672,6 +672,103 @@ class TestSeeingAndUndoingDismissals(MergeReviewTestCase):
 
         self.assertIsNone(self._againstId(db, "B" * 22))
 
+    def test_a_counterpart_already_merged_into_the_track_is_refused(self):
+        """The contradiction, refused on the way in rather than cleaned up
+        after: a "no" against a release that is already in this track's group
+        would be false the moment it was written. The queue cannot post it -
+        it proposes only unmerged pairs - so this is the crafted-post 400."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        with self.assertRaises(ValueError):
+            db.repo.dismissMergeCandidate("A" * 22, decidedBy="timorzipa",
+                                          againstId="B" * 22)
+        self.assertEqual(self._dismissedIds(db), [])
+
+    def test_a_release_nobody_has_played_is_listed_at_zero(self):
+        """The tally is a second query keyed by id, so a release missing from
+        it must read as zero rather than dropping out of the log."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=0)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._onlyEntry(db)["plays"], 0)
+
+    def test_merging_the_counterpart_INTO_the_rejected_release_clears_it_too(self):
+        """The same contradiction from the other end. Only the release being
+        MERGED has its row rewritten, so a rejection sitting on the release
+        that keeps the song's page survived the pair being merged - and the
+        log went on saying "not the same as X" about a group X is now in."""
+        db = self._db()
+        self._track(db, "P" * 22, "Song", plays=1)
+        self._track(db, "R" * 22, "Song - 2005 Remaster", plays=50)
+        db.repo.dismissMergeCandidate("P" * 22, decidedBy="timorzipa", againstId="R" * 22)
+
+        db.repo.mergeTrackManually("R" * 22, "P" * 22, decidedBy="timorzipa")
+
+        self.assertIsNone(self._decision(db, "P" * 22))
+        self.assertEqual(self._dismissedIds(db), [])
+
+    def test_a_shared_isrc_landing_on_the_rejected_release_clears_it_too(self):
+        """The automatic tier reaches the same state, and more easily since
+        the title rule elects exactly the plain release a person is likely to
+        have ruled the remaster against."""
+        db = self._db()
+        self._track(db, "P" * 22, "Song", isrc=ISRC_A, plays=1)
+        self._track(db, "R" * 22, "Song - 2005 Remaster", isrc=ISRC_A, plays=50)
+        db.repo.dismissMergeCandidate("P" * 22, decidedBy="timorzipa", againstId="R" * 22)
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertEqual(self._canonical(db, "R" * 22), "P" * 22)   #< the title rule's head
+        self.assertIsNone(self._decision(db, "P" * 22))
+        self.assertEqual(self._dismissedIds(db), [])
+
+    def test_a_rejection_about_some_other_release_is_left_standing(self):
+        """Only the contradicted verdict goes. "B is not the same as C" says
+        nothing about A, so A merging into B must not delete it - that would
+        turn any unrelated merge into a silent erasure of someone's answer."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Other", plays=1)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa", againstId="C" * 22)
+
+        db.repo.mergeTrackManually("A" * 22, "B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-reject")
+        self.assertEqual(self._againstId(db, "B" * 22), "C" * 22)
+
+    def test_a_rejection_naming_nothing_is_left_standing(self):
+        """Recorded before against_id existed: nothing knows what it was ruled
+        against, so nothing can prove this merge contradicts it."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        db.repo.mergeTrackManually("A" * 22, "B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-reject")
+
+    def test_the_counterpart_arriving_by_carry_along_clears_it_too(self):
+        """The counterpart need not be the track named in the merge: C rides
+        into B's group as A's dependent, and the pair is just as merged."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        self._track(db, "C" * 22, "Song", plays=1)
+        db.repo.mergeTrackManually("C" * 22, "A" * 22, decidedBy="timorzipa")
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa", againstId="C" * 22)
+
+        db.repo.mergeTrackManually("A" * 22, "B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._canonical(db, "C" * 22), "B" * 22)
+        self.assertIsNone(self._decision(db, "B" * 22))
+
     def test_splitting_a_track_back_out_clears_the_counterpart(self):
         db = self._db()
         self._track(db, "A" * 22, "Song", plays=5)

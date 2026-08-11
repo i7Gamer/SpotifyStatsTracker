@@ -45,6 +45,31 @@ class MergeReviewRouteTestCase(AppTestCase):
                     conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
                                  "VALUES ('alice', ?, ?, 200000)", (trackId, 1e9 + i))
 
+    def _seedTrio(self, dash):
+        """Three releases of one song, so a group survives its first merge.
+
+        Sized for the re-election trap: with the plain release gone, neither
+        survivor is plain, so the shortest name wins - the Mono cut, not the
+        remaster a person would have picked."""
+        conn = dash.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO users (username, created_at, is_admin) "
+                         "VALUES ('alice', 0, 1)")
+            conn.execute("INSERT INTO albums (id, name, url) VALUES ('alb1', 'Talking Heads: 77', '')")
+            conn.execute("INSERT INTO artists (id, name, url) VALUES ('art1', 'Talking Heads', '')")
+            for trackId, name, plays in (
+                    ("P" * 22, "Psycho Killer", 1),
+                    ("R" * 22, "Psycho Killer - 2005 Remaster", 50),
+                    ("M" * 22, "Psycho Killer - Mono", 5)):
+                conn.execute(
+                    "INSERT INTO tracks (id, name, url, album_id, duration_ms, created_at) "
+                    "VALUES (?, ?, '', 'alb1', ?, 1000.0)", (trackId, name, DURATION_MS))
+                conn.execute("INSERT INTO track_artists (track_id, artist_id, position) "
+                             "VALUES (?, 'art1', 0)", (trackId,))
+                for i in range(plays):
+                    conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                                 "VALUES ('alice', ?, ?, 200000)", (trackId, 1e9 + i))
+
     def _request(self, dash, method, path, data=None, isAdmin=True):
         with patch.object(dash.repo, 'isAdmin', return_value=isAdmin), \
              patch.object(dash, 'is_user_logged_in', return_value=True), \
@@ -96,8 +121,9 @@ class TestMainVersionPicker(MergeReviewRouteTestCase):
     """Which release stays as the song's page is a suggestion, not a verdict -
     so every release in a group carries a control to become it."""
 
-    def _radios(self, dash):
-        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+    def _radios(self, dash, main=None):
+        path = "/admin/merge-review" + (("?main=" + main) if main else "")
+        body = self._request(dash, "GET", path).data.decode()
         return [(_VALUE_ATTR.search(tag).group(1), "checked" in tag)
                 for tag in _RADIO_TAG.findall(body)]
 
@@ -155,6 +181,44 @@ class TestMainVersionPicker(MergeReviewRouteTestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(self._canonical(dash, "A" * 22), "B" * 22)
         self.assertIsNone(self._canonical(dash, "B" * 22))
+
+    def test_the_pick_survives_the_reload_a_merge_causes(self):
+        """A group of three takes more than one click, and every click is a
+        POST-redirect-GET. The pick lived only in the page it was made on, so
+        the second render re-elected from the survivors and suggested a THIRD
+        release - one more click on the default and the song's page landed on
+        a release nobody chose."""
+        dash = self._makeApp()
+        self._seedTrio(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/merge",
+                             data={"member": "P" * 22, "canonical": "R" * 22})
+
+        self.assertIn("main=" + "R" * 22, unquote_plus(resp.headers["Location"]))
+        self.assertEqual(self._radios(dash, main="R" * 22),
+                         [("M" * 22, False), ("R" * 22, True)])
+
+    def test_the_pick_survives_a_reject_too(self):
+        dash = self._makeApp()
+        self._seedTrio(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "P" * 22, "canonical": "R" * 22})
+
+        self.assertIn("main=" + "R" * 22, unquote_plus(resp.headers["Location"]))
+
+    def test_a_pick_naming_no_release_in_the_group_falls_back_to_the_suggestion(self):
+        """Same rule the picker's own decision function uses, so the server's
+        render and the script's first pass cannot disagree: a main that is not
+        on offer is not a main. It is also never echoed into the page."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        self.assertEqual(self._radios(dash, main="Z" * 22),
+                         [("A" * 22, True), ("B" * 22, False)])
+        body = self._request(dash, "GET",
+                             "/admin/merge-review?main=" + "Z" * 22).data.decode()
+        self.assertNotIn("Z" * 22, body)
 
 
 class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
