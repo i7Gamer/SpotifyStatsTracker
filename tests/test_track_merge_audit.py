@@ -159,6 +159,49 @@ class TestGenresFollowTheCanonical(MergedPairTestCase):
         self.assertEqual(rows[0]["id"], ALBUM_CUT)
         self.assertEqual(rows[0]["playCount"], 12)
 
+    def test_the_share_denominator_counts_the_plays_the_numerator_counts(self):
+        """"Share of tagged plays" divides one by the other, so the two have to
+        agree about what a tagged play IS. The numerator credits a merged
+        member's plays to the canonical's genres; a denominator still asking
+        whether the PLAYED release carries a row of its own leaves this song's
+        3 member plays in the top half and out of the bottom - 12/9, a share
+        of 133.3% printed on the genre card."""
+        db = self._db()
+        self._tagCanonical(db)
+
+        numerator = db.repo.getGenrePlayStats("alice", "rock", 1, None, None)["plays"]
+        denominator = db.repo.getTotalGenreTaggedPlays("alice", 1, None, None)
+
+        self.assertEqual(numerator, 12)
+        self.assertEqual(denominator, 12)
+
+    def test_a_genre_only_the_merged_away_release_carries_is_counted_the_same_way(self):
+        """The mirror, and the reason this is about AGREEMENT rather than about
+        a bigger number: genre membership lives on the canonical, so a row on
+        the merged-away single is not the song's genre. Whatever the numerator
+        says, the denominator has to say it too, or the shares stop summing."""
+        db = self._db()
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO track_genres (track_id, genre, position, inherited) "
+                         "VALUES (?, 'jazz', 0, 0)", (SINGLE,))
+
+        numerator = db.repo.getGenrePlayStats("alice", "jazz", 1, None, None)["plays"]
+
+        self.assertEqual(db.repo.getTotalGenreTaggedPlays("alice", 1, None, None), numerator)
+
+    def test_the_denominator_is_unchanged_while_nothing_is_merged(self):
+        """The two spellings must be equivalent before a merge exists - that
+        equivalence is what lets the fast one run (see _genreMembershipJoin)."""
+        db = self._db()
+        self._tagCanonical(db)
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (SINGLE,))
+
+        #< only the album cut is tagged, and nothing is merged, so only its 9
+        self.assertEqual(db.repo.getTotalGenreTaggedPlays("alice", 1, None, None), 9)
+
 
 class TestTagsAreSongLevel(MergedPairTestCase):
     def test_a_tag_added_via_the_member_lands_on_the_canonical(self):

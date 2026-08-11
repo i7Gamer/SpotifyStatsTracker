@@ -94,6 +94,30 @@ class GenreQueries:
                     "            JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id)")
         return "JOIN track_genres g ON g.track_id = p.track_id"
 
+    def _genreMembershipExists(self, merged: bool | None = None) -> str:
+        """_genreMembershipJoin asked as a predicate: "this play's SONG carries
+        a genre row at all", once per play rather than once per (play, genre).
+
+        Its own spelling rather than the join because the two answer different
+        questions about cardinality, and the one caller is a denominator: the
+        join multiplies a play by its genre count, so counting rows through it
+        would need COUNT(DISTINCT p.id) over a set several times larger, where
+        EXISTS short-circuits on the first genre row. What it must NOT differ
+        about is which song's rows count - a numerator built on the join and a
+        denominator built on the played id disagree by exactly the merged
+        members, and their ratio then exceeds 100%. Carries one bound
+        parameter, the inherited toggle, exactly like the join's WHERE arm.
+
+        Same gate and same reason as its sibling: while nothing is merged the
+        canonical hop buys nothing, so the direct form runs (see
+        _anyTrackMerges)."""
+        if self._anyTrackMerges() if merged is None else merged:
+            return ("EXISTS (SELECT 1 FROM tracks trk "
+                    "JOIN track_genres g ON g.track_id = COALESCE(trk.canonical_id, trk.id) "
+                    "WHERE trk.id = p.track_id AND (? OR g.inherited = 0))")
+        return ("EXISTS (SELECT 1 FROM track_genres g "
+                "WHERE g.track_id = p.track_id AND (? OR g.inherited = 0))")
+
     def getGenrePlayCounts(self, username: str, inherited: int, startTs: float | None = None,
                             endTs: float | None = None, limit: int | None = None) -> list[dict]:
         """[{genre, plays}] over the range, most-played first (name breaks ties -
@@ -490,9 +514,18 @@ class GenreQueries:
 
     def getTotalGenreTaggedPlays(self, username: str, includeInherited: int,
                                  startTs: float | None, endTs: float | None) -> int:
-        """How many of the user's plays land on a track carrying any genre row
+        """How many of the user's plays land on a SONG carrying any genre row
         (respecting the inherited toggle) - the denominator for a genre's
-        listening share."""
+        listening share.
+
+        Canonical-aware through _genreMembershipExists, because the numerator
+        beside it (getGenrePlayStats) is: a merged member's plays are credited
+        with the canonical's genres up top, so counting only releases carrying
+        a row of their own down here dropped exactly those plays out of the
+        denominator. Last.fm looks genres up by track NAME and a merge group's
+        releases are named differently, so one member answering where the
+        other does not is the steady state rather than an edge case - the
+        share then read over 100% (measured 12/9 = 133.3% on a 3+9 pair)."""
         conn = self._conn()
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
@@ -501,8 +534,7 @@ class GenreQueries:
             f"""
             SELECT COUNT(*) AS c FROM plays p
             WHERE p.username = ? AND p.is_skip = 0{rangeClause}
-              AND EXISTS (SELECT 1 FROM track_genres g
-                          WHERE g.track_id = p.track_id AND (? OR g.inherited = 0))
+              AND {self._genreMembershipExists()}
             """,
             params,
         ).fetchone()
