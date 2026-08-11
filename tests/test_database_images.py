@@ -587,7 +587,99 @@ class TestDownloadImageTaskErrorLog(DatabaseTestCase):
                 db._downloadImageTask(imgDir, "https://img.example/x", "track-abc", IMAGE_KIND_TRACK)
 
         self.assertIn("track-abc", " ".join(logs.output))
-        self.assertEqual(db.repo.imageStatus("track-abc", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+        #< DELIBERATE: this asserted IMAGE_STATUS_FAILED. The log line is this
+        #  test's subject and still holds; the status is not, because a
+        #  connection error never reached the image. This class's stated worry
+        #  is "not left permanently pending", and no row at all satisfies that
+        #  strictly better than 'failed' does - it is the claimable state.
+        self.assertIsNone(db.repo.imageStatus("track-abc", IMAGE_KIND_TRACK))
+
+
+class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
+    """Where a 'failed' row is PERMANENT, a blip must not write one.
+
+    It is permanent in exactly one place, and the asymmetry is deliberate.
+    tryClaimImageDownload re-claims a 'failed' row, so a track cover retries
+    by itself the next time the listener saves that track - the driver is a
+    play, which is rare. lazyFetchArtistImage instead returns False on
+    'failed' BEFORE it reaches that claim, because its driver is a page render
+    and re-asking on every render is the load the check exists to prevent.
+
+    So an artist whose URL lookup succeeded and whose DOWNLOAD then hit a CDN
+    blip lost their picture for good. The lookup half of this was fixed with
+    releaseImageClaim; this is the download half, and it is the same rule: a
+    network-layer failure never saw the image, a response we read and could
+    not use did."""
+
+    def _httpError(self, status):
+        import requests as req
+        response = MagicMock()
+        response.status_code = status
+        return req.exceptions.HTTPError(f"{status} error", response=response)
+
+    def _artistAfter(self, db, tmpdir, failure):
+        """Claim an artist image the way _saveImg does, then fail the download."""
+        db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST)
+        with patch("Database.database.requests.get", **failure):
+            db._downloadImageTask(Path(tmpdir), "https://img/x", "art-1", IMAGE_KIND_ARTIST)
+
+    def test_a_connection_error_leaves_the_artist_retryable(self):
+        """Asserted on the stored state rather than by calling
+        lazyFetchArtistImage: its retry dispatches onto the shared executor,
+        and a job outliving this temp directory fails the cleanup, not the
+        code. 'failed' is the ONLY status that path refuses, so its absence is
+        exactly what "retryable" means here."""
+        import requests as req
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._artistAfter(
+                db, tmpdir, {"side_effect": req.exceptions.ConnectionError("reset by peer")})
+
+            self.assertIsNone(db.repo.imageStatus("art-1", IMAGE_KIND_ARTIST))
+            self.assertTrue(db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST))
+
+    def test_a_server_error_is_transient_too(self):
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get", side_effect=self._httpError(503)):
+                db._downloadImageTask(Path(tmpdir), "https://img/x", "t1", IMAGE_KIND_TRACK)
+
+            self.assertIsNone(db.repo.imageStatus("t1", IMAGE_KIND_TRACK))
+
+    def test_a_dead_url_is_still_remembered_as_failed(self):
+        """The definitive half: a 404 IS the answer, so the artist path goes on
+        refusing it and the render stops asking."""
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._artistAfter(db, tmpdir, {"side_effect": self._httpError(404)})
+
+            self.assertEqual(db.repo.imageStatus("art-1", IMAGE_KIND_ARTIST), IMAGE_STATUS_FAILED)
+            #< refused synchronously, before any dispatch - the load the
+            #  'failed' short-circuit exists to prevent
+            self.assertFalse(db.lazyFetchArtistImage("art-1", Path(tmpdir) / "art-1.jpeg"))
+
+    def test_bytes_that_are_not_an_image_are_still_failed(self):
+        """We got the response and it was not decodable - nothing transient
+        about that, and the same URL will not improve."""
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("Database.database.requests.get",
+                       return_value=_imageResponse(b"not-an-image")):
+                db._downloadImageTask(Path(tmpdir), "https://img/x", "t3", IMAGE_KIND_TRACK)
+
+            self.assertEqual(db.repo.imageStatus("t3", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+
+    def test_an_oversize_image_is_still_failed(self):
+        """_readCappedBody raises ValueError, not a RequestException - the cap
+        is a verdict about this image, not about the network."""
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oversize = _imageResponse(b"x" * 10)
+            oversize.headers = {"Content-Length": str(10 * 1024 * 1024 * 10)}
+            with patch("Database.database.requests.get", return_value=oversize):
+                db._downloadImageTask(Path(tmpdir), "https://img/x", "t4", IMAGE_KIND_TRACK)
+
+            self.assertEqual(db.repo.imageStatus("t4", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
 
     def test_save_error_log_includes_imgid(self):
         """If saving the image raises (e.g. corrupt bytes), the imgId appears in the log."""

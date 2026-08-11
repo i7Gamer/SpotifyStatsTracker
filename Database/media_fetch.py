@@ -33,6 +33,26 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MEDIA_FETCH_HTTP_TIMEOUT_SECONDS = 10
 
 
+def _isTransientFetchError(exc: Exception) -> bool:
+    """Whether this failure left us knowing nothing about the image.
+
+    The line is "did we get the bytes and find them unusable, or did we never
+    get them". Anything that is not a request error got far enough to be a
+    verdict about the image itself - PIL could not decode it, the cap says it
+    is too big (a ValueError, deliberately not a RequestException), the disk
+    refused it. Those stay 'failed'.
+
+    A request error is transient EXCEPT a 4xx, which is the server telling us
+    this URL is not going to work: a 404 cover stays 404, and re-asking is the
+    load 'failed' exists to stop. 5xx, timeouts and connection resets carry no
+    such answer - `response` is absent on those, which is what the status
+    lookup falls through on."""
+    if not isinstance(exc, _dbmod.requests.exceptions.RequestException):
+        return False
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return not (status and 400 <= status < 500)
+
+
 class MediaFetchMixin:
     """Album/artist image + Last.fm biography fetching and on-demand refresh, mixed into Database."""
 
@@ -90,7 +110,19 @@ class MediaFetchMixin:
                 raise
             self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_OK)
         except Exception as e:
-            self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_FAILED)
+            if _isTransientFetchError(e):
+                #< see releaseImageClaim: 'failed' is a verdict about the IMAGE,
+                #  and lazyFetchArtistImage refuses one for good. A network-layer
+                #  failure never saw the image, so it is not entitled to that
+                #  verdict - an artist whose lookup succeeded and whose download
+                #  then hit a blip would otherwise lose their picture
+                #  permanently. Track covers re-claim a 'failed' row anyway
+                #  (tryClaimImageDownload allows it, and the listener re-saves on
+                #  the next play), so for them this only avoids recording a
+                #  verdict nobody reached.
+                self.repo.releaseImageClaim(imgId, kind)
+            else:
+                self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_FAILED)
             if isinstance(e, _dbmod.requests.exceptions.RequestException):
                 _dbmod.logger.error("Error fetching image from %s (id=%s): %s", url, imgId, _dbmod.parseError(e))
             else:

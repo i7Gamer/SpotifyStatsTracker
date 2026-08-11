@@ -726,10 +726,16 @@ def register(app, dashboard):
         if member and dashboard.repo.resolveCanonicalTrackId(member) != member:
             stale = ("That release was merged after this page loaded, so nothing was "
                      "recorded. A wrong merge can be split from the song's own page.")
-        elif canonical and dashboard.repo.resolveCanonicalTrackId(canonical) == member:
+        elif (canonical and canonical != member
+                and dashboard.repo.resolveCanonicalTrackId(canonical) == member):
             #< the mirror shape, and the same race: the counterpart was merged
             #  INTO the release being ruled on, so the pair is already one song
-            #  and the "no" is contradicted before it is written.
+            #  and the "no" is contradicted before it is written. The
+            #  canonical != member arm is not redundant: resolving an UNMERGED
+            #  id returns that id, so without it a release ruled against ITSELF
+            #  matches here and gets a 302 claiming a merge that never
+            #  happened. That one is crafted (the main row renders no verdict
+            #  buttons) and stays the repo's 400.
             #  dismissMergeCandidate refuses it in-transaction, which reached
             #  abort(400) - a bare error page for the admin who did nothing
             #  wrong, where the shape above gets an explanation. The repo's

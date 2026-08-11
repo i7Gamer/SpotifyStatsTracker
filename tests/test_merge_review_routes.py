@@ -297,6 +297,24 @@ class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
         #< and nothing was recorded either way
         self.assertEqual(dash.repo.getDismissedMergeCandidates()["total"], 0)
 
+    def test_a_release_ruled_against_itself_is_still_a_400(self):
+        """The gap the staleness pre-check opened: resolveCanonicalTrackId of
+        an UNMERGED id is that id, so "the counterpart resolves to the member"
+        is trivially true when the two are the same id - and a self-reject
+        started getting a 302 saying the pair had been merged into one, which
+        is not what happened and not what the repo's own guard says.
+
+        Nothing on the page can post it (the row keeping the song's page
+        carries no verdict buttons), so it stays the crafted-post 400."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "B" * 22, "canonical": "B" * 22})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(dash.repo.getDismissedMergeCandidates()["total"], 0)
+
     def test_crafted_junk_in_the_counterpart_is_still_a_400(self):
         """The friendly redirect is for the race, not for a post nothing on the
         page could have produced - the repo's in-transaction ValueError stays
