@@ -51,10 +51,28 @@
   document.addEventListener('htmx:afterSwap', evt => markLoadedImages(evt.target));
 })();
 
-// Scroll-to-top button with circular progress. Deferred to DOMContentLoaded:
-// this script runs during body parse, before the #scroll-to-top button
-// (near </body>) exists, so an immediate getElementById returned null and
-// the button never worked.
+// Scroll-to-top button with circular progress. Init is deferred to
+// DOMContentLoaded: this script runs during body parse, before the
+// #scroll-to-top button (near </body>) exists, so an immediate
+// getElementById returned null and the button never worked.
+//
+// TWO thresholds, not one. A single `scrollTop > 300` put the button on a knife
+// edge for any page whose whole scrollable distance is near 300 - and this app
+// changes page height AFTER you have scrolled, constantly: a lazy cover
+// settling, a chart taking its real size, a deferred body swap. The browser
+// clamps scrollY to the shorter page, that lands a few pixels under the line,
+// and the button hid itself while the reader sat still. Measured in a browser:
+// shown at y=322, gone 300ms later at y=292.
+//
+// The gap between them is the wobble a height change is allowed to cause. Going
+// UP still hides it at the lower line, which is what a reader actually does.
+const SCROLL_TOP_SHOW_AT_PX = 300;
+const SCROLL_TOP_HIDE_AT_PX = 200;
+
+function scrollTopButtonVisible(scrollTop, wasVisible) {
+  return scrollTop > (wasVisible ? SCROLL_TOP_HIDE_AT_PX : SCROLL_TOP_SHOW_AT_PX);
+}
+
 (function() {
   function initScrollToTop() {
   const btn = document.getElementById('scroll-to-top');
@@ -63,6 +81,7 @@
 
   const radius = circle.r.baseVal.value;
   const circumference = 2 * Math.PI * radius;
+  let hideTimer = null;
 
   circle.style.strokeDasharray = `${circumference} ${circumference}`;
   circle.style.strokeDashoffset = circumference;
@@ -72,17 +91,22 @@
     circle.style.strokeDashoffset = offset;
   }
 
-  function handleScroll() {
+  function update() {
     const scrollTop = window.scrollY || document.documentElement.scrollTop;
     const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
 
-    if (scrollTop > 300) {
+    if (scrollTopButtonVisible(scrollTop, btn.classList.contains('visible'))) {
+      //< a pending hide from a moment ago must not land on a button that is
+      //  visible again; the class check inside it caught this, cancelling says it
+      clearTimeout(hideTimer);
+      hideTimer = null;
       btn.classList.add('visible');
       btn.style.display = 'flex';
     } else {
       btn.classList.remove('visible');
       // Delay display none slightly for fade-out animation
-      setTimeout(() => {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
         if (!btn.classList.contains('visible')) {
           btn.style.display = 'none';
         }
@@ -97,11 +121,21 @@
     }
   }
 
-  window.addEventListener('scroll', handleScroll);
+  window.addEventListener('scroll', update);
+  //< the button's state is a function of the page as well as the scroll, and
+  //  both of the other two move without a scroll event: a resized window, and
+  //  the deferred body every two-phase page swaps in after first paint
+  window.addEventListener('resize', update);
+  document.addEventListener('htmx:afterSwap', update);
 
   btn.addEventListener('click', () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
+
+  //< once up front: a reload or a Back restores the scroll position WITHOUT
+  //  firing a scroll event, so the button stayed hidden on an already-scrolled
+  //  page until the reader happened to move
+  update();
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initScrollToTop);
@@ -109,6 +143,10 @@
     initScrollToTop();
   }
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { scrollTopButtonVisible };
+}
 
 // Playlist-file download buttons (_playlist_download.html): ONE delegated
 // handler for every page the shared control appears on - Wrapped's Top 100

@@ -125,4 +125,92 @@ run('a click that is not the button leaves the page alone', () => {
   assert.strictEqual(window.location.href, '');
 });
 
+
+// ------------------------------------------------------- scroll-to-top button
+// The button appeared and then vanished a moment later, without the reader
+// touching anything. One hard threshold decided it (scrollTop > 300) and only a
+// scroll event ever re-evaluated it, so a page that lost a few pixels of height
+// under you - a lazy cover settling, a chart taking its real size, a deferred
+// body swap - had its scroll position clamped back under the line and the
+// button hid itself. Reproduced in a browser: shown at y=322, gone at y=292.
+
+const { scrollTopButtonVisible } = require(SCRIPT);
+
+run('it appears once you are a screenful down', () => {
+  assert.strictEqual(scrollTopButtonVisible(299, false), false);
+  assert.strictEqual(scrollTopButtonVisible(301, false), true);
+});
+
+run('a page shrinking under you does not snatch it away again', () => {
+  //< the measured regression: visible at 322, clamped to 292 by a height change
+  assert.strictEqual(scrollTopButtonVisible(292, true), true,
+    'a 30px clamp must not cross the hide line');
+});
+
+run('it still goes away when you actually scroll back up', () => {
+  assert.strictEqual(scrollTopButtonVisible(199, true), false);
+});
+
+run('the two thresholds leave room for a wobble, and hide is the lower one', () => {
+  //< the property that matters, stated independently of the numbers: there has
+  //  to be a band where the answer depends on which way you came
+  assert.strictEqual(scrollTopButtonVisible(250, true), true);
+  assert.strictEqual(scrollTopButtonVisible(250, false), false);
+});
+
+function loadWithButton(scrollY) {
+  const classes = new Set();
+  const circle = { r: { baseVal: { value: 16 } }, style: {} };
+  const btn = {
+    style: {},
+    classList: {
+      add: n => classes.add(n),
+      remove: n => classes.delete(n),
+      contains: n => classes.has(n),
+    },
+    querySelector: () => circle,
+    addEventListener() {},
+  };
+  const windowListeners = {};
+  const docListeners = {};
+  global.window = {
+    scrollY,
+    addEventListener(type, fn) { (windowListeners[type] = windowListeners[type] || []).push(fn); },
+    location: { href: '' },
+  };
+  global.document = {
+    readyState: 'interactive',
+    documentElement: { scrollTop: scrollY, scrollHeight: 4000, clientHeight: 900 },
+    addEventListener(type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); },
+    querySelectorAll() { return []; },
+    getElementById: id => (id === 'scroll-to-top' ? btn : null),
+  };
+  delete require.cache[require.resolve(SCRIPT)];
+  require(SCRIPT);
+  return { btn, classes, windowListeners, docListeners };
+}
+
+run('a page opened already scrolled shows the button without waiting for a scroll', () => {
+  //< reload or Back restores the scroll position, and no scroll event follows.
+  //  Nothing evaluated the button until the reader happened to move.
+  const { btn, classes } = loadWithButton(900);
+
+  assert.ok(classes.has('visible'), 'evaluated once at init');
+  assert.strictEqual(btn.style.display, 'flex');
+});
+
+run('a page opened at the top still starts hidden', () => {
+  const { classes } = loadWithButton(0);
+
+  assert.ok(!classes.has('visible'));
+});
+
+run('a height change re-evaluates it, not only a scroll', () => {
+  const { windowListeners, docListeners } = loadWithButton(0);
+
+  assert.ok(windowListeners['scroll'], 'still listens to scroll');
+  assert.ok(windowListeners['resize'], 'a resized window re-evaluates');
+  assert.ok(docListeners['htmx:afterSwap'], 'a deferred body swap re-evaluates');
+});
+
 console.log('all chrome-common tests passed');
