@@ -5100,6 +5100,16 @@ html.theme-red {
    when. Its own name because it is not the badge - a row can never wear both,
    and one class meaning two things is how a later restyle breaks the other. */
 .merge-decided-by { color: var(--muted); font-size: 0.9rem; }
+/* What a rejection was ruled AGAINST, under the release it was ruled on. On
+   its own line: it is a second sentence about the row, not more of the first,
+   and reading them as one ("... 3 play(s) not the same as ...") is worse than
+   the extra height. */
+.merge-release-against {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
 .merge-release-actions { display: flex; gap: 0.6rem; }
 /* display:flex above beats the [hidden] attribute's UA display:none, and the
    picker hides this block on whichever row is currently the main version. */

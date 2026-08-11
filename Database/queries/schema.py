@@ -179,9 +179,33 @@ class SchemaQueries:
                     reason       TEXT NOT NULL,
                     evidence     TEXT,
                     decided_at   REAL NOT NULL,
-                    decided_by   TEXT
+                    decided_by   TEXT,
+                    against_id   TEXT REFERENCES tracks(id)
                 )
             """)
+
+    def addMergeDecisionAgainstColumnIfMissing(self) -> None:
+        """Add track_merge_decisions.against_id (migrate1_49_0) if missing -
+        the release a rejection was ruled AGAINST.
+
+        A new COLUMN, so SCHEMA stamping cannot deliver it: CREATE TABLE IF
+        NOT EXISTS leaves an existing table exactly as it is. The sibling
+        CREATE above carries it too, for the database that gets the table for
+        the first time - the two have to agree or a fresh install and an
+        upgraded one end up with different shapes.
+
+        Arrives NULL everywhere, which is the honest answer for every
+        rejection recorded before it existed: nothing knows what those were
+        ruled against, and guessing would put a name on a decision nobody
+        made. Not indexed - it is read once per page render, for at most
+        MERGE_DISMISSED_PAGE_LIMIT rows."""
+        conn = self._conn()
+        columns = {row["name"] for row in
+                   conn.execute("PRAGMA table_info(track_merge_decisions)").fetchall()}
+        if "against_id" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE track_merge_decisions "
+                             "ADD COLUMN against_id TEXT REFERENCES tracks(id)")
 
     def addPlayMetadataColumnsIfMissing(self) -> None:
         """Add created_at and created_reason columns to plays table if missing.

@@ -996,7 +996,7 @@ class TrackQueries:
                         ON CONFLICT(track_id) DO UPDATE SET
                             canonical_id=excluded.canonical_id, reason=excluded.reason,
                             evidence=excluded.evidence, decided_at=excluded.decided_at,
-                            decided_by=NULL
+                            decided_by=NULL, against_id=NULL
                         """,
                         (member["trackId"], canonicalId, group["isrc"], now),
                     )
@@ -1156,7 +1156,8 @@ class TrackQueries:
                 VALUES (?, NULL, 'manual-split', NULL, ?, ?)
                 ON CONFLICT(track_id) DO UPDATE SET
                     canonical_id=NULL, reason='manual-split', evidence=NULL,
-                    decided_at=excluded.decided_at, decided_by=excluded.decided_by
+                    decided_at=excluded.decided_at, decided_by=excluded.decided_by,
+                    against_id=NULL
                 """,
                 (trackId, time.time(), decidedBy),
             )
@@ -1334,7 +1335,7 @@ class TrackQueries:
                 ON CONFLICT(track_id) DO UPDATE SET
                     canonical_id=excluded.canonical_id, reason='manual-merge',
                     evidence=NULL, decided_at=excluded.decided_at,
-                    decided_by=excluded.decided_by
+                    decided_by=excluded.decided_by, against_id=NULL
                 """,
                 (trackId, root, now, decidedBy))
             merged += 1
@@ -1343,7 +1344,8 @@ class TrackQueries:
         self.deleteAllWrapped()
         return merged
 
-    def dismissMergeCandidate(self, trackId: str, decidedBy: str) -> None:
+    def dismissMergeCandidate(self, trackId: str, decidedBy: str,
+                              againstId: str | None = None) -> None:
         """A person's "not the same recording", recorded so it STAYS answered.
 
         The row (NULL canonical_id, decided_by set) is what migrate1_48_0
@@ -1366,7 +1368,20 @@ class TrackQueries:
         same recording": an audit that lies, one the toggle's off edge can
         never clear (decided_by is set), and one the reject-yields rule could
         flip straight back regardless. The "no" for a merged track is the
-        split (unmergeTrack), which pins - the route explains exactly that."""
+        split (unmergeTrack), which pins - the route explains exactly that.
+
+        againstId records WHICH release was on screen when the verdict was
+        reached - the one keeping the song's page. Audit only: the row still
+        judges trackId, which leaves the queue whatever it was compared with,
+        and no read path decides anything from it. It is what lets the "Kept
+        separate" log say not the same as WHAT, months later when the pair
+        that made it obvious is gone from the queue and out of memory.
+        Optional, because every row written before the column existed has no
+        answer and a guess would be worse than the blank. An empty string is
+        the same as absent - a form field nobody filled - but an id naming no
+        track is refused, since letting it through raises a FOREIGN KEY the
+        route cannot turn into a 400."""
+        againstId = againstId or None
         conn = self._conn()
         with conn:
             #< inside the write's own transaction, so the state it checks is
@@ -1377,16 +1392,26 @@ class TrackQueries:
                 raise ValueError(f"unknown track: {trackId}")
             if row["canonical_id"]:
                 raise ValueError(f"track is merged: {trackId}")
+            if againstId == trackId:
+                #< nothing on the page can post it (the row keeping the song's
+                #  page carries no verdict buttons), and a log entry reading
+                #  "X, not the same as X" is unre-checkable by construction
+                raise ValueError(f"track cannot be rejected against itself: {trackId}")
+            if againstId and not conn.execute(
+                    "SELECT 1 FROM tracks WHERE id=?", (againstId,)).fetchone():
+                raise ValueError(f"unknown track: {againstId}")
             conn.execute(
                 """
                 INSERT INTO track_merge_decisions
-                    (track_id, canonical_id, reason, evidence, decided_at, decided_by)
-                VALUES (?, NULL, 'manual-reject', NULL, ?, ?)
+                    (track_id, canonical_id, reason, evidence, decided_at, decided_by,
+                     against_id)
+                VALUES (?, NULL, 'manual-reject', NULL, ?, ?, ?)
                 ON CONFLICT(track_id) DO UPDATE SET
                     canonical_id=NULL, reason='manual-reject', evidence=NULL,
-                    decided_at=excluded.decided_at, decided_by=excluded.decided_by
+                    decided_at=excluded.decided_at, decided_by=excluded.decided_by,
+                    against_id=excluded.against_id
                 """,
-                (trackId, time.time(), decidedBy))
+                (trackId, time.time(), decidedBy, againstId))
 
     def getDismissedMergeCandidates(self) -> dict:
         """Every "not the same recording" a person has recorded, newest first.
@@ -1403,19 +1428,29 @@ class TrackQueries:
         rewrites it to an ordinary matcher merge, and that is undone by the
         toggle or a split, not from here.
 
-        Note what it CANNOT show: the row records the release ruled on, not
-        what it was ruled against, because "not the same as anything with this
-        title" is what the verdict means - it is not proposed again against any
-        of them. Returns {"entries" (capped at MERGE_DISMISSED_PAGE_LIMIT),
-        "total"} - the total counts the whole list, not the page."""
+        "against" is what the release was ruled against - the one keeping the
+        song's page at the time - and is None where the row does not say: it
+        is an audit column added after the verdict existed (migrate1_49_0), so
+        every rejection recorded before it names nothing rather than a guess.
+        LEFT JOIN for the same reason, plus the counterpart being a track row
+        like any other. Note what the column does NOT do: the verdict still
+        applies to the track, which is not re-proposed against anything with
+        that title, so this narrows nothing.
+
+        Returns {"entries" (capped at MERGE_DISMISSED_PAGE_LIMIT), "total"} -
+        the total counts the whole list, not the page."""
         conn = self._conn()
         rows = conn.execute(
             f"""
             SELECT t.id, t.name, t.duration_ms, d.decided_at, d.decided_by,
-                   al.name AS album_name, COALESCE(pc.play_count, 0) AS play_count
+                   al.name AS album_name, COALESCE(pc.play_count, 0) AS play_count,
+                   ag.id AS against_id, ag.name AS against_name,
+                   agal.name AS against_album
             FROM track_merge_decisions d
             JOIN tracks t ON t.id = d.track_id
             LEFT JOIN albums al ON al.id = t.album_id
+            LEFT JOIN tracks ag ON ag.id = d.against_id
+            LEFT JOIN albums agal ON agal.id = ag.album_id
             {self._PLAY_TALLY_JOIN}
             WHERE d.reason = 'manual-reject'
             ORDER BY d.decided_at DESC, t.id
@@ -1426,7 +1461,11 @@ class TrackQueries:
                          "album": row["album_name"], "plays": row["play_count"],
                          "durationMs": row["duration_ms"] or 0,
                          "decidedAt": row["decided_at"],
-                         "decidedBy": row["decided_by"]}
+                         "decidedBy": row["decided_by"],
+                         "against": ({"trackId": row["against_id"],
+                                      "name": row["against_name"],
+                                      "album": row["against_album"]}
+                                     if row["against_id"] else None)}
                         for row in rows[:MERGE_DISMISSED_PAGE_LIMIT]],
             "total": len(rows),
         }

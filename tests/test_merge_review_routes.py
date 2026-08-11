@@ -248,6 +248,31 @@ class TestTheDismissalLog(MergeReviewRouteTestCase):
         #< who ruled and when, so a shared instance can tell two admins apart
         self.assertIn("alice", body)
 
+    def test_the_reject_button_records_what_the_no_was_ruled_against(self):
+        """The form carries the same `canonical` the merge verb does, so the
+        log can say not the same as WHAT."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        self._request(dash, "POST", "/admin/merge_review/reject",
+                      data={"member": "B" * 22, "canonical": "A" * 22})
+
+        entry = dash.repo.getDismissedMergeCandidates()["entries"][0]
+        self.assertEqual(entry["against"]["trackId"], "A" * 22)
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+        self.assertIn("not the same as Psycho Killer", body)
+
+    def test_a_reject_naming_a_junk_counterpart_is_a_400_not_a_crash(self):
+        """Unchecked it reaches the FOREIGN KEY instead, which is a 500."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "B" * 22, "canonical": "Z" * 22})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(dash.repo.getDismissedMergeCandidates()["total"], 0)
+
     def test_the_log_stays_out_of_the_way_until_there_is_something_in_it(self):
         dash = self._makeApp()
         self._seedPair(dash)

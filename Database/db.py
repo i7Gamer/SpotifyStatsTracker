@@ -234,13 +234,23 @@ CREATE TABLE IF NOT EXISTS images (
 -- and an automatic pass must leave those alone. `evidence` is the ISRC for an
 -- ISRC merge - kept so a merge can be explained, and re-checked, long after the
 -- catalog row it came from has changed underneath it.
+--
+-- against_id is the other half of a rejection: the release the review queue was
+-- proposing when a person said "not the same recording" (migrate1_49_0). It
+-- records what was ON SCREEN, and nothing reads it to decide anything - the
+-- verdict itself is still about the track, which leaves the queue for good
+-- either way. Without it the "Kept separate" log can only name what was ruled
+-- on, never what it was ruled against, which is the half that makes an old
+-- decision re-checkable. NULL for every other reason, and for rejections
+-- recorded before the column existed.
 CREATE TABLE IF NOT EXISTS track_merge_decisions (
     track_id     TEXT PRIMARY KEY REFERENCES tracks(id),
     canonical_id TEXT REFERENCES tracks(id),
     reason       TEXT NOT NULL,
     evidence     TEXT,
     decided_at   REAL NOT NULL,
-    decided_by   TEXT
+    decided_by   TEXT,
+    against_id   TEXT REFERENCES tracks(id)
 );
 
 CREATE TABLE IF NOT EXISTS user_tags (

@@ -694,7 +694,12 @@ def register(app, dashboard):
     def adminMergeReviewReject(username, db):
         """Admin-only: a person's "not the same recording". Recorded, so the
         pair leaves this queue for good (a later shared ISRC still outranks
-        it - see dismissMergeCandidate)."""
+        it - see dismissMergeCandidate).
+
+        The form carries the same `canonical` field the merge verb does - the
+        release keeping the song's page, which the picker rewrites when a
+        person chooses another - so the row records what the "no" was ruled
+        AGAINST and the log can say so later."""
         member = request.form.get("member", "")
         #< the friendly answer for the realistic race - the queue open in two
         #  tabs, or the matcher merging the pair between render and click. Not
@@ -709,7 +714,9 @@ def register(app, dashboard):
                 error="That release was merged after this page loaded, so nothing was "
                       "recorded. A wrong merge can be split from the song's own page."))
         try:
-            dashboard.repo.dismissMergeCandidate(member, decidedBy=username)
+            dashboard.repo.dismissMergeCandidate(
+                member, decidedBy=username,
+                againstId=request.form.get("canonical", ""))
         except ValueError:
             abort(400)
         return redirect(url_for("adminMergeReview",

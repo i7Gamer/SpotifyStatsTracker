@@ -67,6 +67,12 @@ class MergeReviewTestCase(DatabaseTestCase):
             "WHERE track_id=?", (trackId,)).fetchone()
         return dict(row) if row else None
 
+    def _againstId(self, db, trackId):
+        row = db.repo._conn().execute(
+            "SELECT against_id FROM track_merge_decisions WHERE track_id=?",
+            (trackId,)).fetchone()
+        return row["against_id"] if row else None
+
 
 class TestTitleNormalization(unittest.TestCase):
     """The recall half of the queue: a remaster differs by NAME, so exact
@@ -588,6 +594,95 @@ class TestSeeingAndUndoingDismissals(MergeReviewTestCase):
     def _dismissedIds(self, db):
         return [entry["trackId"]
                 for entry in db.repo.getDismissedMergeCandidates()["entries"]]
+
+    def _onlyEntry(self, db):
+        return db.repo.getDismissedMergeCandidates()["entries"][0]
+
+    def test_a_dismissal_records_what_it_was_ruled_against(self):
+        """The half the row was missing. "Not the same" is only re-checkable
+        months later if it says not the same as WHAT - by then the pair that
+        made it obvious is gone from the queue and out of memory."""
+        db = self._db()
+        self._track(db, "A" * 22, "Psycho Killer", album="Talking Heads: 77", plays=5)
+        self._track(db, "B" * 22, "Psycho Killer - Live", album="The Name Of This Band", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa", againstId="A" * 22)
+
+        against = self._onlyEntry(db)["against"]
+
+        self.assertEqual(against["trackId"], "A" * 22)
+        self.assertEqual(against["name"], "Psycho Killer")
+        self.assertEqual(against["album"], "Talking Heads: 77")
+
+    def test_a_dismissal_without_a_counterpart_still_records_the_verdict(self):
+        """Every row written before the column existed, and any caller that
+        does not know the pair. The log names what was ruled on and admits it
+        does not know the rest, rather than the whole entry vanishing."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
+
+        entry = self._onlyEntry(db)
+
+        self.assertEqual(entry["trackId"], "B" * 22)
+        self.assertIsNone(entry["against"])
+
+    def test_a_counterpart_that_names_no_track_is_refused(self):
+        """Without the check the FOREIGN KEY raises instead, which the route
+        cannot turn into a 400 - the same reason its siblings check first."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+
+        with self.assertRaises(ValueError):
+            db.repo.dismissMergeCandidate("A" * 22, decidedBy="timorzipa", againstId="Z" * 22)
+        self.assertIsNone(self._decision(db, "A" * 22))
+
+    def test_a_release_cannot_be_ruled_not_the_same_as_itself(self):
+        """Nothing on the page can post it - the row keeping the song's page
+        carries no verdict buttons - but a log entry reading "X, not the same
+        as X" is a decision that cannot be re-checked because it means
+        nothing."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+
+        with self.assertRaises(ValueError):
+            db.repo.dismissMergeCandidate("A" * 22, decidedBy="timorzipa", againstId="A" * 22)
+
+    def test_changing_your_mind_and_merging_clears_the_counterpart(self):
+        """The row stops being a rejection, so the release it was rejected
+        against stops being true of it - left behind it would describe a
+        verdict that no longer exists."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa", againstId="A" * 22)
+
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        self.assertIsNone(self._againstId(db, "B" * 22))
+
+    def test_a_shared_isrc_overruling_a_dismissal_clears_the_counterpart(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa", againstId="A" * 22)
+        db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
+
+        db.repo.mergeTracksByIsrc()
+
+        self.assertIsNone(self._againstId(db, "B" * 22))
+
+    def test_splitting_a_track_back_out_clears_the_counterpart(self):
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=5)
+        self._track(db, "B" * 22, "Song", plays=2)
+        db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa", againstId="A" * 22)
+        db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
+
+        db.repo.unmergeTrack("B" * 22, decidedBy="timorzipa")
+
+        self.assertEqual(self._decision(db, "B" * 22)["reason"], "manual-split")
+        self.assertIsNone(self._againstId(db, "B" * 22))
 
     def test_a_dismissal_is_listed_with_what_it_was_and_who_said_so(self):
         db = self._db()

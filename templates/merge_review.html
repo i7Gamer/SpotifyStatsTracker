@@ -87,9 +87,12 @@
           <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
           <button type="submit" class="primary-button button-small">Same recording &mdash; merge</button>
         </form>
+        {#- carries `canonical` too, so the recorded "no" says what it was
+            ruled AGAINST. The picker rewrites both forms' copies together. -#}
         <form method="post" action="{{ url_for('adminMergeReviewReject') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
           <input type="hidden" name="member" value="{{ release.trackId }}"/>
+          <input type="hidden" name="canonical" value="{{ group.canonical.trackId }}"/>
           <button type="submit" class="button button-small">Not the same</button>
         </form>
       </div>
@@ -118,6 +121,12 @@
     <span class="merge-release-label">{{ entry.name }}
       <span class="merge-release-meta">&mdash; {{ entry.album }},
         {{ trackLength(entry.durationMs) }}, {{ entry.plays }} play(s)</span>
+      {#- What it was ruled against, where the row says. Rejections recorded
+          before migrate1_49_0 do not, and say nothing rather than guess. -#}
+      {% if entry.against %}
+      <span class="merge-release-against">not the same as {{ entry.against.name }}
+        ({{ entry.against.album }})</span>
+      {% endif %}
     </span>
     <span class="merge-decided-by">{{ entry.decidedBy }}{% if entry.decidedOn %},
       {{ entry.decidedOn }}{% endif %}</span>

@@ -41,7 +41,6 @@ function applyMergeReviewGroup(group) {
     const row = rows[index];
     const badge = row.querySelector('[data-merge-main-badge]');
     const actions = row.querySelector('[data-merge-actions]');
-    const canonical = row.querySelector('input[name="canonical"]');
     if (badge) {
       badge.hidden = !state.isMain;
     }
@@ -51,9 +50,13 @@ function applyMergeReviewGroup(group) {
       // pin the anchor rather than answer the question being asked.
       actions.hidden = state.isMain;
     }
-    if (canonical) {
-      canonical.value = state.canonical;
-    }
+    // Both forms in the row carry one: the merge posts it as the target, and
+    // the reject posts it as what the "no" was ruled AGAINST. A single-element
+    // lookup left the second on whatever the server rendered, which nothing on
+    // screen would have shown - a hidden field disagreeing with the radio.
+    row.querySelectorAll('input[name="canonical"]').forEach((input) => {
+      input.value = state.canonical;
+    });
   });
 }
 
@@ -77,5 +80,5 @@ if (typeof document !== 'undefined') {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { mergeReviewRowStates };
+  module.exports = { mergeReviewRowStates, applyMergeReviewGroup };
 }
