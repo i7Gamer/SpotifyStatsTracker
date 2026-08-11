@@ -66,6 +66,39 @@ class TestImportRaisesRecalcFlag(DatabaseTestCase):
         db = self._makeDb({}, [])
         self.assertFalse(db.consumeMilestoneRecalcFlag())
 
+    def test_a_failed_file_does_not_report_the_batch_as_settled(self):
+        """The milestone pass skips while an import is "running", and that
+        status is the ONLY thing holding it off - the flag it consumes is not
+        raised until the whole batch is done. A per-file failure wrote the
+        TERMINAL status 'failed' while the batch went on to the next file, and
+        that file's status stays 'failed' until a fresh Importer has finished
+        a live Spotify login (seconds). A pass landing in that window sees a
+        settled import with no flag raised, so it records every threshold the
+        already-imported files crossed as UNSEEN - years-old achievements
+        arriving as new notifications, which markSeen exists to prevent, and
+        which no later pass repairs (recalculateMilestoneDates never touches
+        seen flags).
+
+        Asserted from inside the next file, which is exactly where the window
+        is."""
+        db = self._makeDb({}, [])
+        seen = []
+
+        def importHistory(content, **kwargs):
+            seen.append(db.readProgress().get("status"))
+            if len(seen) == 1:
+                #< what the real importHistory does on a per-file failure: the
+                #  terminal write (import_service.py:204/565) and then raise
+                db.writeProgress("failed", 1, 2, "Import failed: corrupt export", error=True)
+                raise RuntimeError("corrupt export")
+
+        with patch.object(type(db), "importHistory", side_effect=importHistory,
+                          autospec=False, create=True):
+            db.importHistoryBatch(["file-one", "file-two"])
+
+        #< the second file's view of the world while the batch is still going
+        self.assertEqual(seen[1], "running")
+
     def test_successful_batch_raises_flag_and_consume_is_one_shot(self):
         db = self._makeDb({}, [])
         outcomes = self._importBatch(db, ["raw export"])

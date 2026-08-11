@@ -635,6 +635,24 @@ class ImportMixin:
             except Exception as e:
                 outcomes.append("failed")
                 _dbmod.logger.error("Import failed for file %s/%s: %s", index, total, _dbmod.parseError(e))
+                if not isFinalFile:
+                    #< importHistory wrote a TERMINAL 'failed' on its way out,
+                    #  but that is this FILE's verdict and the batch is still
+                    #  going. Left standing it says "settled" for as long as
+                    #  the next file's Importer takes to log in - seconds - and
+                    #  the periodic milestone pass reads exactly this status to
+                    #  decide whether an import is in flight. It would then run
+                    #  mid-batch with the end-of-batch flag not yet raised, and
+                    #  record every threshold the imported files just crossed
+                    #  as UNSEEN: years-old achievements arriving as new
+                    #  notifications, which no later pass repairs
+                    #  (recalculateMilestoneDates never touches seen flags).
+                    #  Same shape as the skip arm above: terminal only on the
+                    #  final file, and the batch summary below owns the real
+                    #  verdict either way. error=True keeps the banner red.
+                    self.writeProgress("running", index, total,
+                                       f"File {index}/{total}: Import failed, continuing",
+                                       error=True)
 
         failedCount = outcomes.count("failed")
         skippedCount = outcomes.count("skipped")
