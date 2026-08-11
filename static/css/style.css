@@ -1201,8 +1201,15 @@ progress::-moz-progress-bar {
 /* A card stacking directly on the page (Admin's banners and its user table)
    rather than inside a container, same idiom as .track-list above. The
    :not() is the point of the rule as much as the margin is: a block with
-   nothing after it needs no gap, and .page's 40px bottom is the run-out. */
-.page > .card:not(:last-child) {
+   nothing after it needs no gap, and .page's 40px bottom is the run-out.
+
+   Scoped with `of .card` rather than a bare :last-child because six pages
+   (admin, charts, compare, genres, import, merge_review) end their content
+   block with <script> tags, which are children of .page like any other - so
+   the last CARD was not the last CHILD, and picked up a gap this rule exists
+   to withhold. The scripts paint nothing, so the last card is the last block
+   whatever follows it in the markup. */
+.page > .card:not(:nth-last-child(1 of .card)) {
   margin-bottom: 18px;
 }
 

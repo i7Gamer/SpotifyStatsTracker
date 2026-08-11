@@ -238,7 +238,7 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         #  running 1.25/1.5/2.5rem at once. :not(:last-child) because a
         #  trailing block needs no gap: .page's 40px bottom is the run-out,
         #  and without it /merge-review's last card would gain one.
-        ".page > .card:not(:last-child)", ".admin-subnav",
+        ".page > .card:not(:nth-last-child(1 of .card))", ".admin-subnav",
         ".admin-section-heading", ".admin-stats-grid", ".admin-card-grid",
     )
 
@@ -461,6 +461,40 @@ class TestAdminUtilityClasses(unittest.TestCase):
         select_block = self.css.split('.admin-select-input {')[1].split('}')[0]
         self.assertIn('width: 9rem;', select_block)
         self.assertIn('max-width: 100%;', select_block)
+
+
+class TestPageCardGapSkipsTheLastCard(unittest.TestCase):
+    """The between-blocks gap must be withheld from the LAST CARD, which is
+    not the same thing as the last child.
+
+    A bare :last-child reads the markup, and six content blocks end with
+    <script> tags - children of .page like any other, painting nothing. The
+    last card was therefore never :last-child on those pages and collected a
+    gap the rule exists to withhold, leaving 58px under it against 40px
+    everywhere else. Scoping the position to `.card` siblings says what was
+    meant; a future simplification back to :last-child re-opens it."""
+
+    def setUp(self):
+        self.css = _readFile(_CSS_PATH)
+
+    def test_the_gap_is_scoped_to_card_siblings(self):
+        self.assertIn('.page > .card:not(:nth-last-child(1 of .card))', self.css)
+        #< the bare form is the regression: it is what read the markup
+        self.assertNotIn('.page > .card:not(:last-child)', self.css)
+
+    def test_a_page_that_ends_with_a_script_is_why(self):
+        """The reason, on one real page: merge_review's content block puts its
+        <script> after the last card, so the card is not the last child. Kept
+        to one page deliberately - the selector is correct either way, and a
+        list of six would fail the day any of them is restructured."""
+        import re
+
+        body = _readFile(os.path.join(_ROOT, "templates", "merge_review.html"))
+        block = re.search(r'{%\s*block content\s*%}(.*?){%\s*endblock', body, re.S)
+        self.assertIsNotNone(block)
+
+        tail = block.group(1).rstrip()
+        self.assertTrue(tail.endswith("</script>"), tail[-80:])
 
 
 
