@@ -1057,11 +1057,15 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 return new[index:]
         return None
 
-    def playlistName(self, playlistId) -> str:
-        return (self.sp.playlist(playlistId) or {}).get("name", "Unknown Playlist")
+    def playlistName(self, playlistId) -> str | None:
+        #< None, not a placeholder: the one caller (updatePlaylists) stores this
+        #  as the playlist's name, permanently and with no retry, and a literal
+        #  "Unknown Playlist" is indistinguishable from a title someone chose.
+        #  A degraded response is an absence of an answer, so say that.
+        return (self.sp.playlist(playlistId) or {}).get("name")
 
-    def albumName(self, albumId) -> str:
-        return (self.sp.album(albumId) or {}).get("name", "Unknown Album")
+    def albumName(self, albumId) -> str | None:
+        return (self.sp.album(albumId) or {}).get("name")
 
     def getConnectPlayerState(self) -> dict | None:
         """The raw connect player_state dict off the same PlayerStatus object

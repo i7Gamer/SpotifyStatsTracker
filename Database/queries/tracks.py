@@ -556,6 +556,24 @@ class TrackQueries:
             )
             return cur.rowcount > 0
 
+    def releaseImageClaim(self, imageId: str, kind: str) -> None:
+        """Give a claim back unused: this attempt never learned anything.
+
+        The counterpart to marking 'failed', which means "asked, and there is
+        no image" - permanent by design, and refused for good by
+        lazyFetchArtistImage. An attempt that raised did not establish that. A
+        missing row is the never-attempted state (the same state
+        deleteFailedArtistImages restores rows to), so the next render tries
+        again instead of inheriting a verdict nobody reached.
+
+        Only a row still 'pending' is dropped, and only ours can be: the claim
+        is what set it, and anything that finished it wrote 'ok' or 'failed'
+        over the top."""
+        conn = self._conn()
+        with conn:
+            conn.execute("DELETE FROM images WHERE id=? AND kind=? AND status=?",
+                         (imageId, kind, IMAGE_STATUS_PENDING))
+
     def markImageStatus(self, imageId: str, kind: str, status: str) -> None:
         conn = self._conn()
         with conn:

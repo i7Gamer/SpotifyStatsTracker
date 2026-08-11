@@ -21,7 +21,7 @@ try:
     from Database.Importers.StreamingHistoryImporter import Importer
     from Database.Importers.AutoImporter import AutoImporter
     from Database.Listeners.spotifyListener import (
-        Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS,
+        Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS, classifyListenerError,
     )
     from Database.repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
@@ -35,7 +35,7 @@ except ModuleNotFoundError:
     from Importers.StreamingHistoryImporter import Importer
     from Importers.AutoImporter import AutoImporter
     from Listeners.spotifyListener import (
-        Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS,
+        Listener, CONNECT_STATE_MISSED_TRACK_LOOKBACK_SECONDS, classifyListenerError,
     )
     from repository import (
         Repository, IMAGE_KIND_TRACK, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_FAILED,
@@ -705,6 +705,23 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 "Error occurred while fetching playlist name for %s (probably due to playlist being private): %s",
                 playlistId, e,
             )
+            #< a row written here is FINAL: playlistKnown tests only that one
+            #  exists, and nothing else ever writes this table. So a failure
+            #  only earns a row if it is an answer. A private or deleted
+            #  playlist raises every time, and re-asking would spend a Spotify
+            #  call on every play from it - that one is cached, exactly as
+            #  before. A transient failure is not: the shared limiter's backoff
+            #  window is opened by ANY user's 429, so it can land on the first
+            #  play from a playlist through no fault of its own, and the
+            #  playlist would then have no name in "played from" forever and be
+            #  unfindable by /history's search. Left unwritten, the next play
+            #  from it asks again.
+            #  Only what classifyListenerError already calls transient (429 /
+            #  rate limit / malformed JSON) is retried - sharpening that
+            #  heuristic is its own deferred phase, and widening it here would
+            #  fork the definition.
+            if classifyListenerError(e)[1]:
+                return
             name = None
         self.repo.upsertPlaylistName(playlistId, contextType, name)
 

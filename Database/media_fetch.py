@@ -161,9 +161,20 @@ class MediaFetchMixin:
             imageUrl = self._fetchArtistImageUrl(artistId)
         except Exception as e:
             _dbmod.logger.error("Failed to lazy load artist image for %s: %s", artistId, _dbmod.parseError(e))
-            imageUrl = None
+            #< NOT 'failed'. That status means "asked, and this artist has no
+            #  picture", and lazyFetchArtistImage refuses it for good - it
+            #  returns False before reaching the reclaim tryClaimImageDownload
+            #  would otherwise allow. An exception establishes nothing of the
+            #  sort: a network blip or an open limiter backoff window (which
+            #  any user's 429 opens) would deny that artist their picture
+            #  permanently, fixable only by a migrator - which this project has
+            #  now had to ship twice for stuck 'failed' rows. Release the claim
+            #  and let a later render ask again.
+            self.repo.releaseImageClaim(artistId, _dbmod.IMAGE_KIND_ARTIST)
+            return False
 
         if not imageUrl:
+            #< a real answer: the lookup came back and carried no images
             self.repo.markImageStatus(artistId, _dbmod.IMAGE_KIND_ARTIST, _dbmod.IMAGE_STATUS_FAILED)
             return False
 

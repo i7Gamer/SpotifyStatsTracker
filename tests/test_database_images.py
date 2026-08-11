@@ -137,6 +137,48 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             self.assertFalse(result)
             mock_get.assert_not_called()
 
+    def test_a_lookup_that_never_answered_is_not_remembered_as_no_image(self):
+        """'failed' is permanent here - lazyFetchArtistImage returns False on
+        it before ever reaching tryClaimImageDownload, which would otherwise
+        allow the retry. So a network blip or an open limiter backoff window
+        denied that artist their picture for good, fixable only by a migrator
+        (which this project has now shipped twice for stuck 'failed' rows).
+
+        An exception is not an answer: the row is released so a later render
+        asks again. A clean lookup saying "no images" still marks failed - see
+        the test below."""
+        db = _bareDatabase()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artist123.jpeg"
+            with patch.object(db, "_fetchArtistImageUrl",
+                              side_effect=Exception("429 Too Many Requests")):
+                db.lazyFetchArtistImage("artist123", imagePath).result(timeout=5)
+
+            self.assertIsNone(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST))
+
+            #< and the retry actually happens rather than being refused
+            with patch.object(db, "_fetchArtistImageUrl",
+                              return_value="https://i.scdn.co/image/abc"), \
+                 patch("Database.database.requests.get", return_value=_imageResponse(_pngBytes())):
+                db.lazyFetchArtistImage("artist123", imagePath).result(timeout=5)
+
+            self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+
+    def test_an_artist_who_really_has_no_picture_is_still_remembered(self):
+        """The other half: a lookup that succeeded and said "no images" IS an
+        answer, and re-asking on every page render would be the throttling
+        problem the 'failed' check exists to prevent."""
+        db = _bareDatabase()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imagePath = Path(tmpdir) / "artist123.jpeg"
+            with patch.object(db, "_fetchArtistImageUrl", return_value=None) as lookup:
+                db.lazyFetchArtistImage("artist123", imagePath).result(timeout=5)
+
+                self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST),
+                                 IMAGE_STATUS_FAILED)
+                self.assertFalse(db.lazyFetchArtistImage("artist123", imagePath))
+                self.assertEqual(lookup.call_count, 1)
+
     def test_fetches_via_web_api_when_credentials_configured(self):
         """The actual fetch runs on the shared background executor, not
         inline - lazyFetchArtistImage() returns the submitted Future rather
@@ -292,6 +334,16 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             mock_spotipy_class.assert_called_once()
 
     def test_network_exception_is_swallowed_and_returns_false(self):
+        """DELIBERATE CHANGE: this used to assert IMAGE_STATUS_FAILED here.
+
+        The swallowing and the False are the point of the test and still hold.
+        The status is not: 'failed' is permanent (lazyFetchArtistImage refuses
+        it before the reclaim tryClaimImageDownload would allow), and the case
+        this test names - a NETWORK exception - is precisely the one that
+        establishes nothing about whether the artist has a picture. Leaving no
+        row is the never-attempted state, so a later render asks again. Do not
+        restore the old assertion; see the two tests at the top of this class
+        for the transient/definitive split it belongs to."""
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "artist999.jpeg"
@@ -300,7 +352,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
                 result = future.result(timeout=5)
 
             self.assertFalse(result)
-            self.assertEqual(db.repo.imageStatus("artist999", IMAGE_KIND_ARTIST), IMAGE_STATUS_FAILED)
+            self.assertIsNone(db.repo.imageStatus("artist999", IMAGE_KIND_ARTIST))
 
     def test_dispatch_does_not_block_the_calling_thread(self):
         """The whole point of routing this through the shared executor: an
