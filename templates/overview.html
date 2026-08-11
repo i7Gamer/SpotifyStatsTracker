@@ -13,7 +13,7 @@
 </section>
 
 <!-- Global Statistics Grid -->
-<section class="grid" style="margin-bottom: 2.5rem;">
+<section class="grid overview-stats-grid">
   <article class="card stats-card">
     <div class="stats-card-icon">📊</div>
     <div class="stats-card-info">
@@ -66,7 +66,7 @@
 <!-- Your own sync/backfill state - three badges, not a table (the full
      multi-user table with admin controls lives on /admin now). -->
 {% if is_logged_in and your_status %}
-<section class="card" style="margin-bottom: 2.5rem; min-height: auto;">
+<section class="card" style="min-height: auto;">
   <div class="sync-status-card-body">
     <div class="sync-status-header-text">
       <h2 style="margin: 0; font-family: var(--font-headings);">Your Sync Status</h2>
@@ -113,7 +113,7 @@
 
 <!-- Last.fm genre backfill: the logged-in user's own all-time coverage -->
 {% if is_logged_in and lastfm_enabled %}
-<section class="card" style="margin-bottom: 2.5rem;">
+<section class="card">
   <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
     <h2 style="margin: 0; font-family: var(--font-headings);">Genre Backfill Progress</h2>
     <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
@@ -149,7 +149,7 @@
 
 <!-- Biography backfill: the logged-in user's own coverage, artist + album -->
 {% if is_logged_in and (artist_bio_enabled or album_bio_enabled) %}
-<section class="card" style="margin-bottom: 2.5rem;">
+<section class="card">
   <div class="card-header" style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
     <h2 style="margin: 0; font-family: var(--font-headings);">Biography Backfill Progress</h2>
     <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">

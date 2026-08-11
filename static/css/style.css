@@ -1221,9 +1221,10 @@ progress::-moz-progress-bar {
                                         into the tab strip.
 
    /overview has that shape too - three cards, then an .info-section - and was
-   spared only because its cards still carry inline margins, which no selector
-   can reach. That is not protection, it is the same accident /admin had until
-   its margins were moved into this file.
+   spared only because its cards still carried inline margins, which no selector
+   can reach. That was not protection, it was the same accident /admin had until
+   its margins were moved into this file; /overview's have since followed them,
+   so it is covered by this rule now rather than immune to it.
 
    So ask what follows. A card keeps its gap unless every later sibling is a
    <script>, which is the "paints nothing" the first attempt was reaching for.
@@ -5043,6 +5044,24 @@ html.theme-red {
 .admin-stats-grid {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 18px;
+  margin-bottom: 18px;
+}
+
+/* /overview's six-tile stats grid. The same 2.5rem the admin blocks above
+   carried inline, on the page that cleanup did not reach - so this page went
+   on stacking at 40px while every other one moved to 18px.
+
+   Removing it matters beyond the rhythm: an inline margin overrides every
+   selector, so /overview was silently immune to the .page > .card rule and
+   therefore to the bug that rule shipped with. It has exactly the shape that
+   bug breaks - cards, then an .info-section after them - and was spared by
+   coincidence rather than by anything anyone decided. Now it is covered by the
+   rule like everything else, which is what makes the guard on that rule worth
+   having here.
+
+   Only the margin moves. .grid's own 20px gap is a layout it shares with the
+   other pages using it, not this page's rhythm to change. */
+.overview-stats-grid {
   margin-bottom: 18px;
 }
 

@@ -241,6 +241,8 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         #  rhythm's - all this asks is that the gap, when given, is 18px.
         ".page > .card", ".admin-subnav",
         ".admin-section-heading", ".admin-stats-grid", ".admin-card-grid",
+        #< /overview's tile grid, which the admin cleanup did not reach
+        ".overview-stats-grid",
     )
 
     def setUp(self):
@@ -293,6 +295,26 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         offenders = [
             line for line in markup.splitlines()
             if line.startswith(("<section", "<nav")) and "margin" in line
+        ]
+        self.assertEqual([], offenders)
+
+    def test_overview_stacks_its_blocks_from_the_stylesheet_not_inline(self):
+        """The same cleanup admin got, on the page that was left behind by it.
+
+        /overview stacked its four top-level blocks on an inline 2.5rem - 40px,
+        against the 18px every other page had moved to - and being inline is
+        how it stayed there: no selector can reach it and no guard could see
+        it. It is also what hid the `:nth-last-child(1 of .card)` bug on this
+        page, which is the sharper reason to remove it. /overview has exactly
+        the shape that bug breaks, and an inline margin masking a broken rule
+        is a coincidence, not a defence.
+
+        Only the MARGINS move. The min-height, the grid-template-columns and
+        the info-section's gap still sitting inline are not the rhythm."""
+        markup = _readFile(os.path.join(_ROOT, "templates", "overview.html"))
+        offenders = [
+            line for line in markup.splitlines()
+            if line.startswith("<section") and "margin" in line
         ]
         self.assertEqual([], offenders)
 
@@ -539,11 +561,11 @@ class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
         ran flush into the tab strip.
 
     /admin was the only page that visibly broke. /overview has the same shape
-    and was spared only because its cards still carry inline margins, which no
+    and was spared only because its cards still carried inline margins, which no
     selector can reach - the same accident /admin had until its own margins were
-    moved into the stylesheet. It is kept as a case here for that reason: the
-    day someone tidies those inline margins away, the rule has to already be
-    right.
+    moved into the stylesheet. Those have since been tidied away too, so
+    /overview is now covered by the rule rather than immune to it, and its case
+    below is a live one rather than a hypothetical.
 
     So the condition is neither position: a card gets a gap when a sibling that
     paints follows it. These cases are evaluated against the selector actually
@@ -562,10 +584,14 @@ class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
          '<nav class="profile-subnav admin-subnav"></nav><div id="admin-tab-body"></div>'
          '<script></script><script></script>',
          [True]),
-        ("overview's shape, minus the inline margins currently masking it",
-         '<section class="hero"></section><section class="card"></section>'
+        #< all three of overview's cards are conditional, so which one is last
+        #  varies by instance - but the .info-section after them is not, so
+        #  every card that renders has something painting below it
+        ("overview: the conditional cards, then the info section",
+         '<section class="hero"></section><section class="grid overview-stats-grid"></section>'
+         '<section class="card"></section><section class="card"></section>'
          '<section class="card"></section><section class="grid info-section"></section>',
-         [True, True]),
+         [True, True, True]),
         ("merge_review / playlists: the last card, then only scripts",
          '<div class="card"></div><script></script>',
          [False]),
