@@ -56,7 +56,23 @@
                 would collapse into a space and detach the closing period from
                 the sentence ("The Best Of split ."). Every other join in this
                 block is trimmed for the same reason. -#}
-            <button type="submit" class="hero-split-button" title="Not the same recording? Split this release back out.">split</button></form>{% endif %}{% endfor %}.
+            {#- An ICON, not the word "split": spelled out it joined the prose
+                right after the album link and read as part of the title
+                ("Also released on Mono Masters split and ..."). The glyph
+                contributes no words, so the sentence is the same one a
+                non-admin reads.
+
+                Which means the accessible name has to be carried by
+                aria-label - there are two of these on a two-release song and
+                both fire a destructive instance-wide action, so "button"
+                twice over is not enough to tell them apart. Same rule, and
+                same reason, as the main-version radio on /admin/merge-review.
+                The SVG is aria-hidden so it cannot compete with that name. -#}
+            <button type="submit" class="hero-split-button"
+              aria-label="Split {{ release.album.name }} out of this song"
+              title="Not the same recording? Split this release back out."><svg
+              viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M3 3 L9 9 M9 3 L3 9"
+              stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button></form>{% endif %}{% endfor %}.
         Plays across all of them are counted together.
       </div>
       {% endif %}

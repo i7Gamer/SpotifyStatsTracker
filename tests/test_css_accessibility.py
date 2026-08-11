@@ -463,6 +463,63 @@ class TestAdminUtilityClasses(unittest.TestCase):
         self.assertIn('max-width: 100%;', select_block)
 
 
+class TestNativeControlsFollowTheTheme(unittest.TestCase):
+    """accent-color was set on .filter-checkbox alone, so every checkbox and
+    radio outside that one class rendered in the browser's default blue on a
+    themed page - the merge-review main-version radio and both Profile
+    preference checkboxes among them. A base rule covers the ones that exist
+    and the ones added later, which is how this drifted in the first place."""
+
+    def setUp(self):
+        self.css = _readFile(_CSS_PATH)
+
+    def test_every_checkbox_and_radio_is_themed(self):
+        import re
+        match = re.search(
+            r'input\[type="checkbox"\]\s*,\s*input\[type="radio"\]\s*\{([^}]*)\}', self.css)
+        self.assertIsNotNone(match, "no base accent-color rule for checkbox/radio")
+        self.assertIn("accent-color: var(--accent)", match.group(1))
+
+    def test_it_uses_the_real_accent_variable(self):
+        """--accent-color is defined nowhere; only --accent is per-theme."""
+        import re
+        match = re.search(
+            r'input\[type="checkbox"\]\s*,\s*input\[type="radio"\]\s*\{([^}]*)\}', self.css)
+        self.assertNotIn("--accent-color", match.group(1))
+
+
+class TestSplitControlIsAnIconButton(unittest.TestCase):
+    """The split control sits inline in the "Also released on ..." sentence.
+    As a bare underlined word it read as part of the album title; as an icon it
+    has to look like a control and be reachable by keyboard."""
+
+    def setUp(self):
+        self.css = _readFile(_CSS_PATH)
+        self.block = None
+        import re
+        match = re.search(r"\.hero-split-button\s*\{([^}]*)\}", self.css)
+        self.assertIsNotNone(match, ".hero-split-button missing from style.css")
+        self.block = match.group(1)
+
+    def test_it_is_a_centred_round_control_not_underlined_text(self):
+        self.assertIn("inline-flex", self.block)
+        self.assertIn("border-radius: 50%", self.block)
+        #< the old treatment, which is what made it read as part of the title
+        self.assertNotIn("text-decoration: underline dashed", self.block)
+
+    def test_hover_and_keyboard_focus_get_the_same_affordance(self):
+        """Styling :hover alone leaves a keyboard user with no idea where they
+        are - the same gap the nav dropdowns were fixed for above."""
+        self.assertIn(".hero-split-button:hover, .hero-split-button:focus-visible", self.css)
+
+    def test_the_tint_uses_the_real_accent_variable(self):
+        """--accent-color is defined nowhere and silently falls back to rose;
+        tints go through color-mix on --accent."""
+        rule = self.css.split(".hero-split-button:hover, .hero-split-button:focus-visible {")[1].split("}")[0]
+        self.assertIn("var(--accent)", rule)
+        self.assertNotIn("--accent-color", rule)
+
+
 class TestPageCardGapSkipsTheLastCard(unittest.TestCase):
     """The between-blocks gap must be withheld from the LAST CARD, which is
     not the same thing as the last child.

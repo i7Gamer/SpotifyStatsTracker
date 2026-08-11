@@ -53,12 +53,75 @@ def _heroSentence(isAdmin, releases=_RELEASES):
     return " ".join(re.sub(r"<[^>]+>", "", rendered).split())
 
 
+def _heroMarkup(isAdmin=True, releases=_RELEASES):
+    """The block's raw HTML, for assertions about the control rather than the
+    prose."""
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(_TEMPLATES), autoescape=True)
+    env.globals["url_for"] = lambda *args, **kwargs: "#"
+    env.globals["csrf_token"] = lambda: "token"
+    source = env.loader.get_source(env, "song_detail.html")[0]
+    start = source.index('<div class="hero-merged-releases">')
+    end = source.index("</div>", start) + len("</div>")
+    return env.from_string(source[start:end]).render(mergedReleases=releases, isAdmin=isAdmin)
+
+
 class MergedReleasesSentenceTestCase(unittest.TestCase):
     def test_the_period_is_not_orphaned_from_the_last_release(self):
-        sentence = _heroSentence(isAdmin=True)
+        """The original defect: a newline before </form> renders as a space in
+        an inline form, so the period drifted off the sentence.
 
-        self.assertNotIn(" .", sentence, sentence)
-        self.assertIn("The Best Of split.", sentence)
+        Asserted on the MARKUP now that the control is an icon. Stripping tags
+        to nothing stopped modelling what a reader sees the moment the control
+        carried no text of its own: the deliberate space between the album
+        link and the icon survives that stripping and looks like the very
+        defect this guards, while on screen it is just the gap the icon sits
+        in. What must still hold is that nothing separates the control from
+        the period."""
+        markup = _heroMarkup(isAdmin=True)
+
+        self.assertIn("</button></form>.", markup)
+        self.assertNotIn(" .", _heroSentence(isAdmin=False))
+
+    def test_the_control_contributes_no_words_to_the_sentence(self):
+        """It used to spell itself "split", lowercase, immediately after the
+        album link - so the sentence read "Also released on Mono Masters split
+        and The Best Of split." and the control looked like part of the title.
+        An icon says the same thing without joining the prose."""
+        admin = _heroSentence(isAdmin=True)
+
+        self.assertNotIn("split", admin.lower(), admin)
+        #< the ONLY difference from the plain sentence is the space the icon
+        #  occupies; no words are added or removed
+        self.assertEqual(admin.replace(" .", "."), _heroSentence(isAdmin=False))
+
+
+class SplitControlTestCase(unittest.TestCase):
+    """An icon-only button has no text to name it, so the accessible name has
+    to come from somewhere - and there are TWO of them on a two-release song,
+    both firing a destructive instance-wide action. "split, button" twice over
+    tells a screen-reader user nothing about which release each one detaches.
+
+    The sibling control on /admin/merge-review already settled this: its radio
+    carries an aria-label naming the release, with a comment saying why the
+    neighbouring text is not enough."""
+
+    def test_each_control_names_the_release_it_would_split(self):
+        markup = _heroMarkup()
+
+        self.assertIn("Split Psycho Killer (Single) out of this song", markup)
+        self.assertIn("Split The Best Of out of this song", markup)
+
+    def test_the_glyph_is_hidden_from_the_accessible_name(self):
+        """Otherwise the SVG's own content competes with the aria-label."""
+        markup = _heroMarkup()
+
+        self.assertEqual(markup.count('aria-hidden="true"'), len(_RELEASES))
+
+    def test_a_reader_who_cannot_split_gets_no_control_at_all(self):
+        markup = _heroMarkup(isAdmin=False)
+
+        self.assertNotIn("<button", markup)
+        self.assertNotIn("aria-label", markup)
 
     def test_the_same_holds_for_a_reader_who_sees_no_split_control(self):
         sentence = _heroSentence(isAdmin=False)

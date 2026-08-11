@@ -2557,8 +2557,16 @@ progress::-moz-progress-bar {
   cursor: pointer;
 }
 
-.filter-checkbox input[type="checkbox"] {
+/* Every native tick, not just this one class. accent-color lived only on
+   .filter-checkbox, so anything outside it - the merge-review main-version
+   radio, both Profile preference checkboxes - rendered in the browser's
+   default blue on a themed page. A base rule covers the controls that exist
+   and the ones added later, which is how it drifted in the first place. */
+input[type="checkbox"], input[type="radio"] {
   accent-color: var(--accent);
+}
+
+.filter-checkbox input[type="checkbox"] {
   width: 16px;
   height: 16px;
   cursor: pointer;
@@ -5073,16 +5081,52 @@ html.theme-red {
 
 /* The song hero's "Also released on ..." line (only rendered for a merged
    song), and the admin-only split control inline in it. The form has to sit
-   inside the sentence, so both it and its button render inline and the button
-   reads as a small dashed action rather than a full button. */
+   inside the sentence, so both it and its button render inline. */
 .hero-merged-releases { color: var(--muted); font-size: 0.95rem; margin-top: 0.4rem; }
 .hero-merged-releases a { color: var(--accent); }
 .hero-split-form { display: inline; }
+/* The split control. It used to be the word "split" in dashed-underlined muted
+   text, sitting against the album link - which read as part of the title
+   ("Also released on Mono Masters split and ..."), not as a control. A round
+   icon button reads as a control at a glance and contributes no words, so the
+   sentence is the same one a non-admin sees.
+
+   Sized in em so it tracks the sentence, and against its NEIGHBOUR rather than
+   to a 44px target: it sits a fraction of a space from the album link, and a
+   44px hit area would overhang the link and eat clicks meant for it - the same
+   measurement the admin setting-hint was resized by. */
 .hero-split-button {
-  background: none; border: none; padding: 0; cursor: pointer;
-  color: var(--muted); font-size: 0.8em; text-decoration: underline dashed;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25em;
+  height: 1.25em;
+  padding: 0;
+  margin-left: 0.2em;
+  /* `middle`, not a hand-tuned em offset: it aligns the circle's centre to the
+     text's own x-height midpoint, so the control stays centred on the sentence
+     at any font size. Two guessed offsets (-0.2em, -0.28em) both left it
+     hanging 3-5px below the album link - measured, not eyeballed. */
+  vertical-align: middle;
+  /* NOT var(--border): at rgba(255,255,255,0.08) the circle disappeared into
+     the hero's gradient and the control read as a smudge. Tied to the icon's
+     own colour instead, so it strengthens with the text it belongs to. */
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
 }
-.hero-split-button:hover { color: var(--accent); }
+.hero-split-button svg { width: 0.66em; height: 0.66em; display: block; }
+/* :focus-visible alongside :hover - styling only the mouse state leaves a
+   keyboard user with no idea where they are, the same gap the nav dropdowns
+   were fixed for. */
+.hero-split-button:hover, .hero-split-button:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
 
 /* The merge review queue. One row per release in a candidate group, all the
    same shape: the release currently keeping the song's page wears the badge
