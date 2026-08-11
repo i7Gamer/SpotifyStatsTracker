@@ -1218,7 +1218,12 @@ progress::-moz-progress-bar {
                                         user table is the last .page > .card,
                                         but the sub-nav and the whole tab body
                                         come after it, so the table ran flush
-                                        into the tab strip. /overview likewise.
+                                        into the tab strip.
+
+   /overview has that shape too - three cards, then an .info-section - and was
+   spared only because its cards still carry inline margins, which no selector
+   can reach. That is not protection, it is the same accident /admin had until
+   its margins were moved into this file.
 
    So ask what follows. A card keeps its gap unless every later sibling is a
    <script>, which is the "paints nothing" the first attempt was reaching for.

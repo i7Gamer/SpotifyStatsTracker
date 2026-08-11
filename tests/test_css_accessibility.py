@@ -536,7 +536,14 @@ class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
         follow. On /admin it does not: the user table is the last .page > .card,
         but a sub-nav and the whole tab body come after it, so the gap was
         withheld from a card with two painting blocks underneath and the table
-        ran flush into the tab strip. /overview is the same shape.
+        ran flush into the tab strip.
+
+    /admin was the only page that visibly broke. /overview has the same shape
+    and was spared only because its cards still carry inline margins, which no
+    selector can reach - the same accident /admin had until its own margins were
+    moved into the stylesheet. It is kept as a case here for that reason: the
+    day someone tidies those inline margins away, the rule has to already be
+    right.
 
     So the condition is neither position: a card gets a gap when a sibling that
     paints follows it. These cases are evaluated against the selector actually
@@ -555,7 +562,7 @@ class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
          '<nav class="profile-subnav admin-subnav"></nav><div id="admin-tab-body"></div>'
          '<script></script><script></script>',
          [True]),
-        ("overview: the last card, then the info section",
+        ("overview's shape, minus the inline margins currently masking it",
          '<section class="hero"></section><section class="card"></section>'
          '<section class="card"></section><section class="grid info-section"></section>',
          [True, True]),
