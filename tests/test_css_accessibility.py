@@ -235,10 +235,11 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         ".chart-section:not(:last-of-type)",
         #< Admin's blocks. These used to carry their gaps as inline rem
         #  margins, which no rule could reach and no test could see - one page
-        #  running 1.25/1.5/2.5rem at once. :not(:last-child) because a
-        #  trailing block needs no gap: .page's 40px bottom is the run-out,
-        #  and without it /merge-review's last card would gain one.
-        ".page > .card:not(:nth-last-child(1 of .card))", ".admin-subnav",
+        #  running 1.25/1.5/2.5rem at once. The card gap is the plain rule; the
+        #  companion that withholds it from a card with nothing painting after
+        #  it is TestPageCardGapFollowsWhatComesNext's subject, not the
+        #  rhythm's - all this asks is that the gap, when given, is 18px.
+        ".page > .card", ".admin-subnav",
         ".admin-section-heading", ".admin-stats-grid", ".admin-card-grid",
     )
 
@@ -520,38 +521,121 @@ class TestSplitControlIsAnIconButton(unittest.TestCase):
         self.assertNotIn("--accent-color", rule)
 
 
-class TestPageCardGapSkipsTheLastCard(unittest.TestCase):
-    """The between-blocks gap must be withheld from the LAST CARD, which is
-    not the same thing as the last child.
+class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
+    """The between-blocks gap belongs to a card that has something after it.
 
-    A bare :last-child reads the markup, and six content blocks end with
-    <script> tags - children of .page like any other, painting nothing. The
-    last card was therefore never :last-child on those pages and collected a
-    gap the rule exists to withhold, leaving 58px under it against 40px
-    everywhere else. Scoping the position to `.card` siblings says what was
-    meant; a future simplification back to :last-child re-opens it."""
+    Two selectors have now been wrong here, and both were wrong the same way:
+    they asked where the card SITS instead of what FOLLOWS it.
+
+      - `:not(:last-child)` read the markup. Pages end their content block with
+        <script> tags - children of .page like any other, painting nothing - so
+        the last card was never :last-child and collected the gap the rule
+        exists to withhold, leaving 58px under it against 40px elsewhere.
+      - `:not(:nth-last-child(1 of .card))` fixed that by asking "is this the
+        last CARD", which is only the same question when nothing but scripts
+        follow. On /admin it does not: the user table is the last .page > .card,
+        but a sub-nav and the whole tab body come after it, so the gap was
+        withheld from a card with two painting blocks underneath and the table
+        ran flush into the tab strip. /overview is the same shape.
+
+    So the condition is neither position: a card gets a gap when a sibling that
+    paints follows it. These cases are evaluated against the selector actually
+    in the stylesheet, so a rule that regresses to either positional form fails
+    here rather than in someone's browser."""
+
+    #< the four page-level shapes that exist today, as their .page child lists.
+    #  Kept as fixtures rather than parsed out of the templates: Jinja branches
+    #  make "the children of .page" un-answerable from the source (a card in an
+    #  {% if %} is present or absent per request), and the shapes are what the
+    #  rule turns on. test_the_admin_shape_is_still_real re-checks the one that
+    #  broke against the live template.
+    CASES = (
+        ("admin: the user table, then the sub-nav and the tab body",
+         '<section class="hero"></section><section class="card"></section>'
+         '<nav class="profile-subnav admin-subnav"></nav><div id="admin-tab-body"></div>'
+         '<script></script><script></script>',
+         [True]),
+        ("overview: the last card, then the info section",
+         '<section class="hero"></section><section class="card"></section>'
+         '<section class="card"></section><section class="grid info-section"></section>',
+         [True, True]),
+        ("merge_review / playlists: the last card, then only scripts",
+         '<div class="card"></div><script></script>',
+         [False]),
+        ("import: the last card, then nothing at all",
+         '<section class="hero"></section><section class="card import-card"></section>',
+         [False]),
+    )
 
     def setUp(self):
         self.css = _readFile(_CSS_PATH)
 
-    def test_the_gap_is_scoped_to_card_siblings(self):
-        self.assertIn('.page > .card:not(:nth-last-child(1 of .card))', self.css)
-        #< the bare form is the regression: it is what read the markup
-        self.assertNotIn('.page > .card:not(:last-child)', self.css)
+    _NO_GAP = ("0", "0px", "0rem", "0em")
 
-    def test_a_page_that_ends_with_a_script_is_why(self):
-        """The reason, on one real page: merge_review's content block puts its
-        <script> after the last card, so the card is not the last child. Kept
-        to one page deliberately - the selector is correct either way, and a
-        list of six would fail the day any of them is restructured."""
+    def _gapRules(self):
+        """Every `.page > .card...` rule that sets margin-bottom, in source
+        order, as (selector, value).
+
+        Read rather than hardcoded so the cases below test the shipped rule -
+        including how many rules it takes to say it. Finding none is itself the
+        failure: the gap would be coming from somewhere this guard is not
+        looking, and every case would pass by agreeing on nothing."""
         import re
 
-        body = _readFile(os.path.join(_ROOT, "templates", "merge_review.html"))
-        block = re.search(r'{%\s*block content\s*%}(.*?){%\s*endblock', body, re.S)
-        self.assertIsNotNone(block)
+        rules = []
+        for selector, body in re.findall(r'^(\.page > \.card[^{]*?)\s*\{([^}]*)\}',
+                                         self.css, re.M | re.S):
+            declared = re.search(r'margin-bottom:\s*([^;]+);', body)
+            if declared:
+                rules.append((selector.strip(), declared.group(1).strip()))
+        self.assertTrue(rules, "no `.page > .card` rule sets margin-bottom")
+        return rules
 
-        tail = block.group(1).rstrip()
-        self.assertTrue(tail.endswith("</script>"), tail[-80:])
+    def _cardsWithAGap(self, children):
+        import bs4
+
+        soup = bs4.BeautifulSoup(f'<main class="page">{children}</main>', "html.parser")
+        gaps = []
+        for card in soup.select(".page > .card"):
+            value = None
+            for selector, declared in self._gapRules():
+                #< by identity, not equality: two `<section class="card"></section>`
+                #  siblings are EQUAL to bs4 (a Tag compares by its markup), so a
+                #  set of matched elements collapses them and every card reads as
+                #  selected the moment one of them is
+                if id(card) in {id(hit) for hit in soup.select(selector)}:
+                    #< last match wins, which is the cascade here because the
+                    #  override is BOTH later and more specific - :not(:has(...))
+                    #  carries the specificity of its innermost argument, so it
+                    #  beats the bare `.page > .card` from either position
+                    value = declared
+            gaps.append(value is not None and value not in self._NO_GAP)
+        return gaps
+
+    def test_a_card_with_something_painting_after_it_gets_the_gap(self):
+        for label, children, expected in self.CASES:
+            with self.subTest(page=label):
+                self.assertEqual(self._cardsWithAGap(children), expected)
+
+    def test_the_gap_is_the_page_rhythm(self):
+        """The cases above only check WHICH cards get a gap; this pins what the
+        gap is, so the rule cannot pass by handing out some other number."""
+        given = [value for _, value in self._gapRules() if value not in self._NO_GAP]
+
+        self.assertEqual(set(given), {"18px"})
+
+    def test_the_admin_shape_is_still_real(self):
+        """The fixture above claims /admin puts painting blocks after its last
+        page-level card. If that ever stops being true the case is stale, and a
+        stale case would go on passing while testing nothing."""
+        body = _readFile(os.path.join(_ROOT, "templates", "admin.html"))
+
+        table = body.index('<section class="card" style="overflow-x: auto;">')
+        subnav = body.index('<nav class="profile-subnav admin-subnav"')
+        tabBody = body.index('<div id="admin-tab-body"')
+
+        self.assertLess(table, subnav)
+        self.assertLess(subnav, tabBody)
 
 
 

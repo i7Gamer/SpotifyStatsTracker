@@ -18,3 +18,11 @@ pytest-xdist==3.8.0
 # endpoints were found this way, at 78% with no test at all. Not needed to
 # RUN the suite, but declared so `coverage run -m pytest` works from a clone.
 coverage==7.15.2
+
+# A CSS selector engine (soupsieve, which beautifulsoup4 pulls in) so the
+# page-gap guard can ask what the stylesheet's rule ACTUALLY selects instead of
+# grepping for its text. Two positional spellings of that rule had shipped
+# wrong, both passing a string-match guard that could not see whom they hit.
+# It was already installed here as somebody else's transitive dependency, which
+# is exactly why it needed declaring: nothing guaranteed a fresh clone got it.
+beautifulsoup4==4.15.0

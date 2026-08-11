@@ -1199,18 +1199,41 @@ progress::-moz-progress-bar {
 }
 
 /* A card stacking directly on the page (Admin's banners and its user table)
-   rather than inside a container, same idiom as .track-list above. The
-   :not() is the point of the rule as much as the margin is: a block with
-   nothing after it needs no gap, and .page's 40px bottom is the run-out.
+   rather than inside a container, same idiom as .track-list above. Withholding
+   the gap is as much the point as giving it: a block with nothing after it
+   needs no gap, and .page's 40px bottom is the run-out.
 
-   Scoped with `of .card` rather than a bare :last-child because six pages
-   (admin, charts, compare, genres, import, merge_review) end their content
-   block with <script> tags, which are children of .page like any other - so
-   the last CARD was not the last CHILD, and picked up a gap this rule exists
-   to withhold. The scripts paint nothing, so the last card is the last block
-   whatever follows it in the markup. */
-.page > .card:not(:nth-last-child(1 of .card)) {
+   Two positional spellings of that have now been wrong, both the same way -
+   they asked where the card SITS instead of what FOLLOWS it:
+
+     :not(:last-child)                  read the markup. Pages end their content
+                                        block with <script> tags, children of
+                                        .page like any other and painting
+                                        nothing, so the last card was never
+                                        :last-child and collected the gap -
+                                        58px under it against 40px elsewhere.
+     :not(:nth-last-child(1 of .card))  asked "is this the last CARD", which is
+                                        the same question only when nothing but
+                                        scripts follow. On /admin it is not: the
+                                        user table is the last .page > .card,
+                                        but the sub-nav and the whole tab body
+                                        come after it, so the table ran flush
+                                        into the tab strip. /overview likewise.
+
+   So ask what follows. A card keeps its gap unless every later sibling is a
+   <script>, which is the "paints nothing" the first attempt was reaching for.
+
+   Written as an override rather than folded into one :has() selector so the
+   degradation is the harmless direction: where :has() is not understood the
+   whole rule containing it is dropped, and dropping THIS one leaves every card
+   with a gap - the old 58px run-out - instead of leaving every card without
+   one. */
+.page > .card {
   margin-bottom: 18px;
+}
+
+.page > .card:not(:has(~ :not(script))) {
+  margin-bottom: 0;
 }
 
 .track-list + .track-list {
