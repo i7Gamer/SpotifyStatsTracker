@@ -662,6 +662,28 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
 
             self.assertIsNone(db.repo.imageStatus("t1", IMAGE_KIND_TRACK))
 
+    def test_the_4xx_that_mean_ask_again_later_are_transient(self):
+        """408, 425 and 429 are 4xx by number and 5xx by meaning.
+
+        The rule underneath is "a 4xx is the server telling us this URL will
+        not work", which is true of 404 and 403 and precisely untrue of these
+        three - each one says come back. 429 is the one that happens: it is
+        what a CDN returns under the rate limiting any account's burst can
+        open, and the artist half records 'failed' permanently, so a single
+        busy moment would cost an artist their picture until someone shipped a
+        migrator to clear it. That is the harm releaseImageClaim was added to
+        stop; it just could not see these through the status test."""
+        import requests as req
+        for status in (408, 425, 429):
+            with self.subTest(status=status):
+                db = self._makeDb({}, [])
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    self._artistAfter(db, tmpdir, {"side_effect": self._httpError(status)})
+
+                    self.assertIsNone(db.repo.imageStatus("art-1", IMAGE_KIND_ARTIST))
+                    #< the whole point: the next render may ask again
+                    self.assertTrue(db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST))
+
     def test_a_dead_url_is_still_remembered_as_failed(self):
         """The definitive half: a 404 IS the answer, so the artist path goes on
         refusing it and the render stops asking."""

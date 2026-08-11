@@ -33,6 +33,14 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MEDIA_FETCH_HTTP_TIMEOUT_SECONDS = 10
 
 
+# The 4xx that ask us back rather than turning us away: Request Timeout, Too
+# Early, Too Many Requests. They sit on the client side of the number and the
+# server side of the meaning, so the "a 4xx is a verdict" rule below has to step
+# around them by name. 429 is the one that actually happens - it is what a CDN
+# returns under rate limiting, which any account's burst can open.
+RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429})
+
+
 def _isTransientFetchError(exc: Exception) -> bool:
     """Whether this failure left us knowing nothing about the image.
 
@@ -46,10 +54,17 @@ def _isTransientFetchError(exc: Exception) -> bool:
     this URL is not going to work: a 404 cover stays 404, and re-asking is the
     load 'failed' exists to stop. 5xx, timeouts and connection resets carry no
     such answer - `response` is absent on those, which is what the status
-    lookup falls through on."""
+    lookup falls through on.
+
+    RETRYABLE_HTTP_STATUSES are the exception to the exception. They are 4xx
+    that mean "later", not "no", and treating one as a verdict is the exact harm
+    this function was written to prevent - an artist losing their picture for
+    good over a busy minute, recoverable only by shipping a migrator."""
     if not isinstance(exc, _dbmod.requests.exceptions.RequestException):
         return False
     status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in RETRYABLE_HTTP_STATUSES:
+        return True
     return not (status and 400 <= status < 500)
 
 
