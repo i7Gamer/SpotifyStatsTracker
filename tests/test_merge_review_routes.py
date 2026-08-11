@@ -273,6 +273,42 @@ class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
             ("B" * 22,)).fetchone()
         self.assertEqual(row["reason"], "manual-merge")
 
+    def test_the_same_race_the_other_way_round_is_answered_the_same_way(self):
+        """The stale-page race has two shapes and only one was pre-checked.
+        The route tests the MEMBER; the repo also refuses a counterpart that
+        has been merged INTO the member (a rejection born contradicted), and
+        that ValueError fell through to abort(400) - a bare error page for the
+        admin who did nothing wrong, where the mirror case gets an explanation.
+
+        Reachable from the page's own picker: the queue offers B-as-main in one
+        click, so a second tab (or the matcher, once the backfill fills an ISRC
+        the pair did not share at render time) can merge A into B between this
+        render and this click."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+        #< A merged INTO B - the row on screen still says member=B, canonical=A
+        dash.repo.mergeTrackManually("A" * 22, "B" * 22, decidedBy="alice")
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "B" * 22, "canonical": "A" * 22})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("merged", unquote_plus(resp.headers["Location"]).lower())
+        #< and nothing was recorded either way
+        self.assertEqual(dash.repo.getDismissedMergeCandidates()["total"], 0)
+
+    def test_crafted_junk_in_the_counterpart_is_still_a_400(self):
+        """The friendly redirect is for the race, not for a post nothing on the
+        page could have produced - the repo's in-transaction ValueError stays
+        the backstop."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/reject",
+                             data={"member": "B" * 22, "canonical": "Z" * 22})
+
+        self.assertEqual(resp.status_code, 400)
+
     def test_an_unknown_track_is_a_400_not_a_crash(self):
         dash = self._makeApp()
         self._seedPair(dash)

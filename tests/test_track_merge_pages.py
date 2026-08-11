@@ -17,6 +17,7 @@ from conftest import DatabaseTestCase
 
 SINGLE = "A" * 22
 ALBUM_CUT = "B" * 22
+OTHER = "C" * 22
 
 
 class TestOtherReleasesOfTheSameSong(DatabaseTestCase):
@@ -138,6 +139,27 @@ class TestTheSongPageRedirectsAMergedId(unittest.TestCase):
         resp = self._page(ALBUM_CUT, query="?view=history")
 
         self.assertIn("view=history", resp.headers["Location"])
+
+    def test_a_query_param_that_collides_with_the_route_does_not_500(self):
+        """The query string is splatted into url_for beside an explicit
+        track_id, so a param of that name reaches it twice - TypeError, an
+        unhandled 500 on a URL anyone can construct off an "Also released on"
+        link. The redirect must still name the canonical, from the route's
+        answer rather than from whatever the caller sent."""
+        resp = self._page(ALBUM_CUT, query="?track_id=" + OTHER)
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(ALBUM_CUT, resp.headers["Location"])
+        self.assertNotIn(OTHER, resp.headers["Location"])
+
+    def test_a_reserved_url_for_keyword_does_not_500_either(self):
+        """Same splat, the other half: url_for's keyword-only _method/_scheme/
+        _external/_anchor are not query params, and binding one sends the URL
+        builder looking for a rule this GET-only endpoint has not got."""
+        for param in ("_method=POST", "_external=1", "_scheme=gopher"):
+            resp = self._page(ALBUM_CUT, query="?" + param)
+
+            self.assertEqual(resp.status_code, 302, param)
 
 
 if __name__ == "__main__":

@@ -722,11 +722,23 @@ def register(app, dashboard):
         #  are told where the "no" for a merged track lives. The repo's own
         #  in-transaction check stays the backstop for anything slipping this
         #  read.
+        stale = None
         if member and dashboard.repo.resolveCanonicalTrackId(member) != member:
-            return redirect(url_for(
-                "adminMergeReview", main=canonical or None,
-                error="That release was merged after this page loaded, so nothing was "
-                      "recorded. A wrong merge can be split from the song's own page."))
+            stale = ("That release was merged after this page loaded, so nothing was "
+                     "recorded. A wrong merge can be split from the song's own page.")
+        elif canonical and dashboard.repo.resolveCanonicalTrackId(canonical) == member:
+            #< the mirror shape, and the same race: the counterpart was merged
+            #  INTO the release being ruled on, so the pair is already one song
+            #  and the "no" is contradicted before it is written.
+            #  dismissMergeCandidate refuses it in-transaction, which reached
+            #  abort(400) - a bare error page for the admin who did nothing
+            #  wrong, where the shape above gets an explanation. The repo's
+            #  ValueError stays the backstop for a post nothing rendered.
+            stale = ("Those two releases were merged into one after this page loaded, so "
+                     "nothing was recorded. A wrong merge can be split from the song's "
+                     "own page.")
+        if stale:
+            return redirect(url_for("adminMergeReview", main=canonical or None, error=stale))
         try:
             dashboard.repo.dismissMergeCandidate(
                 member, decidedBy=username, againstId=canonical)

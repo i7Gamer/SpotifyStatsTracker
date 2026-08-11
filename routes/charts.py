@@ -1399,7 +1399,16 @@ def register(app, dashboard):
         if (answeredId and answeredId != track_id
                 and not request.headers.get("HX-Request")
                 and request.args.get("ajax") != "true"):
-            return redirect(url_for("songDetailPage", track_id=answeredId, **request.args))
+            #< the query string is the caller's, so it cannot be splatted in
+            #  raw: a param named track_id reaches url_for twice (TypeError),
+            #  and url_for's keyword-only _method/_scheme/_external/_anchor are
+            #  not query params at all - _method=POST sends the builder looking
+            #  for a rule this GET-only endpoint has not got (BuildError).
+            #  Either escapes the view as a 500, on a URL anyone can build off
+            #  an "Also released on" link. The page's own id always wins.
+            carried = {key: value for key, value in request.args.items()
+                       if key != "track_id" and not key.startswith("_")}
+            return redirect(url_for("songDetailPage", track_id=answeredId, **carried))
 
         groupByParam = request.args.get("groupBy", "")   #< raw: the select keeps showing Auto
         # Four modes share this route, and the marker differs by kind. The one
