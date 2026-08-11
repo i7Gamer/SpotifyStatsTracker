@@ -617,6 +617,22 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
         response.status_code = status
         return req.exceptions.HTTPError(f"{status} error", response=response)
 
+    def test_a_failed_track_cover_is_reclaimable_but_a_failed_artist_is_not(self):
+        """The asymmetry this whole class turns on, pinned because a docstring
+        in database.py asserted the opposite for years ("_saveImg's claim gate
+        then refuses to retry it") and that sentence is what makes a reader
+        conclude track covers are lost forever. They are not: the claim gate
+        re-claims a 'failed' row, and getNowPlaying re-drives saveTrackImg on
+        every poll. Only lazyFetchArtistImage refuses, before it ever reaches
+        the gate."""
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db.repo.markImageStatus("t9", IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED)
+            db.repo.markImageStatus("a9", IMAGE_KIND_ARTIST, IMAGE_STATUS_FAILED)
+
+            self.assertTrue(db.repo.tryClaimImageDownload("t9", IMAGE_KIND_TRACK))
+            self.assertFalse(db.lazyFetchArtistImage("a9", Path(tmpdir) / "a9.jpeg"))
+
     def _artistAfter(self, db, tmpdir, failure):
         """Claim an artist image the way _saveImg does, then fail the download."""
         db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST)

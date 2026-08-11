@@ -130,9 +130,18 @@ def _imageUrlFromConnectMeta(meta) -> str | None:
     the absolute CDN URL directly, which must be passed through untouched.
     Splitting that on its last ':' splits the SCHEME, so it used to come back
     as https://i.scdn.co/image///i.scdn.co/image/<hash> and 404 forever (7 such
-    downloads failed on 2026-07-23). Worse than a transient miss: the failure
-    marks the image IMAGE_STATUS_FAILED and _saveImg's claim gate then refuses
-    to retry it, so that album's cover was permanently absent.
+    downloads failed on 2026-07-23). Worse than a transient miss: every retry
+    rebuilt the SAME broken URL, so the cover stayed absent however many times
+    it was re-attempted, and migrate1_40_0 had to clear the rows by hand.
+
+    (This used to say the retry never happened - that _saveImg's claim gate
+    refuses a 'failed' row. It does not: tryClaimImageDownload re-claims one
+    deliberately, and getNowPlaying re-drives saveTrackImg on every poll. Only
+    lazyFetchArtistImage treats 'failed' as final, and it is not in this path.
+    The sentence is corrected rather than deleted because believing it is what
+    makes a reader think a blip costs a cover permanently - see
+    tests/test_database_images.py's
+    test_a_failed_track_cover_is_reclaimable_but_a_failed_artist_is_not.)
 
     Anything that is neither shape returns None rather than being run through
     the prefix on the off chance it works - guessing is what produced the bad
