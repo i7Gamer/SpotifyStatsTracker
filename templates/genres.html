@@ -67,15 +67,15 @@
       <div class="filter-group">
         <label for="interval">Time Period:</label>
         <select id="interval" name="interval" onchange="updateGenresIntervalFilter()">
+          <option value="all time" {% if interval == 'all time' %}selected{% endif %}>All Time</option>
           <option value="today" {% if interval == 'today' %}selected{% endif %}>Today</option>
           <option value="day" {% if interval == 'day' %}selected{% endif %}>Yesterday</option>
           <option value="week" {% if interval == 'week' %}selected{% endif %}>Last Week</option>
           <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
           <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
           <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
-          <option value="all time" {% if interval == 'all time' %}selected{% endif %}>All Time</option>
           <option value="custom" {% if interval == 'custom' %}selected{% endif %}>Custom Date Range</option>
-        </select>
+</select>
       </div>
 
       {# `disabled` rather than only hidden: a disabled control is not

@@ -66,27 +66,27 @@
     <div class="form-group">
       <label for="defaultDashboardWindow">Default Time Window (Dashboard, Insights, Compare)</label>
       <select id="defaultDashboardWindow" name="default_dashboard_window" class="theme-selector profile-select">
+        <option value="all time" {% if default_window == 'all time' %}selected{% endif %}>All Time</option>
         <option value="today" {% if default_window == 'today' %}selected{% endif %}>Today</option>
         <option value="day" {% if default_window == 'day' %}selected{% endif %}>Yesterday</option>
         <option value="week" {% if default_window == 'week' %}selected{% endif %}>Last Week</option>
         <option value="month" {% if default_window == 'month' %}selected{% endif %}>Last Month</option>
         <option value="year" {% if default_window == 'year' %}selected{% endif %}>Last Year</option>
         <option value="5years" {% if default_window == '5years' %}selected{% endif %}>Last 5 Years</option>
-        <option value="all time" {% if default_window == 'all time' %}selected{% endif %}>All Time</option>
-      </select>
+</select>
     </div>
 
     <div class="form-group">
       <label for="defaultTopListWindow">Default Time Window (Top Lists)</label>
       <select id="defaultTopListWindow" name="default_top_list_window" class="theme-selector profile-select">
+        <option value="all time" {% if default_top_list_window == 'all time' %}selected{% endif %}>All Time</option>
         <option value="today" {% if default_top_list_window == 'today' %}selected{% endif %}>Today</option>
         <option value="day" {% if default_top_list_window == 'day' %}selected{% endif %}>Yesterday</option>
         <option value="week" {% if default_top_list_window == 'week' %}selected{% endif %}>Last Week</option>
         <option value="month" {% if default_top_list_window == 'month' %}selected{% endif %}>Last Month</option>
         <option value="year" {% if default_top_list_window == 'year' %}selected{% endif %}>Last Year</option>
         <option value="5years" {% if default_top_list_window == '5years' %}selected{% endif %}>Last 5 Years</option>
-        <option value="all time" {% if default_top_list_window == 'all time' %}selected{% endif %}>All Time</option>
-      </select>
+</select>
       <p class="profile-hint">Applies to Top Songs, Top Artists and Top Albums.</p>
     </div>
 
