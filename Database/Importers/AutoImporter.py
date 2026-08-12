@@ -41,6 +41,22 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         self._stop_event = threading.Event()
 
     @staticmethod
+    def _forgetRetryable(retryPaths, knownFiles):
+        """Drop the callback's un-taken paths from knownFiles so a later poll
+        sights them again.
+
+        knownFiles.add(name) happens BEFORE the callback deliberately - it is
+        what stops an unreadable file being re-delivered every checkInterval
+        for the life of the process. The cost was that a file the callback
+        could not read was never re-delivered either, so the "reads fine on a
+        later pass" recovery _handleImport documents had no later pass. Only
+        what the callback explicitly hands back is forgotten, and the bound on
+        how often it may do so lives with the callback (see
+        MAX_TRANSIENT_READ_ATTEMPTS), not here."""
+        for path in retryPaths or ():
+            knownFiles.discard(os.path.basename(path))
+
+    @staticmethod
     def _fileSizeOrNone(path):
         """Size in bytes, or None if it can't be read right now (mid-move,
         locked by the copying process, already deleted) - the caller re-checks
@@ -57,6 +73,12 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         processed as a single batch so batch-scoped import state (duplicate-
         claim tracking across file boundaries, see Database.importHistoryBatch)
         covers all of them.
+
+        It may RETURN the subset of paths it could not take, which are then
+        forgotten and delivered again on a later poll. A callback that returns
+        None (or anything else) is taken to have accepted the whole batch -
+        that is the original contract, and the once-per-process rule it
+        implies. See _forgetRetryable.
 
         A newly appearing file is only delivered once its size is unchanged
         between two consecutive polls: a large export still being copied into
@@ -78,7 +100,7 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
                 fullPaths = sorted(os.path.join(pathToWatch, f) for f in knownFiles)
                 for fullPath in fullPaths:
                     logger.info(f"File found: {fullPath}")
-                callback(fullPaths)
+                self._forgetRetryable(callback(fullPaths), knownFiles)
         except FileNotFoundError:
             logger.error(f"Error: The directory {pathToWatch} does not exist.")
             return   #< nothing to watch; startAutoImporter would have to recreate it anyway
@@ -120,7 +142,7 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
                     readyPaths.sort()
                     for fullPath in readyPaths:
                         logger.info(f"New file created: {fullPath}")
-                    callback(readyPaths)
+                    self._forgetRetryable(callback(readyPaths), knownFiles)
             except Exception as e:
                 # Per-iteration, deliberately: this used to wrap the whole
                 # loop, so one transient failure (an os.listdir denied while
@@ -155,6 +177,14 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         if hasattr(self, "thread") and self.thread.is_alive():
             self.thread.join(timeout=WATCHDOG_STOP_JOIN_TIMEOUT_SECONDS)
 
+# How many times one file may come back unreadable before it is quarantined.
+# The retry exists for a lock that clears (an antivirus scanner, a backup tool,
+# a copy still finishing); a lock that outlives three polls is not clearing, and
+# retrying forever is a log line every pollInterval for the life of the process.
+# FAILED/ then makes it visible to someone who never reads the log.
+MAX_TRANSIENT_READ_ATTEMPTS = 3
+
+
 class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; files end in DONE/ or FAILED/
     def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):
         self.folderPath = folderPath   #< the user's autoImport/<user>/ drop folder
@@ -162,6 +192,9 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         self.pollInterval = pollInterval
         self.keyword = keyword   #< None = import everything; else the filename must contain it
         self.wd = Watchdog()
+        # path -> consecutive unreadable deliveries. Only the watchdog thread
+        # touches it, and it is cleared per file on the first successful read.
+        self._readAttempts = {}
 
     def _destinationPath(self, path, subdirName="DONE"):
         fileDirectory = os.path.dirname(path)
@@ -184,8 +217,14 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         goes through a single importCallback call (Database.importHistoryBatch)
         so batch-scoped import state - the duplicate-claim tracking that stops
         a replay at the start of one file from "correcting away" the skip play
-        at the end of the previous file - spans the whole batch."""
+        at the end of the previous file - spans the whole batch.
+
+        Returns the paths that could not be read but may read later, for the
+        watchdog to deliver again (Watchdog._forgetRetryable). Everything else
+        - imported, skipped, quarantined - is absent from that list and so
+        stays known."""
         toImport = []  #< (path, content) of keyword-matching, readable files
+        retryable = []  #< transiently unreadable: hand back for a later poll
         for path in sorted(paths):
             try:
                 fileName = os.path.basename(path)
@@ -195,6 +234,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     continue
                 with open(path, encoding="utf-8") as f:
                     toImport.append((path, f.read()))
+                self._readAttempts.pop(path, None)   #< it read; earlier locks are history
             except UnicodeDecodeError as e:
                 # Undecodable content is permanent, so it is routed exactly like
                 # an import failure below: left in the watch folder it would be
@@ -216,17 +256,41 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     # the file simply stays for the next pass.
                     logger.error(f"Could not move {path} to FAILED/: {moveError}")
             except Exception as e:
-                logger.error(f"Error reading file {path}: {e}")
+                # Transient by assumption (a lock that clears), so it is handed
+                # back for another delivery rather than quarantined - but only
+                # for a bounded number of tries, because the watchdog cannot
+                # tell a lock that clears from one that never will.
+                attempts = self._readAttempts.get(path, 0) + 1
+                self._readAttempts[path] = attempts
+                if attempts < MAX_TRANSIENT_READ_ATTEMPTS:
+                    logger.error(f"Error reading file {path} (attempt {attempts} of "
+                                 f"{MAX_TRANSIENT_READ_ATTEMPTS}, will retry): {e}")
+                    retryable.append(path)
+                    continue
+                logger.error(f"Could not read {os.path.basename(path)} after "
+                             f"{MAX_TRANSIENT_READ_ATTEMPTS} attempts - moving to FAILED/. "
+                             f"Close whatever is holding it and drop it back into the "
+                             f"watch folder: {e}")
+                self._readAttempts.pop(path, None)
+                try:
+                    shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
+                except Exception as moveError:
+                    # Same as the decode arm: the quarantine can hit the very
+                    # lock that broke the read, so the file stays put.
+                    logger.error(f"Could not move {path} to FAILED/: {moveError}")
 
         if not toImport:
-            return
+            return retryable
 
         try:
             outcomes = self.importCallback([content for _, content in toImport])
         except Exception as e:
-            # Files stay in the watch folder so a restart retries them.
+            # Files stay in the watch folder so a restart retries them. They are
+            # NOT handed back for re-delivery: the read succeeded, so this is an
+            # import failure, and re-delivering it would re-run the same failing
+            # import every poll. Restart-scoped retry is the deliberate bound.
             logger.error(f"Error importing batch of {len(toImport)} file(s): {parseError(e)}")
-            return
+            return retryable
 
         # Database.importHistoryBatch reports one outcome per file; a callback
         # that doesn't (older/simple callbacks, tests) gets the previous
@@ -251,6 +315,8 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     logger.info(f"Successfully moved {fileName} to DONE/")
             except Exception as e:
                 logger.error(f"Error moving file {path}: {e}")
+
+        return retryable
 
     def start(self) -> None:
         self.wd.watchFolder(self.folderPath, self._handleImport, self.pollInterval,

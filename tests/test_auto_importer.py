@@ -356,6 +356,78 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
     @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_transiently_locked_file_asks_to_be_delivered_again(self, mock_move, mock_makedirs, mock_exists):
+        """"Left in place" was only half a policy. The watchdog adds a name to
+        knownFiles BEFORE calling back, and discovery is
+        `currentFiles - knownFiles - pendingSizes`, so a file left in place is
+        never re-sighted: the arm above promises "reads fine on a later pass"
+        and there is no later pass within the process. The handler has to ask
+        for the retry explicitly."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        locked = PermissionError("being used by another process")
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                retry = importer._handleImport(["/dummy/path/still-copying.json"])
+
+        self.assertEqual(list(retry), ["/dummy/path/still-copying.json"])
+        mock_move.assert_not_called()
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_file_that_stays_locked_is_quarantined_rather_than_retried_forever(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The retry must be bounded: an unbounded one is a 5s log-spam loop
+        for the life of the process, which is exactly why the once-per-process
+        rule existed. After the last attempt the file goes to FAILED/, where it
+        is visible to someone who never reads the log."""
+        from Database.Importers.AutoImporter import MAX_TRANSIENT_READ_ATTEMPTS
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        locked = PermissionError("being used by another process")
+        path = "/dummy/path/still-copying.json"
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                for _ in range(MAX_TRANSIENT_READ_ATTEMPTS - 1):
+                    self.assertEqual(list(importer._handleImport([path])), [path])
+                lastRetry = importer._handleImport([path])
+
+        self.assertEqual(list(lastRetry), [])
+        destination = mock_move.call_args[0][1]
+        self.assertIn("FAILED", os.path.normpath(destination).split(os.sep))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_file_that_reads_on_a_later_pass_forgets_its_earlier_failures(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The counter is per file and must reset on success, or a folder used
+        for months accumulates attempts against names that keep coming back."""
+        from Database.Importers.AutoImporter import MAX_TRANSIENT_READ_ATTEMPTS
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=["imported"]))
+        path = "/dummy/path/eventually-fine.json"
+        locked = PermissionError("being used by another process")
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport([path])
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+            importer._handleImport([path])   #< reads fine this time
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                retry = importer._handleImport([path])
+
+        self.assertEqual(list(retry), [path],
+                         "the successful read must have cleared the earlier attempt")
+        self.assertGreater(MAX_TRANSIENT_READ_ATTEMPTS, 1)
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
     def test_one_undecodable_file_does_not_stop_the_rest_of_the_batch(self, mock_move, mock_makedirs, mock_exists):
         mock_exists.return_value = False
         import_callback = MagicMock(return_value=["imported"])
@@ -399,6 +471,75 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
                 importer._handleImport(["/dummy/path/good.json", "/dummy/path/mojibake.json"])
 
         self.assertEqual(import_callback.call_count, 1)
+
+
+class TestWatchdogRedeliversWhatTheCallbackCouldNotTake(unittest.TestCase):
+    """knownFiles.add(name) happens BEFORE callback(readyPaths), so a file the
+    callback could not read is never re-sighted: `knownFiles &= currentFiles`
+    keeps the name while the file is still on disk, and discovery subtracts
+    knownFiles. That ordering is deliberate - it is what stops an unreadable
+    file being re-delivered every 5s - so the callback gets to name the ones it
+    wants back instead."""
+
+    #< enough polls for: initial scan (empty), sight, deliver, re-sight, re-deliver
+    _POLLS_FOR_TWO_DELIVERIES = 6
+
+    def _pollOnce(self, callback, mock_listdir, mock_getsize):
+        """The folder starts EMPTY - the initial scan puts anything already
+        present straight into knownFiles, so a file that exists from the first
+        listdir is never sighted at all. It appears on the next poll, is stable
+        on the one after (that is the delivery), and the remaining polls are
+        where a re-delivery would show up."""
+        watchdog = Watchdog()
+        seen = []
+
+        def listdir(_path):
+            seen.append(1)
+            if len(seen) > self._POLLS_FOR_TWO_DELIVERIES:
+                watchdog.run = False
+            return [] if len(seen) == 1 else ["export.json"]
+
+        mock_listdir.side_effect = listdir
+        mock_getsize.return_value = 100
+        watchdog.watchFolder_blocking("/dummy/path", callback, checkInterval=0,
+                                      callbackInitialFiles=False)
+        return watchdog
+
+    @patch("Database.Importers.AutoImporter.os.path.getsize")
+    @patch("Database.Importers.AutoImporter.os.path.exists", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_a_returned_path_is_delivered_again(self, mock_listdir, _isfile, _makedirs,
+                                                _exists, mock_getsize):
+        batches = []
+
+        def callback(paths):
+            batches.append(list(paths))
+            return list(paths)   #< "I could not take these"
+
+        self._pollOnce(callback, mock_listdir, mock_getsize)
+
+        self.assertGreater(len(batches), 1, "a returned path must be re-delivered")
+
+    @patch("Database.Importers.AutoImporter.os.path.getsize")
+    @patch("Database.Importers.AutoImporter.os.path.exists", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_a_taken_path_is_not_delivered_again(self, mock_listdir, _isfile, _makedirs,
+                                                 _exists, mock_getsize):
+        """The once-per-process rule still holds for everything the callback
+        accepted - including the legacy callbacks that return None."""
+        batches = []
+
+        def callback(paths):
+            batches.append(list(paths))
+            return None
+
+        self._pollOnce(callback, mock_listdir, mock_getsize)
+
+        self.assertEqual(len(batches), 1)
 
 
 class TestAutoImporterWiring(DatabaseTestCase):
