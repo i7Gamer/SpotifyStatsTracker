@@ -108,6 +108,23 @@ class TestMergeReviewPage(MergeReviewRouteTestCase):
         self.assertIn("The Best Of", body)
         self.assertIn("/admin/merge_review/merge", body)
         self.assertIn("/admin/merge_review/reject", body)
+
+    def test_a_release_nobody_has_played_says_so_rather_than_showing_a_zero(self):
+        """"0 play(s)" beside a release reads as a broken counter - which is
+        how it was reported. The tally is instance-wide, so the row is stating
+        a fact about the whole instance rather than about the reader, and it
+        says which fact."""
+        dash = self._makeApp()
+        self._seedPair(dash, remasterPlays=0)
+
+        body = self._request(dash, "GET", "/admin/merge-review").data.decode()
+
+        self.assertIn("never played here", body)
+        #< the separator is part of the needle: a bare "0 play(s)" is a
+        #  substring of the "70 play(s)" on the row above it
+        self.assertNotIn(", 0 play(s)", body)
+        #< the counted case is untouched, plural marker and all
+        self.assertIn("70 play(s)", body)
         self.assertIn(str(70), body)
 
     def test_an_empty_queue_says_so_instead_of_rendering_nothing(self):

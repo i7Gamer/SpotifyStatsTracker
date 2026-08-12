@@ -14,6 +14,15 @@
   {%- endif -%}
 {%- endmacro %}
 
+{#- The tally is instance-wide (every account's plays, not the reader's), so a
+    zero is a fact about the whole instance rather than a counter that failed
+    to load - which is how "0 play(s)" was read. Catalog rows nobody has ever
+    played are ordinary here: they are what the ISRC queue prioritises, and
+    they still belong in a group, so the row says what the zero MEANS. -#}
+{% macro playCount(plays) -%}
+  {%- if plays -%}{{ plays }} play(s){%- else -%}never played here{%- endif -%}
+{%- endmacro %}
+
 <section class="hero">
   <div class="hero-content">
     <h1>Merge review</h1>
@@ -83,7 +92,7 @@
              {% if release.trackId == picked %}checked{% endif %}/>
       <label class="merge-release-label" for="{{ radioId }}">{{ release.name }}
         <span class="merge-release-meta">&mdash; {{ release.album }},
-          {{ trackLength(release.durationMs) }}, {{ release.plays }} play(s)</span>
+          {{ trackLength(release.durationMs) }}, {{ playCount(release.plays) }}</span>
       </label>
       <span class="merge-main-badge" data-merge-main-badge
             {% if release.trackId != picked %}hidden{% endif %}>kept as the song&#39;s page</span>
@@ -129,7 +138,7 @@
   <div class="merge-release">
     <span class="merge-release-label">{{ entry.name }}
       <span class="merge-release-meta">&mdash; {{ entry.album }},
-        {{ trackLength(entry.durationMs) }}, {{ entry.plays }} play(s)</span>
+        {{ trackLength(entry.durationMs) }}, {{ playCount(entry.plays) }}</span>
       {#- What it was ruled against, where the row says. Rejections recorded
           before migrate1_49_0 do not, and say nothing rather than guess. -#}
       {% if entry.against %}
