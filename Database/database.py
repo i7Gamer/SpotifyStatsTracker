@@ -329,6 +329,45 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     _lastfm_active_lock = threading.Lock()
 
     @classmethod
+    def shutdownWorkerPools(cls) -> None:
+        """Stop the three process-wide media pools. Called from
+        SpotifyDashboardApp.shutdown().
+
+        Without this the only thing that ever stops them is CPython's own
+        concurrent.futures atexit hook, which appends its sentinel BEHIND the
+        queued work and then joins every worker with no timeout - so the entire
+        backlog runs after shutdown() has returned and reported the app
+        stopped, outside the grace period the compose file allows, still
+        issuing Last.fm and CDN requests until Docker's SIGKILL lands.
+
+        cancel_futures drops what has not started: every one of these tasks is
+        best-effort media that the next page view re-triggers, and an image
+        claim abandoned mid-flight is already recovered at boot by
+        deleteStalePendingImages. wait=False because shutdown() is inside a
+        bounded budget - the tasks are daemons and the process is on its way
+        out either way.
+
+        Each pool is REPLACED by a fresh one rather than left shut: a stopped
+        ThreadPoolExecutor raises on every later submit(), and one process can
+        outlive an app instance - the test suite builds and shuts down many
+        apps in a row, and a poisoned class attribute would fail whichever
+        unrelated test next rendered a page. ThreadPoolExecutor spawns no
+        thread until something is submitted, so the replacement costs nothing,
+        and a stray post-shutdown submit is no worse than before this method
+        existed (it used to reach a live pool too). What is NOT preserved is
+        the old pool's backlog, which is the whole point."""
+        for name in ("_imageDownloadExecutor", "_artistBioFetchExecutor", "_albumBioFetchExecutor"):
+            pool = getattr(cls, name)
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+                setattr(cls, name, concurrent.futures.ThreadPoolExecutor(max_workers=pool._max_workers))
+            except Exception as e:
+                # Per pool, for the reason SpotifyDashboardApp.shutdown() guards
+                # its two workers one at a time: one failure must not leave the
+                # other two running.
+                logger.error("Error stopping the %s thread pool: %s", name, e)
+
+    @classmethod
     def configureWorkerPools(cls, repo) -> None:
         """Resize the shared background thread pools from admin settings, read
         once at startup (SpotifyDashboardApp.__init__, after migrations). These

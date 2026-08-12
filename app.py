@@ -1023,6 +1023,14 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 worker.stop()
             except Exception as e:
                 logger.error("Error stopping %s: %s", type(worker).__name__, e)
+        # The three shared media pools, before the per-user loop for the same
+        # reason: they are process-wide, so nothing below owns them. Guarded
+        # like the two workers above - a raise here would abort shutdown with
+        # not one user's threads signalled.
+        try:
+            Database.shutdownWorkerPools()
+        except Exception as e:
+            logger.error("Error stopping the shared media thread pools: %s", e)
         with self._db_lock:
             databases = list(self.user_databases.values())
         # Two-phase: SIGNAL every user's stop flags first (no joins), THEN
