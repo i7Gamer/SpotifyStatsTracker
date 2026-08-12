@@ -1439,25 +1439,37 @@ class TestConnectStateThreadIsNamed(unittest.TestCase):
     was the one of the two that never got it."""
 
     def _startedThreadName(self, **startKwargs):
+        """A REAL thread, parked on an Event and joined here.
+
+        Patching threading.Thread would be the obvious shortcut and is a trap:
+        recentlyPlayed does `import threading`, so the patch lands on the
+        shared module and every OTHER live thread in this pytest worker gets a
+        MagicMock back from Thread(...) for the duration - .start() silently
+        does nothing, and the worker that never ran fails some unrelated test
+        later. Asserting on a real thread also proves the name reaches a Thread
+        rather than a call record."""
+        import threading
         from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
         with patch("spotapi.status.PlayerStatus"):
             manager = RecentlyPlayedManager(MagicMock())
-        with patch("Database.Spotify.recentlyPlayed.threading.Thread") as mockThread:
+        parked = threading.Event()
+        manager.updateLoop = lambda *a, **k: parked.wait(timeout=5)   #< never touches Spotify
+        try:
             manager.start(lambda *a: None, 3, **startKwargs)
-        return mockThread.call_args.kwargs
+            return manager.thread.name
+        finally:
+            parked.set()
+            manager.thread.join(timeout=5)
+            self.assertFalse(manager.thread.is_alive())
 
     def test_the_thread_carries_the_user_it_belongs_to(self):
-        kwargs = self._startedThreadName(logUser="timo")
-
-        self.assertEqual(kwargs["name"], "spotify-connect-state-timo")
+        self.assertEqual(self._startedThreadName(logUser="timo"), "spotify-connect-state-timo")
 
     def test_an_unknown_user_still_leaves_the_thread_identifiable(self):
         """A caller with no user handle must still produce the prefix - an
         anonymous thread is the thing being fixed, so the fallback may not be
         no name at all."""
-        kwargs = self._startedThreadName()
-
-        self.assertTrue(kwargs["name"].startswith("spotify-connect-state-"))
+        self.assertTrue(self._startedThreadName().startswith("spotify-connect-state-"))
 
     def test_the_suites_leaked_thread_guard_recognises_the_prefix(self):
         """Naming the thread is only half the fix: conftest matches per-user

@@ -176,16 +176,28 @@ class TestAdminUsersTable(AdminRouteTestBase):
         self.assertIn(b"Alice Anderson", resp.data)
         self.assertIn(b"alice", resp.data)
 
-    def test_a_user_without_a_display_name_renders_only_the_username(self):
-        """NULL display_name is every account's starting state - the sub-line
-        must be absent rather than rendering an empty span or the word None."""
-        users = [dict(self._MOCK_USERS[1], display_name=None)]
+    def test_only_the_user_with_a_display_name_gets_the_sub_line(self):
+        """NULL display_name is every account's starting state, so the sub-line
+        must be absent for it - but "absent" is also what a BROKEN route
+        produces for everyone, so asserting absence alone pins nothing (the
+        first version of this test passed with the fix reverted). The
+        discriminator is that exactly one of two rows has the sub-line."""
+        users = [dict(self._MOCK_USERS[0], display_name="Alice Anderson"),
+                 dict(self._MOCK_USERS[1], display_name=None)]
         dash = self._makeApp()
 
         resp = self._getAdmin(dash, isAdmin=True, users=users)
 
-        self.assertIn(b"bob", resp.data)
-        self.assertNotIn(b"None</span>", resp.data)
+        import bs4
+        soup = bs4.BeautifulSoup(resp.data, "html.parser")
+        subLineByUsername = {}
+        for row in soup.select("table.admin-status-table tbody tr"):
+            cell = row.find("td")   #< the username cell is always first
+            username = cell.find(string=True, recursive=False)   #< its own text node
+            span = cell.find("span")
+            subLineByUsername[username.strip()] = span.get_text(strip=True) if span else None
+
+        self.assertEqual(subLineByUsername, {"alice": "Alice Anderson", "bob": None})
 
     def test_shows_total_skips_column(self):
         dash = self._makeApp()
