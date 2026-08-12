@@ -201,20 +201,70 @@ class TestShutdownStopsTheSharedThreadPools(unittest.TestCase):
     def test_the_replacement_pools_keep_the_configured_size(self):
         """configureWorkerPools sizes them from admin settings at startup; a
         replacement that silently reverted to the code default would quietly
-        undo that for the rest of the process."""
+        undo that for the rest of the process.
+
+        The sizes MUST differ from the code defaults (5/2/2), or the assertion
+        cannot tell the two implementations apart: a fresh app against an empty
+        settings table is already sized at the defaults, so a replacement built
+        from the constants would compare equal to one built from the retired
+        pool. The first version of this test had exactly that hole."""
+        import concurrent.futures
         from Database.database import Database
+        distinctive = (7, 9, 11)   #< none of them 5/2/2
         with _appWithStubbedWorkers() as (dashboard, _seams):
-            sizesBefore = [p._max_workers for p in (Database._imageDownloadExecutor,
-                                                    Database._artistBioFetchExecutor,
-                                                    Database._albumBioFetchExecutor)]
-            dashboard.user_databases = {}
-            dashboard.shutdown()
+            originals = (Database._imageDownloadExecutor,
+                         Database._artistBioFetchExecutor,
+                         Database._albumBioFetchExecutor)
+            (Database._imageDownloadExecutor,
+             Database._artistBioFetchExecutor,
+             Database._albumBioFetchExecutor) = (
+                concurrent.futures.ThreadPoolExecutor(max_workers=size) for size in distinctive)
+            try:
+                dashboard.user_databases = {}
+                dashboard.shutdown()
 
-            sizesAfter = [p._max_workers for p in (Database._imageDownloadExecutor,
-                                                   Database._artistBioFetchExecutor,
-                                                   Database._albumBioFetchExecutor)]
+                sizesAfter = tuple(p._max_workers for p in (Database._imageDownloadExecutor,
+                                                            Database._artistBioFetchExecutor,
+                                                            Database._albumBioFetchExecutor))
+            finally:
+                (Database._imageDownloadExecutor,
+                 Database._artistBioFetchExecutor,
+                 Database._albumBioFetchExecutor) = originals
 
-        self.assertEqual(sizesAfter, sizesBefore)
+        self.assertEqual(sizesAfter, distinctive)
+
+    def test_the_pools_are_retired_even_if_stopping_a_user_raises(self):
+        """The move to the end of shutdown() put the call behind
+        _stopDatabasesConcurrently, which is the one statement here with no
+        guard of its own - it starts a thread per user and joins them. If that
+        raises (a second Ctrl+C landing in the join, a process that cannot
+        start another thread), the pools are never retired and the whole
+        backlog goes back to running at interpreter exit."""
+        from Database.database import Database
+        mocks = (MagicMock(), MagicMock(), MagicMock())
+        for mock in mocks:
+            mock._max_workers = 4
+        with _appWithStubbedWorkers() as (dashboard, _seams):
+            originals = (Database._imageDownloadExecutor,
+                         Database._artistBioFetchExecutor,
+                         Database._albumBioFetchExecutor)
+            (Database._imageDownloadExecutor,
+             Database._artistBioFetchExecutor,
+             Database._albumBioFetchExecutor) = mocks
+            try:
+                dashboard.user_databases = {"timo": MagicMock()}
+                with patch.object(dashboard, '_stopDatabasesConcurrently',
+                                  side_effect=RuntimeError("can't start new thread")):
+                    with self.assertRaises(RuntimeError):
+                        dashboard.shutdown()
+
+                for pool in mocks:
+                    with self.subTest(pool=pool):
+                        pool.shutdown.assert_called_once()
+            finally:
+                (Database._imageDownloadExecutor,
+                 Database._artistBioFetchExecutor,
+                 Database._albumBioFetchExecutor) = originals
 
     def test_the_pools_are_retired_after_the_threads_that_feed_them_are_stopped(self):
         """Order is the whole point. Every per-user thread that submits media
@@ -260,19 +310,26 @@ class TestShutdownStopsTheSharedThreadPools(unittest.TestCase):
         with _appWithStubbedWorkers() as (dashboard, _seams):
             originals = (Database._imageDownloadExecutor, Database._artistBioFetchExecutor)
             failing = MagicMock()
+            # A real int, or ThreadPoolExecutor(max_workers=<MagicMock>) raises
+            # TypeError BEFORE pool.shutdown() is ever reached and the arm under
+            # test is "building the replacement raised" rather than the one the
+            # side_effect below configures. That is what this test did until the
+            # replacement was moved ahead of the retirement.
+            failing._max_workers = 4
             failing.shutdown.side_effect = RuntimeError("boom")
             survivor = MagicMock()
             survivor._max_workers = 4
             Database._imageDownloadExecutor = failing
             Database._artistBioFetchExecutor = survivor
             try:
-                db = MagicMock()
-                dashboard.user_databases = {"timo": db}
+                dashboard.user_databases = {}
 
                 dashboard.shutdown()  #< must not raise
 
-                survivor.shutdown.assert_called_once()   #< the REST of the pools
-                db.signalStop.assert_called_once()       #< and the rest of shutdown
+                failing.shutdown.assert_called_once()    #< the configured failure really fired
+                survivor.shutdown.assert_called_once()   #< and the REST of the pools still went
+                self.assertIsNot(Database._imageDownloadExecutor, failing,
+                                 "even a pool that failed to stop must not be left installed")
             finally:
                 (Database._imageDownloadExecutor, Database._artistBioFetchExecutor) = originals
 

@@ -1035,15 +1035,27 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 db.signalStop()
             except Exception as e:
                 logger.error("Error signaling stop for %s: %s", db.user, e)
-        self._stopDatabasesConcurrently(databases)
-        # LAST, not first: every per-user thread that submits media work - the
-        # listener's appendTrackData -> saveImagesFromTrack, a page render's
-        # lazyFetch* - is alive until the join above returns, and
-        # shutdownWorkerPools installs a live REPLACEMENT pool. Retiring the
-        # pools any earlier would hand that whole window a fresh pool nothing
-        # stops again, leaving the interpreter's atexit hook to do it: the very
-        # thing this exists to avoid. Guarded like the two workers above, so a
-        # raise here cannot escape a shutdown that has already done its work.
+        try:
+            self._stopDatabasesConcurrently(databases)
+        finally:
+            self._shutdownMediaPools()
+
+    def _shutdownMediaPools(self) -> None:
+        """Retire the three process-wide media pools.
+
+        LAST, not first: every per-user thread that submits media work - the
+        listener's appendTrackData -> saveImagesFromTrack, a page render's
+        lazyFetch* - is alive until the phase-2 join returns, and
+        shutdownWorkerPools installs a live REPLACEMENT pool. Retiring the
+        pools any earlier would hand that whole window a fresh pool nothing
+        stops again, leaving the interpreter's atexit hook to do it: the very
+        thing this exists to avoid.
+
+        Reached from a `finally`, because phase 2 is the one part of shutdown
+        with no guard of its own - it starts a thread per user and joins them,
+        so a second Ctrl+C landing in a join, or a process that cannot start
+        another thread, used to skip the retirement entirely. Guarded like the
+        two workers above so a raise here cannot escape either."""
         try:
             Database.shutdownWorkerPools()
         except Exception as e:
