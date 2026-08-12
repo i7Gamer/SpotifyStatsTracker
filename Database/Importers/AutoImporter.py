@@ -53,7 +53,13 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         what the callback explicitly hands back is forgotten, and the bound on
         how often it may do so lives with the callback (see
         MAX_TRANSIENT_READ_ATTEMPTS), not here."""
-        for path in retryPaths or ():
+        if not isinstance(retryPaths, (list, tuple, set, frozenset)):
+            return   #< the documented "anything else means accepted". A truthy
+                     #  non-iterable (a callback returning True) would otherwise
+                     #  raise TypeError, and on the initial-scan call that is
+                     #  outside the poll loop's guard - it would kill the watcher
+                     #  thread, which nothing restarts.
+        for path in retryPaths:
             knownFiles.discard(os.path.basename(path))
 
     @staticmethod
@@ -226,12 +232,20 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         toImport = []  #< (path, content) of keyword-matching, readable files
         retryable = []  #< transiently unreadable: hand back for a later poll
         for path in sorted(paths):
-            try:
-                fileName = os.path.basename(path)
-                if self.keyword is not None and self.keyword not in fileName:
-                    logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
+            fileName = os.path.basename(path)
+            if self.keyword is not None and self.keyword not in fileName:
+                # Outside the read try/except on purpose: this file is never
+                # read, so a failure MOVING it is not a read failure. Folded in,
+                # it counted against MAX_TRANSIENT_READ_ATTEMPTS and put a
+                # perfectly good non-matching file in FAILED/ under a message
+                # blaming an unreadable file.
+                logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
+                try:
                     shutil.move(path, self._destinationPath(path))
-                    continue
+                except Exception as moveError:
+                    logger.error(f"Could not move the non-matching file {path} to DONE/: {moveError}")
+                continue
+            try:
                 with open(path, encoding="utf-8") as f:
                     toImport.append((path, f.read()))
                 self._readAttempts.pop(path, None)   #< it read; earlier locks are history
@@ -267,17 +281,29 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                                  f"{MAX_TRANSIENT_READ_ATTEMPTS}, will retry): {e}")
                     retryable.append(path)
                     continue
-                logger.error(f"Could not read {os.path.basename(path)} after "
-                             f"{MAX_TRANSIENT_READ_ATTEMPTS} attempts - moving to FAILED/. "
-                             f"Close whatever is holding it and drop it back into the "
-                             f"watch folder: {e}")
-                self._readAttempts.pop(path, None)
+                # The loud pair of lines is emitted once, on the attempt that
+                # first gives up; a file that then also refuses to MOVE keeps
+                # being retried quietly rather than filling the log forever.
+                giveUpNow = attempts == MAX_TRANSIENT_READ_ATTEMPTS
+                if giveUpNow:
+                    logger.error(f"Could not read {os.path.basename(path)} after "
+                                 f"{MAX_TRANSIENT_READ_ATTEMPTS} attempts - moving to FAILED/. "
+                                 f"Close whatever is holding it and drop it back into the "
+                                 f"watch folder: {e}")
                 try:
                     shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
+                    self._readAttempts.pop(path, None)
                 except Exception as moveError:
-                    # Same as the decode arm: the quarantine can hit the very
-                    # lock that broke the read, so the file stays put.
-                    logger.error(f"Could not move {path} to FAILED/: {moveError}")
+                    # On Windows the exclusive lock that makes open() raise
+                    # makes MoveFileEx fail too, so this is the EXPECTED path
+                    # for a genuinely stuck file, not a corner case. It stays
+                    # retryable: dropping it here would strand it in the watch
+                    # folder for the life of the process - the dead end this
+                    # whole mechanism exists to remove - while the line above
+                    # claims it went to FAILED/.
+                    logger.log(logging.ERROR if giveUpNow else logging.DEBUG,
+                               "Could not move %s to FAILED/, will try again: %s", path, moveError)
+                    retryable.append(path)
 
         if not toImport:
             return retryable

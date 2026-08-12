@@ -428,6 +428,55 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
     @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_keyword_mismatch_whose_move_fails_is_not_treated_as_unreadable(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The keyword branch's move to DONE/ sits in the same try as the read.
+        Once that except started counting attempts and quarantining, a file
+        that merely failed to MOVE - never unreadable, never meant to be
+        imported - was logged as unreadable and ended up in FAILED/ after three
+        deliveries, with a message naming the wrong cause."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]), keyword="Weekly")
+        mock_move.side_effect = PermissionError("held by another process")
+
+        with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+            retry = importer._handleImport(["/dummy/path/other.json"])
+
+        self.assertEqual(list(retry), [])   #< nothing to re-read; it was never read
+        self.assertEqual(importer._readAttempts, {})
+        for call in mock_move.call_args_list:
+            self.assertNotIn("FAILED", os.path.normpath(call[0][1]).split(os.sep))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_file_whose_quarantine_move_also_fails_stays_reachable(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The expected outcome for the case the retry exists for: on Windows
+        the exclusive lock that makes open() raise also makes the move fail. If
+        the file is dropped from the retry list at that point it is stranded
+        for the life of the process - the exact dead end this whole change was
+        written to remove - while the log claims it went to FAILED/."""
+        from Database.Importers.AutoImporter import MAX_TRANSIENT_READ_ATTEMPTS
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        mock_move.side_effect = PermissionError("held by another process")
+        path = "/dummy/path/locked.json"
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=PermissionError("locked"))):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                # Exactly the delivery that quarantines. Anything the watchdog
+                # is not handed back on THIS call it never sights again, so a
+                # later _handleImport call would only be reachable in a test.
+                for _ in range(MAX_TRANSIENT_READ_ATTEMPTS):
+                    retry = importer._handleImport([path])
+
+        self.assertEqual(list(retry), [path],
+                         "a file that could be neither read nor quarantined must stay reachable")
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
     def test_one_undecodable_file_does_not_stop_the_rest_of_the_batch(self, mock_move, mock_makedirs, mock_exists):
         mock_exists.return_value = False
         import_callback = MagicMock(return_value=["imported"])
@@ -540,6 +589,36 @@ class TestWatchdogRedeliversWhatTheCallbackCouldNotTake(unittest.TestCase):
         self._pollOnce(callback, mock_listdir, mock_getsize)
 
         self.assertEqual(len(batches), 1)
+
+    @patch("Database.Importers.AutoImporter.os.path.getsize")
+    @patch("Database.Importers.AutoImporter.os.path.exists", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_a_callback_returning_a_non_iterable_does_not_kill_the_watcher(
+            self, mock_listdir, _isfile, _makedirs, _exists, mock_getsize):
+        """The contract says a callback that returns anything other than paths
+        has accepted the batch. `for path in retryPaths or ()` does not honour
+        that for a truthy NON-iterable (a callback returning True): it raises
+        TypeError, and on the INITIAL-SCAN call that lands outside the poll
+        loop's per-iteration guard, killing the watcher thread for the life of
+        the process - nothing restarts one."""
+        watchdog = Watchdog()
+        seen = []
+
+        def listdir(_path):
+            seen.append(1)
+            if len(seen) > 3:
+                watchdog.run = False
+            return ["export.json"]
+
+        mock_listdir.side_effect = listdir
+        mock_getsize.return_value = 100
+
+        watchdog.watchFolder_blocking("/dummy/path", lambda paths: True, checkInterval=0,
+                                      callbackInitialFiles=True)   #< must return, not raise
+
+        self.assertFalse(watchdog.run)
 
 
 class TestAutoImporterWiring(DatabaseTestCase):
