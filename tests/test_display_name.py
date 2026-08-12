@@ -141,9 +141,13 @@ class TestWriteContract(DisplayNameTestCase):
 
 
 class TestAdminListing(DisplayNameTestCase):
-    def test_the_admin_rows_carry_the_display_name(self):
-        """/admin renders straight from these rows, so it reads the column
-        directly instead of resolving each row through the Jinja filter."""
+    def test_the_repository_rows_carry_the_display_name(self):
+        """The column /admin's users table is built from. This asserts the
+        REPOSITORY only - it issues no request, so it cannot see whether the
+        route passes the column on (it did not, and this test passed anyway
+        while claiming to cover the page). The rendering contract lives in
+        tests/test_admin_route.py::TestAdminUsersTable, one page-level
+        assertion per display-name state."""
         self.repo.setDisplayName("timo", "Timo R")
 
         rows = {row["username"]: row for row in self.repo.getAllUsersDetails()}

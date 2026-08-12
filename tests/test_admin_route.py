@@ -160,6 +160,33 @@ class TestAdminUsersTable(AdminRouteTestBase):
         self.assertIn(b"HEALTHY", resp.data)
         self.assertIn(b"123", resp.data)
 
+    def test_a_display_name_renders_under_the_username(self):
+        """admin.html carries a sub-line for u.display_name, but the route
+        rebuilt every row as an explicit key literal and left the column out,
+        so the markup was dead on every render. Jinja's default Undefined is
+        falsy, so the omission showed as nothing at all rather than as a 500 -
+        which is why only a page-level assertion catches it. The username stays
+        on the row beside it: that is the immutable account key admin acts on."""
+        users = [dict(self._MOCK_USERS[0], display_name="Alice Anderson"),
+                 dict(self._MOCK_USERS[1], display_name=None)]
+        dash = self._makeApp()
+
+        resp = self._getAdmin(dash, isAdmin=True, users=users)
+
+        self.assertIn(b"Alice Anderson", resp.data)
+        self.assertIn(b"alice", resp.data)
+
+    def test_a_user_without_a_display_name_renders_only_the_username(self):
+        """NULL display_name is every account's starting state - the sub-line
+        must be absent rather than rendering an empty span or the word None."""
+        users = [dict(self._MOCK_USERS[1], display_name=None)]
+        dash = self._makeApp()
+
+        resp = self._getAdmin(dash, isAdmin=True, users=users)
+
+        self.assertIn(b"bob", resp.data)
+        self.assertNotIn(b"None</span>", resp.data)
+
     def test_shows_total_skips_column(self):
         dash = self._makeApp()
         resp = self._getAdmin(dash, isAdmin=True)

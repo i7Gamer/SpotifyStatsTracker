@@ -231,6 +231,11 @@ def register(app, dashboard):
 
             users_list.append({
                 "username": u_username,
+                #< the raw column, NOT the displayName filter: admin.html renders this
+                #  as a sub-line UNDER the username, which stays the immutable account
+                #  key every admin action addresses. .get() matches lastfm_api_key
+                #  below - getAllUsersDetails returns plain dicts.
+                "display_name": u.get("display_name"),
                 "email": u_email,
                 "is_admin": u["is_admin"],
                 "sync_status": sync_status,
