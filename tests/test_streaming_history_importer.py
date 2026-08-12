@@ -188,14 +188,44 @@ class TestMusicoletImport(unittest.TestCase):
         self.assertEqual(stats.get("droppedMalformed"), 1)
 
     def test_coverage_does_not_pollute_an_import_s_counters(self):
-        """coverage() runs the same expansion over the same rows in the
-        overwrite path, separately from staging. It must not double-count."""
+        """coverage() runs the same expansion over the same rows as staging
+        does, separately, in the overwrite path. If it were ever wired to the
+        import's stats dict, every dropped row would count twice and the
+        overwrite abort would fire on files it can actually rebuild.
+
+        Asserting the dict, not just that coverage returns None: None was
+        already true before any of this and would stay true with the two
+        wired together, so it discriminates nothing on its own."""
         importer = self._mockedImporter()
-        rows = self._musicoletRows("/music/b.mp3,Broken")
+        rows = self._musicoletRows(
+            "/music/a.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,1",
+            "/music/b.mp3,Broken")
+        stats = {}
 
-        result = importer.coverage(rows, "musicoletPremium")
+        list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=lambda *a: None, stats=stats))
+        countedByTheImport = dict(stats)
+        importer.coverage(rows, "musicoletPremium")   #< the overwrite path's second expansion
 
-        self.assertIsNone(result)   #< nothing parsed, so there is no range to delete
+        self.assertEqual(stats, countedByTheImport, "coverage() must add nothing")
+        self.assertEqual(stats["droppedMalformed"], 1)
+
+    def test_an_unreadable_row_is_logged_without_the_row_itself(self):
+        """The counter carries the total; the log line carries the position.
+        ValueError from int() embeds the OFFENDING VALUE in its message, and on
+        a column-shifted CSV that value is a track title, album or file path -
+        so passing the exception through parseError would put the user's
+        listening data in the app log, which the sibling JSON path's comment
+        explicitly promises it does not."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            "/music/a.mp3,Song,Artist,Album,Artist,,Pop,2020,Dark Side of the Moon,3")
+
+        with self.assertLogs("Database.Importers.StreamingHistoryImporter", level="WARNING") as captured:
+            importer._expandMusicoletRows(rows, stats={})
+
+        logged = "\n".join(captured.output)
+        self.assertNotIn("Dark Side of the Moon", logged)
+        self.assertIn("ValueError", logged)   #< the kind of failure still reaches the log
 
     def test_prefetch_progress_callback_is_monotonic(self):
         importer = self._mockedImporter()

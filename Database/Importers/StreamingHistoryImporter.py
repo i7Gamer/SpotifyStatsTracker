@@ -712,12 +712,19 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                 self._bumpStat(stats, "entriesSeen")
                 self._bumpStat(stats, "droppedMalformed")
                 # Capped exactly as _parseHistory caps its own: a misclassified
-                # file makes every row fail. Position and error only - the row
-                # itself is the user's listening history.
+                # file makes every row fail.
+                #
+                # The exception TYPE and the position only - NOT parseError(e),
+                # unlike the JSON path above. There the failures are KeyErrors
+                # naming Spotify's own field names; here they come from
+                # int(song[DURATION_MS]), and ValueError puts the offending
+                # VALUE in its message - which on a column-shifted CSV is a
+                # track title, an album or a file path. That is the user's
+                # listening history, and it would land in the app log.
                 if loggedMalformed < self.MAX_MALFORMED_ENTRY_LOG_LINES:
                     loggedMalformed += 1
                     logger.warning("Skipping unreadable Musicolet CSV row at position %d: %s",
-                                   index, parseError(e))
+                                   index, type(e).__name__)
 
         return formatedData
 
