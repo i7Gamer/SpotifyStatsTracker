@@ -216,6 +216,22 @@ class TestFormatTimeGap(unittest.TestCase):
         self.assertEqual(utilsModule.formatTimeGap(86400 * 365), "1 year later")
         self.assertEqual(utilsModule.formatTimeGap(86400 * 365 * 3), "3 years later")
 
+    def test_the_months_tier_reaches_all_the_way_to_the_first_year(self):
+        """The months tier used to hand over at 12*30 days while the years tier
+        divided by 365, so days 360-364 fell through both and rendered the
+        literal "0 years later". Every gap below a year is a months gap."""
+        for days in (359, 360, 361, 364):
+            with self.subTest(days=days):
+                self.assertEqual(utilsModule.formatTimeGap(86400 * days), "11 months later")
+
+    def test_no_gap_renders_as_zero_of_any_unit(self):
+        """A tier that hands over before the next one can count reads as
+        "0 years later" - a gap is always at least one of whatever unit it
+        names, so no rendering may start with "0 "."""
+        for days in range(1, 800):
+            with self.subTest(days=days):
+                self.assertFalse(utilsModule.formatTimeGap(86400 * days).startswith("0 "))
+
 
 class TestUnparseableInputNeverRaises(unittest.TestCase):
     """timeToInt / convertToDatetime / dateToString / parseDatetime document

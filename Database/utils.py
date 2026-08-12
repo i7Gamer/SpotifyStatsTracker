@@ -361,6 +361,16 @@ def formatDuration(durationMs: int) -> str:
     minutes, seconds = divmod(max(0, durationMs // 1000), 60)
     return f"{minutes}:{seconds:02d}"
 
+SECONDS_PER_DAY = 86400
+GAP_DAYS_PER_MONTH = 30    #< nominal month/year lengths for the timeline connectors' coarse
+GAP_DAYS_PER_YEAR = 365    #  tiers - no calendar arithmetic, the label is approximate by design
+# The months tier hands over at a full YEAR, not at 12 nominal months: 12*30 is
+# 360 days, so days 360-364 used to satisfy neither `months < 12` nor `sec //
+# (86400*365) >= 1` and rendered the literal "0 years later". Months are capped
+# here instead of allowed to read "12 months later", which keeps the sequence
+# monotone across the seam (359d and 364d both read "11 months later").
+GAP_MAX_MONTHS_BELOW_A_YEAR = 11
+
 def formatTimeGap(seconds: float | int) -> str:
     """Formats a time gap in seconds into a human-readable string for timeline connectors."""
     sec = max(0, int(seconds))
@@ -375,15 +385,15 @@ def formatTimeGap(seconds: float | int) -> str:
     if hours < 24:
         return f"{hours} hour later" if hours == 1 else f"{hours} hours later"
         
-    days = sec // 86400
-    if days < 30:
+    days = sec // SECONDS_PER_DAY
+    if days < GAP_DAYS_PER_MONTH:
         return f"{days} day later" if days == 1 else f"{days} days later"
-        
-    months = sec // (86400 * 30)
-    if months < 12:
+
+    if days < GAP_DAYS_PER_YEAR:
+        months = min(sec // (SECONDS_PER_DAY * GAP_DAYS_PER_MONTH), GAP_MAX_MONTHS_BELOW_A_YEAR)
         return f"{months} month later" if months == 1 else f"{months} months later"
-        
-    years = sec // (86400 * 365)
+
+    years = sec // (SECONDS_PER_DAY * GAP_DAYS_PER_YEAR)
     return f"{years} year later" if years == 1 else f"{years} years later"
 
 def versionTuple(version: str) -> tuple[int, ...]:
