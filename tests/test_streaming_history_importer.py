@@ -137,6 +137,30 @@ class TestMusicoletImport(unittest.TestCase):
 
         self.assertEqual(stats.get("droppedMalformed", 0), 0)
 
+    def test_a_never_played_row_counts_toward_what_was_readable(self):
+        """entriesSeen is bumped per expanded PLAY by _parseHistory, so a row
+        with PLAY_COUNT=0 - a track in the library nobody has played - expands
+        to nothing and would contribute 0 while a malformed row contributes 1.
+        A file of never-played rows plus one bad row would then satisfy
+        `entriesSeen == droppedMalformed` and be rejected whole as unreadable,
+        where before it imported as a (correctly empty) success. Every row that
+        yields no entry is counted, readable or not; only the unreadable ones
+        are also droppedMalformed."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            "/music/a.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,0",
+            "/music/b.mp3,Song Two,Artist Two,Album Two,Artist Two,,Pop,2020,200000,0",
+            "/music/c.mp3,Broken")
+        stats = {}
+
+        expanded = importer._expandMusicoletRows(rows, stats=stats)
+
+        self.assertEqual(expanded, [])
+        self.assertEqual(stats["droppedMalformed"], 1)
+        self.assertEqual(stats["entriesSeen"], 3)
+        self.assertNotEqual(stats["entriesSeen"], stats["droppedMalformed"],
+                            "two readable rows means the file is not 'wholly unreadable'")
+
     def test_a_blank_line_is_not_a_dropped_play(self):
         """Blank lines are formatting, not lost data - counting them would
         abort an overwrite import over a trailing newline."""

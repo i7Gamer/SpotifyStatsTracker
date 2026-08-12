@@ -285,12 +285,18 @@ class ImportMixin:
         # overwrite from deleting the rest (see UNREADABLE_DROP_STAT_KEYS).
         # Podcast-only files are unaffected - episode rows parse, and are
         # dropped a layer lower as droppedNoTrack.
+        #
+        # Format-neutral wording: this used to be reachable only from the two
+        # Spotify JSON paths, so it named Spotify and told the user to
+        # re-download from there. Musicolet CSV rows are counted now too, and a
+        # shifted-column CSV that never came from Spotify would have been given
+        # advice about a Spotify export it does not have.
         entriesSeen = importStats.get("entriesSeen", 0)
         if entriesSeen and importStats.get("droppedMalformed", 0) == entriesSeen:
             raise ValueError(
-                f"None of the {entriesSeen} entries in this file could be read - it looks like a "
-                "Spotify export but carries none of the expected fields. Re-download the export "
-                "from Spotify (check you uploaded the streaming-history file, not another one)."
+                f"None of the {entriesSeen} entries in this file could be read - it matches a known "
+                "export format but carries none of the expected fields. Re-export it and upload the "
+                "streaming-history file itself, not another one."
             )
 
         return stagedTracks, stagedPlays, total, importStats
@@ -752,7 +758,7 @@ class ImportMixin:
             self.writeProgress("failed", 0, total,
                                f"Overwrite import aborted: {unreadableDropped} entr(y/ies) in the uploaded file(s) "
                                "could not be read, so the plays they describe cannot be restored - nothing was "
-                               "deleted, your data is unchanged. Re-download the export from Spotify, or import "
+                               "deleted, your data is unchanged. Re-export the file, or import "
                                "without the overwrite option to add what is readable.",
                                error=True)
             return ["failed"] * total

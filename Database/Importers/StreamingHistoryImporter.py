@@ -683,6 +683,16 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                 timePlayed = int(song[DURATION_MS])
                 playCount = int(song[PLAYCOUNT])
 
+                if playCount < 1:
+                    # A library row nobody has played expands to nothing, so
+                    # _parseHistory - which counts entriesSeen per expanded PLAY
+                    # - would never see it, while a malformed row below counts 1.
+                    # A file of never-played rows plus one bad row would then
+                    # read as "nothing could be read" and be rejected whole.
+                    # Counted, but NOT as a drop: the row was perfectly readable.
+                    self._bumpStat(stats, "entriesSeen")
+                    continue
+
                 trackTime = self.MUSICOLET_SYNTHETIC_TIME_ANCHOR
                 for _ in range(playCount):
                     startTimestamp = trackTime.strftime("%Y-%m-%d %H:%M:%S")
