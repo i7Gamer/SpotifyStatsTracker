@@ -318,6 +318,29 @@ class TestPageRhythmAndInlineHero(unittest.TestCase):
         ]
         self.assertEqual([], offenders)
 
+    def test_the_users_table_badges_never_wrap(self):
+        """A badge is a pill around one short uppercase label. Wrapped onto two
+        lines it stops reading as a pill at all - it reads as a broken one.
+
+        /admin's users table is where it happened: "NOT CONFIGURED" sat on two
+        lines under Sync Status while the identical text one column over sat on
+        one, because table auto-layout is free to hand a column less than its
+        content wants when the cell may wrap, and Sync Status is the column
+        whose HEADER wraps most readily. Measured at 1280px: the badge was 40px
+        tall against its neighbours' 25px, in a column 153px wide against their
+        180px.
+
+        The cost is that the table reaches its natural width sooner, so below
+        roughly a 1050px viewport the card scrolls horizontally instead. That is
+        what the card's own overflow-x: auto is for, and it is contained - the
+        PAGE does not scroll. Measured at 1000px: table 962px in a 916px card,
+        page overflow none.
+
+        Scoped to this table rather than .badge everywhere: a few badges
+        interpolate a value into their label ("BACKING OFF: ...", "LAST: ...")
+        and those are not guaranteed short."""
+        self.assertIn("white-space: nowrap", self._block(".admin-status-table .badge"))
+
     def test_admins_between_cards_gaps_match_every_other_page(self):
         for selector in (".admin-stats-grid", ".admin-card-grid"):
             with self.subTest(selector=selector):

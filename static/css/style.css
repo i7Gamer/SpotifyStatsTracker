@@ -5118,6 +5118,25 @@ html.theme-red {
   padding: 16px 8px;
 }
 
+/* A badge is a pill around one short uppercase label; wrapped onto two lines it
+   reads as a broken pill rather than a pill. "NOT CONFIGURED" did exactly that
+   under Sync Status while the identical text one column over stayed on one
+   line - table auto-layout may hand a column less than its content wants when
+   the cell is allowed to wrap, and Sync Status is the column whose own header
+   wraps most readily. Measured at 1280px: 40px tall against its neighbours'
+   25px, in a 153px column against their 180px.
+
+   The trade is that the table meets its natural width sooner, so under roughly
+   a 1050px viewport the card scrolls sideways instead. That is what the card's
+   overflow-x: auto is for, and it stays contained - at 1000px the table is
+   962px inside a 916px card and the PAGE does not scroll.
+
+   Not .badge globally: a few interpolate a value ("BACKING OFF: ...",
+   "LAST: ...") and are not guaranteed short. */
+.admin-status-table .badge {
+  white-space: nowrap;
+}
+
 .admin-table-header-row {
   border-bottom: 2px solid var(--glass-border);
   color: var(--muted);
