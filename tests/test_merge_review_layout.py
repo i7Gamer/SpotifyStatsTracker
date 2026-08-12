@@ -5,6 +5,8 @@
   the cursor mid-aim, so the queue card opts out of the transform.
 * The Admin panel reaches Merge review through a link that looked like body
   text next to a column of Save buttons; it wears the same button classes now.
+* A row's two verdicts come from different button bases, and only one of them
+  carried a height - so the primary one sat short and top-aligned beside it.
 
 Cheap file-level assertions - no browser needed.
 """
@@ -19,11 +21,22 @@ _ADMIN_PATH = os.path.join(_ROOT, "templates", "admin.html")
 
 _STATIC_CARD_CLASS = "card-static"
 _BUTTON_CLASSES = ("primary-button", "button-small")
+#< the row's primary verdict ("Same recording - merge"), and the base its
+#  neighbour ("Not the same") is built on
+_MERGE_VERDICT_SELECTOR = ".merge-release-actions .primary-button"
+_NEIGHBOUR_SELECTOR = ".button"
 
 
 def _read(path):
     with open(path, encoding="utf-8") as handle:
         return handle.read()
+
+
+def _declarations(css, selector):
+    """What one flat rule declares. Anchored at the line start so `.button`
+    cannot match the `.x .button` of a descendant rule above it."""
+    match = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    return match.group(1) if match else None
 
 
 class TestQueueCardDoesNotMoveOnHover(unittest.TestCase):
@@ -43,6 +56,41 @@ class TestQueueCardDoesNotMoveOnHover(unittest.TestCase):
         rule = re.search(r"\n\.card:hover\s*\{([^}]*)\}", css)
         self.assertIsNotNone(rule, "the generic .card:hover lift went missing")
         self.assertIn("translateY", rule.group(1))
+
+
+class TestVerdictButtonsShareOneHeight(unittest.TestCase):
+    """The two verdicts sit side by side but come from different bases:
+    .primary-button is an inline-block with padding only, .button is an
+    inline-flex with a min-height. The row's forms stretch to the taller of
+    the two, so the merge button was drawn at its own ~26px and pinned to the
+    TOP of the 44px the row had become - reported as "not centered
+    vertically". It is also the page's primary action, wearing half the hit
+    area of the button it stands next to.
+
+    Asserted AGAINST the neighbour rather than against a literal: the pair
+    reads as one control, so what matters is that the two cannot drift apart -
+    a test naming 44px twice would pass while they did."""
+
+    def setUp(self):
+        self.css = _read(_CSS_PATH)
+
+    def test_the_merge_button_is_as_tall_as_the_button_beside_it(self):
+        neighbour = _declarations(self.css, _NEIGHBOUR_SELECTOR)
+        self.assertIsNotNone(neighbour, "%s missing from style.css" % _NEIGHBOUR_SELECTOR)
+        height = re.search(r"min-height:\s*([^;]+);", neighbour)
+        self.assertIsNotNone(height, "%s lost its min-height" % _NEIGHBOUR_SELECTOR)
+
+        verdict = _declarations(self.css, _MERGE_VERDICT_SELECTOR)
+        self.assertIsNotNone(verdict, "%s missing from style.css" % _MERGE_VERDICT_SELECTOR)
+        self.assertIn("min-height: %s;" % height.group(1), verdict)
+
+    def test_the_merge_button_centers_its_own_label(self):
+        """A min-height alone would leave the label sitting on the top line of
+        a taller box - the same complaint one level in."""
+        verdict = _declarations(self.css, _MERGE_VERDICT_SELECTOR)
+        self.assertIsNotNone(verdict, "%s missing from style.css" % _MERGE_VERDICT_SELECTOR)
+        self.assertIn("display: inline-flex", verdict)
+        self.assertIn("align-items: center", verdict)
 
 
 class TestAdminEntryPointIsAButton(unittest.TestCase):

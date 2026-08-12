@@ -5228,6 +5228,20 @@ html.theme-red {
   font-style: italic;
 }
 .merge-release-actions { display: flex; gap: 0.6rem; }
+/* The two verdicts come from different bases: "Not the same" is a .button
+   (inline-flex, min-height 44px) while "Same recording - merge" is a
+   .primary-button (inline-block, padding only). The forms stretch to the
+   taller of the two, so the merge button was drawn at its own ~26px and sat
+   pinned to the TOP of the 44px row - the "not centered vertically" report.
+   Matched to its NEIGHBOUR rather than to 44px by reflex (the pair is one
+   control, and the primary half had the smaller hit area of the two); the
+   height is asserted against .button's own in test_merge_review_layout. */
+.merge-release-actions .primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
 /* display:flex above beats the [hidden] attribute's UA display:none, and the
    picker hides this block on whichever row is currently the main version. */
 .merge-release-actions[hidden] { display: none; }
