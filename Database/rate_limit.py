@@ -158,8 +158,19 @@ class SlotRateLimiter:
             }
 
 
-# Shared by every Spotify call site in the process: the per-user connect-state
-# poll (Database/Spotify/recentlyPlayed.py), track metadata fetches
+# Shared by the Spotify call sites that acquire it - which is NOT all of them.
+# Limited: the per-user connect-state poll and push re-subscribe
+# (Database/Spotify/recentlyPlayed.py), track metadata fetches
 # (Database/Spotify/client.py's getTrackInfoWithRetry), and the
 # account-settings profile/plan lookups (hooked in Database/patches.py).
+#
+# DELIBERATELY NOT limited: Spotify.album/artist/playlist/search
+# (Database/Spotify/client.py). They hit the same pathfinder endpoint, but they
+# are low-volume and self-paced (the album fallback waits a second per item,
+# artist() fires once per never-fetched image), and a stand-down there would
+# stall page renders on a window opened by a different user's track lookup.
+# Consequence to know: a refusal on those paths never reaches applyBackoff, so
+# /admin's rate-limit card under-reports them. Revisit only if live logs show
+# pathfinder 429s from the unlimited paths - this comment read "every Spotify
+# call site" for long enough that a reviewer filed the gap as a bug.
 SPOTIFY_LIMITER = SlotRateLimiter(SPOTIFY_REQUESTS_PER_SECOND)
