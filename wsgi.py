@@ -1,9 +1,38 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import logging
 import os
 import signal
 from app import SpotifyDashboardApp
+
+logger = logging.getLogger(__name__)
+
+# waitress's own default is 4; 16 matches the per-user AJAX fan-out the
+# dashboard pages issue. The floor is 1 because waitress with zero threads
+# accepts connections and serves nothing - unlike Database.backup._envInt,
+# whose max(0, ...) is right for a retention count and wrong for this.
+WAITRESS_THREADS_DEFAULT = 16
+WAITRESS_THREADS_MINIMUM = 1
+
+
+def _waitressThreads() -> int:
+    """WAITRESS_THREADS, or the default for anything unusable.
+
+    os.environ.get(name, default) yields the default only when the variable is
+    UNSET - a variable present but EMPTY (`- WAITRESS_THREADS=` in a compose
+    file) yields "", and int("") raises. This is resolved after module scope has
+    already opened every user's database and started their listeners, so raising
+    here is a crash loop whose traceback never names the variable."""
+    raw = os.environ.get("WAITRESS_THREADS", "").strip()
+    if not raw:
+        return WAITRESS_THREADS_DEFAULT
+    try:
+        return max(WAITRESS_THREADS_MINIMUM, int(raw))
+    except ValueError:
+        logger.warning("Ignoring non-numeric WAITRESS_THREADS=%r, using default %d",
+                       raw, WAITRESS_THREADS_DEFAULT)
+        return WAITRESS_THREADS_DEFAULT
 
 def _sigtermHandler(signum, frame):
     """Route SIGTERM into the KeyboardInterrupt path Ctrl+C already takes.
@@ -60,10 +89,12 @@ app = dashboardApp.app
 
 
 def main():
-    from waitress import serve
-    threads = int(os.environ.get("WAITRESS_THREADS", 16))
+    # Everything between here and serve() is inside the try: module scope has
+    # already started every user's listeners and watchdogs, so anything that
+    # raises on the way to serving still owes them the shutdown below.
     try:
-        serve(app, host="0.0.0.0", port=5000, threads=threads)
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=5000, threads=_waitressThreads())
     finally:
         # Stop every user's listener/auto-importer threads before the process
         # exits, so a SIGINT/SIGTERM to waitress doesn't leave them to be force-

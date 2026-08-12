@@ -241,5 +241,63 @@ class TestWsgiShutdown(ProcessSignalsRestored):
         mockShutdown.assert_called_once()
 
 
+class TestWaitressThreadCount(ProcessSignalsRestored):
+    """WAITRESS_THREADS is read at the very last moment before serve(), after
+    module scope has already opened every user's database and started their
+    listeners. A read that raises there is a crash loop under `restart: always`
+    whose traceback never names the variable."""
+
+    def _serveKwargs(self, envValue):
+        wsgi = _importWsgiWithMocks()
+        env = {} if envValue is None else {"WAITRESS_THREADS": envValue}
+        with patch.dict(os.environ, env, clear=False):
+            if envValue is None:
+                os.environ.pop("WAITRESS_THREADS", None)
+            with patch('waitress.serve') as mockServe, \
+                 patch.object(wsgi.dashboardApp, 'shutdown'):
+                wsgi.main()
+        return wsgi, mockServe.call_args.kwargs
+
+    def test_an_unset_thread_count_uses_the_default(self):
+        wsgi, kwargs = self._serveKwargs(None)
+        self.assertEqual(kwargs["threads"], wsgi.WAITRESS_THREADS_DEFAULT)
+
+    def test_an_explicit_thread_count_is_honoured(self):
+        _, kwargs = self._serveKwargs("32")
+        self.assertEqual(kwargs["threads"], 32)
+
+    def test_an_empty_thread_count_falls_back_instead_of_crashing(self):
+        """os.environ.get(name, default) returns the default only when the
+        variable is UNSET. `- WAITRESS_THREADS=` in a compose file - the usual
+        way to neutralise a variable set earlier - yields "", and int("")
+        raised ValueError before serve() was ever reached."""
+        wsgi, kwargs = self._serveKwargs("")
+        self.assertEqual(kwargs["threads"], wsgi.WAITRESS_THREADS_DEFAULT)
+
+    def test_a_non_numeric_thread_count_falls_back_instead_of_crashing(self):
+        wsgi, kwargs = self._serveKwargs("  many  ")
+        self.assertEqual(kwargs["threads"], wsgi.WAITRESS_THREADS_DEFAULT)
+
+    def test_a_thread_count_below_one_is_raised_to_the_minimum(self):
+        """Database.backup._envInt clamps with max(0, ...), which is right for a
+        retention count and wrong here: waitress with zero threads serves no
+        request at all, so the floor is one."""
+        wsgi, kwargs = self._serveKwargs("0")
+        self.assertEqual(kwargs["threads"], wsgi.WAITRESS_THREADS_MINIMUM)
+
+    def test_a_failure_resolving_the_thread_count_still_shuts_the_workers_down(self):
+        """The conversion used to sit OUTSIDE main()'s try, so anything raising
+        there skipped `finally: shutdown()` while module scope had already
+        started every user's listeners and watchdogs."""
+        wsgi = _importWsgiWithMocks()
+        with patch.object(wsgi, '_waitressThreads', side_effect=RuntimeError("boom")), \
+             patch('waitress.serve'), \
+             patch.object(wsgi.dashboardApp, 'shutdown') as mockShutdown:
+            with self.assertRaises(RuntimeError):
+                wsgi.main()
+
+        mockShutdown.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
