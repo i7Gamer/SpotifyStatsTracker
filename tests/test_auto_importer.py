@@ -735,6 +735,53 @@ class TestWatchdogRedeliversWhatTheCallbackCouldNotTake(unittest.TestCase):
         self.assertFalse(watchdog.run)
 
 
+class TestALockedFileRecoversOnceTheLockClears(unittest.TestCase):
+    """The end-to-end promise of the retry mechanism, which until now was only
+    tested in halves: the watchdog tests drive a lambda callback, and the
+    _handleImport tests call it directly and never go through the watchdog. The
+    property that matters to a user - drop an export while a backup tool holds
+    it, and it still imports by itself - was covered by neither."""
+
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    @patch("Database.Importers.AutoImporter.os.path.getsize", return_value=100)
+    @patch("Database.Importers.AutoImporter.os.path.exists", return_value=False)
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True)
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_it_imports_itself_without_a_restart(self, mock_listdir, _isfile, _makedirs,
+                                                 _exists, _getsize, mock_move):
+        watchdog = Watchdog()
+        importCallback = MagicMock(return_value=["imported"])
+        importer = AutoImporter("/dummy/path", importCallback)
+        polls = []
+
+        def listdir(_path):
+            polls.append(1)
+            if len(polls) > 12:
+                watchdog.run = False   #< backstop: a broken retry would spin here
+            return [] if len(polls) == 1 else ["export.json"]
+
+        opens = []
+
+        def flakyOpen(path, *args, **kwargs):
+            opens.append(path)
+            if len(opens) <= 2:
+                raise PermissionError("being used by another process")
+            return io.StringIO('{"data": true}')
+
+        mock_listdir.side_effect = listdir
+        with patch("Database.Importers.AutoImporter.open", flakyOpen):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                watchdog.watchFolder_blocking("/dummy/path", importer._handleImport,
+                                              checkInterval=0, callbackInitialFiles=False)
+
+        self.assertEqual(len(opens), 3, "two locked deliveries, then the one that reads")
+        importCallback.assert_called_once_with(['{"data": true}'])
+        destination = mock_move.call_args[0][1]
+        self.assertIn("DONE", os.path.normpath(destination).split(os.sep))
+        self.assertNotIn("FAILED", os.path.normpath(destination).split(os.sep))
+
+
 class TestAutoImporterWiring(DatabaseTestCase):
     def test_database_wires_batch_import_callback(self):
         """Database must feed the AutoImporter through importHistoryBatch so
