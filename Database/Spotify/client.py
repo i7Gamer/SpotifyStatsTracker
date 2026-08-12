@@ -495,7 +495,7 @@ class Spotify:
             "context": formatContext(contextUri),
         })
 
-    def startRecentlyPlayedListener(self, refreshInterval=3):
+    def startRecentlyPlayedListener(self, refreshInterval=3, logUser=None):
         if not self.isLoggedIn():
             # The wrapper built its manager around user_auth==False here and
             # died with an AttributeError deep inside spotapi; failing at the
@@ -503,7 +503,7 @@ class Spotify:
             raise ValueError("Cannot start the recently-played listener without a logged-in session")
         if self.lastPlayedManager is None:
             self.lastPlayedManager = RecentlyPlayedManager(self.user_auth)
-        self.lastPlayedManager.start(self._addToRecentlyPlayed, refreshInterval)
+        self.lastPlayedManager.start(self._addToRecentlyPlayed, refreshInterval, logUser=logUser)
 
     def current_user_recently_played(self, limit=RECENTLY_PLAYED_BUFFER_SIZE, after=None, before=None) -> list:
         """The LOCAL buffer of plays this session observed, oldest first - NOT

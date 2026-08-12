@@ -87,6 +87,14 @@ STATE_FAILURE_RECONNECT_THRESHOLD = 5
 
 UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
 
+# This loop's thread is named "<prefix><logUser>", for the reasons
+# LISTENER_THREAD_NAME_PREFIX gives for the listener's poll thread beside it.
+# Both halves matter: the prefix must also be in conftest's
+# USER_DATABASE_THREAD_NAME_PREFIXES, or the leaked-thread guard still cannot
+# see this thread.
+CONNECT_STATE_THREAD_NAME_PREFIX = "spotify-connect-state-"
+UNKNOWN_CONNECT_STATE_USER = "unknown"  #< a caller with no user handle still gets the prefix
+
 # How long the poll loop may sleep before re-checking whether it should stop.
 #
 # Every wait below is spent in steps of this rather than in one time.sleep(),
@@ -664,10 +672,19 @@ class RecentlyPlayedManager:
             logger.warning("[Spotify] Falling back to connect-state polling")
         _runPollLoop(self, callback, refreshInterval)
 
-    def start(self, callback, refreshInterval):
+    def start(self, callback, refreshInterval, logUser=None):
+        """`logUser` names the thread, exactly as the listener's poll thread is
+        named - see LISTENER_THREAD_NAME_PREFIX. This one can outlive shutdown
+        legitimately (Listener.stop() joins it with a 5s bound and the loop may
+        be inside a slow connect_device()), so an anonymous survivor is a
+        "Thread-17" in a dump with no user attached, and the test suite's
+        leaked-thread guard - which matches per-user threads by name - cannot
+        see it at all."""
         self.run = True
         self.thread = threading.Thread(
-            target=self.updateLoop, args=(callback, refreshInterval), daemon=True)
+            target=self.updateLoop, args=(callback, refreshInterval),
+            name=f"{CONNECT_STATE_THREAD_NAME_PREFIX}{logUser or UNKNOWN_CONNECT_STATE_USER}",
+            daemon=True)
         self.thread.start()
 
     # Deliberately NO stop() method. Shutdown goes through spotifyListener's

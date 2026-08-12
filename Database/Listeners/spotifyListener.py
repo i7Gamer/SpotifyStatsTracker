@@ -656,7 +656,8 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         try:
             with _suppress_signal_in_thread():
                 if self.sp.isLoggedIn():
-                    self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval)
+                    self.sp.startRecentlyPlayedListener(refreshInterval=self.refreshInterval,
+                                                        logUser=self.logUser)
                 else:
                     # self.sp.user_auth stays a plain bool (the client's
                     # not-logged-in sentinel) when the stored cookies fail to

@@ -1303,7 +1303,7 @@ class TestPollIntervalJitter(unittest.TestCase):
         listener, sp = self._build()
 
         sp.startRecentlyPlayedListener.assert_called_once_with(
-            refreshInterval=listener.refreshInterval)
+            refreshInterval=listener.refreshInterval, logUser=listener.logUser)
         self.assertGreaterEqual(listener.refreshInterval, LISTENER_POLL_INTERVAL_SECONDS)
         self.assertLessEqual(
             listener.refreshInterval,
@@ -1314,7 +1314,10 @@ class TestPollIntervalJitter(unittest.TestCase):
         listener, sp = self._build(refreshInterval=2)
 
         self.assertEqual(listener.refreshInterval, 2)
-        sp.startRecentlyPlayedListener.assert_called_once_with(refreshInterval=2)
+        #< logUser rides along so the connect-state thread can be named after
+        #  the user it belongs to (Database/Spotify/recentlyPlayed.start)
+        sp.startRecentlyPlayedListener.assert_called_once_with(refreshInterval=2,
+                                                               logUser=listener.logUser)
 
 
 class TestRateLimitBackoffLogging(unittest.TestCase):

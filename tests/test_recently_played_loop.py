@@ -1428,5 +1428,46 @@ class TestPushTimingConstantsAgree(unittest.TestCase):
                                 2 * PUSH_FRAME_SILENCE_FALLBACK_SECONDS)
 
 
+class TestConnectStateThreadIsNamed(unittest.TestCase):
+    """The connect-state loop is a per-user thread that can legitimately
+    outlive shutdown: Listener.stop() joins it with a 5s bound, and the loop
+    can be inside a slow connect_device() when that expires. Anonymous, the
+    survivor shows up in a dump as "Thread-17" with no user attached, and the
+    suite's leaked-thread guard - which recognises per-user threads by name -
+    cannot see it at all. Its sibling, the listener poll thread, was named for
+    exactly this reason (LISTENER_THREAD_NAME_PREFIX's comment says so); this
+    was the one of the two that never got it."""
+
+    def _startedThreadName(self, **startKwargs):
+        from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+        with patch("spotapi.status.PlayerStatus"):
+            manager = RecentlyPlayedManager(MagicMock())
+        with patch("Database.Spotify.recentlyPlayed.threading.Thread") as mockThread:
+            manager.start(lambda *a: None, 3, **startKwargs)
+        return mockThread.call_args.kwargs
+
+    def test_the_thread_carries_the_user_it_belongs_to(self):
+        kwargs = self._startedThreadName(logUser="timo")
+
+        self.assertEqual(kwargs["name"], "spotify-connect-state-timo")
+
+    def test_an_unknown_user_still_leaves_the_thread_identifiable(self):
+        """A caller with no user handle must still produce the prefix - an
+        anonymous thread is the thing being fixed, so the fallback may not be
+        no name at all."""
+        kwargs = self._startedThreadName()
+
+        self.assertTrue(kwargs["name"].startswith("spotify-connect-state-"))
+
+    def test_the_suites_leaked_thread_guard_recognises_the_prefix(self):
+        """Naming the thread is only half the fix: conftest matches per-user
+        threads against a fixed prefix tuple, so a prefix missing from it is
+        still invisible to the guard."""
+        from Database.Spotify.recentlyPlayed import CONNECT_STATE_THREAD_NAME_PREFIX
+        from conftest import USER_DATABASE_THREAD_NAME_PREFIXES
+
+        self.assertIn(CONNECT_STATE_THREAD_NAME_PREFIX, USER_DATABASE_THREAD_NAME_PREFIXES)
+
+
 if __name__ == "__main__":
     unittest.main()

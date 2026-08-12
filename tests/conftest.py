@@ -22,6 +22,7 @@ import pytest
 USER_DATABASE_THREAD_NAME_PREFIXES = (
     "auto-import-watchdog-",
     "spotify-listener-",
+    "spotify-connect-state-",   #< the listener's connect-state loop, one level down
     "metadata-backfiller-",
     "wrapped-worker-",
     "lastfm-genres-",
