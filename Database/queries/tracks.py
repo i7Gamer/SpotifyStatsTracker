@@ -850,8 +850,9 @@ class TrackQueries:
     @staticmethod
     def _electCanonical(candidates: list):
         """Which release of a group the others fold into: a named release over
-        a blank one, then the plainest title, then the shortest, then most
-        played, then first seen, then id.
+        a blank one, then one with plays here over one with none, then the
+        plainest title, then the shortest, then most played, then first seen,
+        then id.
 
         The title leads because the winner becomes the song's PAGE. Plays
         alone used to decide, which handed the page to whichever pressing
@@ -873,12 +874,33 @@ class TrackQueries:
         prose while spelling the tuple twice; this is the same reason
         _planIsrcMerges exists as a seam between the preview and the run.
 
+        Having ANY plays here is its own tier, between the name guard and the
+        title rule. The title rule reads a name to find the release a person
+        means by the song, and it read one for releases nobody in the instance
+        has ever played too: on the live queue (2026-08-12) three of the fifty
+        visible rows proposed handing the page to an untouched pressing - "We
+        Are the Warriors" on a compilation, against the feat. release carrying
+        all 22 plays - taking the cover and the Spotify link with it. "Played
+        less" is the question the title rule answers; "no history here at all"
+        is not the same question. Groups where nothing has been played tie
+        here and fall through to the title rule unchanged, which is every
+        group in a fresh instance.
+
+        Deliberately NOT folded into _titleRank, which _planIsrcMerges
+        compares alone to let an already-elected head step down: that tuple is
+        the drift-free half, and a key that flips the first time a sibling is
+        played would move a settled song's page out from under the reader.
+        The cost is that this tier only ever decides a FIRST election - a
+        merged group keeps the head it was given.
+
         Rows need name, play_count, created_at and id. The last two are pure
         tie-breakers, there so the answer is deterministic rather than
         whatever order SQLite happened to return."""
-        return max(candidates, key=lambda row: (
-            *_titleRank(row),
-            row["play_count"], -(row["created_at"] or 0), row["id"]))
+        def rank(row):
+            named, plain, brevity = _titleRank(row)
+            return (named, bool(row["play_count"]), plain, brevity,
+                    row["play_count"], -(row["created_at"] or 0), row["id"])
+        return max(candidates, key=rank)
 
     def resolveCanonicalTrackId(self, trackId: str) -> str:
         """The track a merged id should be read as, or the id itself.

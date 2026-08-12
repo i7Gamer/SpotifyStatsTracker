@@ -199,6 +199,38 @@ class TestReviewCandidates(MergeReviewTestCase):
             db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"],
             "B" * 22)
 
+    def test_a_release_nobody_has_played_does_not_take_the_songs_page(self):
+        """The one case the plain-title rule answers badly: a release NOBODY
+        here has ever played. On the live queue (2026-08-12) three of the
+        fifty visible rows proposed handing the song's page to one - "We Are
+        the Warriors" on an untouched compilation, against the feat. release
+        carrying all 22 plays - so the page, its cover and its link would all
+        have become the pressing nobody listened to.
+
+        "Played less" is the question the title rule is for. "No history here
+        at all" is a different one, and it is answered above it."""
+        db = self._db()
+        self._track(db, "A" * 22, "We Are the Warriors",
+                    album="Last of the Warriors, Vol. 1", plays=0)
+        self._track(db, "B" * 22, "We Are the Warriors (feat. Johnny Santoro)", plays=22)
+
+        group = db.repo.getMergeReviewCandidates()["groups"][0]
+
+        self.assertEqual(group["canonical"]["trackId"], "B" * 22)
+        self.assertEqual([m["trackId"] for m in group["members"]], ["A" * 22])
+
+    def test_the_title_rule_still_decides_between_two_unplayed_releases(self):
+        """The new tier separates "has a history here" from "has none", so a
+        group where nothing has been played ties on it - and the title rule
+        underneath decides exactly as it did before."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song - 2005 Remaster", plays=0)
+        self._track(db, "B" * 22, "Song", plays=0)
+
+        self.assertEqual(
+            db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"],
+            "B" * 22)
+
     def test_matching_is_case_insensitive(self):
         db = self._db()
         self._track(db, "A" * 22, "YOU SO DONE", plays=80)
@@ -279,6 +311,22 @@ class TestReviewCandidates(MergeReviewTestCase):
         db = self._db()
         self._track(db, "A" * 22, "Song (Deluxe Edition)", plays=70)
         self._track(db, "B" * 22, "Song", plays=3)
+
+        anchor = db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"]
+        db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
+        canonical = db.repo.previewMergeTracksByIsrc()["groups"][0]["canonical"]["trackId"]
+
+        self.assertEqual(anchor, canonical)
+        self.assertEqual(anchor, "B" * 22)
+
+    def test_both_tiers_agree_that_an_unplayed_release_steps_aside(self):
+        """Same reason as the title rule above: the newest key in the shared
+        election is the one most likely to be added to only the tier that
+        asked for it. The matcher reaches this state on its own - a pressing
+        with no plays is exactly what a freshly backfilled ISRC pairs up."""
+        db = self._db()
+        self._track(db, "A" * 22, "Song", plays=0)
+        self._track(db, "B" * 22, "Song (Deluxe Edition)", plays=9)
 
         anchor = db.repo.getMergeReviewCandidates()["groups"][0]["canonical"]["trackId"]
         db.repo.updateTrackIsrcs({"A" * 22: ISRC_A, "B" * 22: ISRC_A})
