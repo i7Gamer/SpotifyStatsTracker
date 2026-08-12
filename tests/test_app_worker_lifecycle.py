@@ -216,6 +216,43 @@ class TestShutdownStopsTheSharedThreadPools(unittest.TestCase):
 
         self.assertEqual(sizesAfter, sizesBefore)
 
+    def test_the_pools_are_retired_after_the_threads_that_feed_them_are_stopped(self):
+        """Order is the whole point. Every per-user thread that submits media
+        work is alive until _stopDatabasesConcurrently returns (bounded by
+        USER_STOP_JOIN_TIMEOUT_SECONDS = 30s), and shutdownWorkerPools installs
+        a live REPLACEMENT pool. Retiring the pools first therefore hands that
+        whole 30s window a fresh pool nothing will ever stop again - the
+        listener's appendTrackData -> saveImagesFromTrack -> submit path queues
+        a CDN download onto it, and the only thing left to stop that is the
+        interpreter's atexit hook, i.e. exactly what this fix removes."""
+        from Database.database import Database
+        order = []
+        mocks = (MagicMock(), MagicMock(), MagicMock())
+        for index, mock in enumerate(mocks):
+            mock._max_workers = 4
+            mock.shutdown.side_effect = lambda *a, i=index, **k: order.append(f"pool{i}")
+        with _appWithStubbedWorkers() as (dashboard, _seams):
+            originals = (Database._imageDownloadExecutor,
+                         Database._artistBioFetchExecutor,
+                         Database._albumBioFetchExecutor)
+            (Database._imageDownloadExecutor,
+             Database._artistBioFetchExecutor,
+             Database._albumBioFetchExecutor) = mocks
+            try:
+                db = MagicMock()
+                db.stop.side_effect = lambda *a, **k: order.append("userStop")
+                dashboard.user_databases = {"timo": db}
+
+                dashboard.shutdown()
+            finally:
+                (Database._imageDownloadExecutor,
+                 Database._artistBioFetchExecutor,
+                 Database._albumBioFetchExecutor) = originals
+
+        self.assertIn("userStop", order)
+        self.assertLess(order.index("userStop"), order.index("pool0"),
+                        "the pools must be retired only once nothing can still submit to them")
+
     def test_a_failing_pool_does_not_abort_the_rest_of_shutdown(self):
         """Same rule the backup/email workers already follow: one member
         raising must not leave the per-user databases unsignalled."""

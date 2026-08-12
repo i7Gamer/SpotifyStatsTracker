@@ -343,9 +343,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         cancel_futures drops what has not started: every one of these tasks is
         best-effort media that the next page view re-triggers, and an image
         claim abandoned mid-flight is already recovered at boot by
-        deleteStalePendingImages. wait=False because shutdown() is inside a
-        bounded budget - the tasks are daemons and the process is on its way
-        out either way.
+        deleteStalePendingImages.
+
+        wait=False keeps THIS call short; it does not make an already-running
+        task free. ThreadPoolExecutor workers have not been daemons since
+        bpo-39812 (3.9) - concurrent.futures joins every one of them, untimed,
+        at interpreter exit - so a download in flight when SIGTERM lands is
+        still on the process's way out, bounded by its own HTTP timeout rather
+        than by anything here. Dropping the QUEUE is what this buys, and the
+        queue is the unbounded part.
 
         Each pool is REPLACED by a fresh one rather than left shut: a stopped
         ThreadPoolExecutor raises on every later submit(), and one process can
@@ -359,8 +365,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         for name in ("_imageDownloadExecutor", "_artistBioFetchExecutor", "_albumBioFetchExecutor"):
             pool = getattr(cls, name)
             try:
-                pool.shutdown(wait=False, cancel_futures=True)
+                # Replacement FIRST, then retire the object we already hold: a
+                # thread that reads the class attribute between the two must
+                # never get a shut-down pool back, because submit() on one
+                # raises RuntimeError - which on the listener's path would take
+                # an unwritten play down with it.
                 setattr(cls, name, concurrent.futures.ThreadPoolExecutor(max_workers=pool._max_workers))
+                pool.shutdown(wait=False, cancel_futures=True)
             except Exception as e:
                 # Per pool, for the reason SpotifyDashboardApp.shutdown() guards
                 # its two workers one at a time: one failure must not leave the
