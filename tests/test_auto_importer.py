@@ -565,6 +565,32 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
     @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_replacement_file_is_announced_again(self, mock_move, mock_makedirs, mock_exists):
+        """The announce-once set is keyed by path, and a path is not an
+        identity here - the same failure mode _readAttempts already had. A user
+        who replaces a stuck file with a new copy under the same name would
+        otherwise have it quarantined in silence, and the log is the only place
+        this is visible at all."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        badBytes = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+        mock_move.side_effect = PermissionError("read-only mount")
+        path = "/dummy/path/mojibake.json"
+        stamps = iter([(100, 1000.0), (100, 1000.0), (250, 2000.0)])
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=badBytes)), \
+             patch.object(AutoImporter, "_fileStamp", lambda self, p: next(stamps)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="DEBUG") as captured:
+                for _ in range(3):
+                    importer._handleImport([path])
+
+        announcements = [r for r in captured.records if "Could not decode" in r.getMessage()]
+        self.assertEqual(len(announcements), 2,
+                         "once for the original, once for the copy that replaced it")
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
     def test_one_undecodable_file_does_not_stop_the_rest_of_the_batch(self, mock_move, mock_makedirs, mock_exists):
         mock_exists.return_value = False
         import_callback = MagicMock(return_value=["imported"])

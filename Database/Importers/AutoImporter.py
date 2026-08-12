@@ -190,6 +190,11 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
 # FAILED/ then makes it visible to someone who never reads the log.
 MAX_TRANSIENT_READ_ATTEMPTS = 3
 
+# Sentinel for "no quarantine announced for this path yet". Not None: None is a
+# real stamp, meaning the file could not be stat'd on that pass, and a missing
+# entry must not compare equal to it.
+_NEVER_ANNOUNCED = object()
+
 
 class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; files end in DONE/ or FAILED/
     def __init__(self, folderPath, importCallback, pollInterval=5, keyword=None):
@@ -206,11 +211,15 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         # re-copied it, and this deployment drops the same filename every week,
         # so a path alone is not an identity.
         self._readAttempts = {}
-        # Paths already announced as being quarantined. A quarantine whose MOVE
-        # fails is retried on every later delivery - unbounded on purpose, so
-        # the file recovers the moment the lock or the read-only mount clears -
-        # and this is what keeps that from being an unbounded log line too.
-        self._quarantineAnnounced = set()
+        # path -> the stamp of the file we last announced a quarantine for. A
+        # quarantine whose MOVE fails is retried on every later delivery -
+        # unbounded on purpose, so the file recovers the moment the lock or the
+        # read-only mount clears - and this is what keeps that from being an
+        # unbounded log line too. Keyed by stamp as well as path for the same
+        # reason _readAttempts is: a replacement copy under the same name is a
+        # different file, and quarantining one in silence would hide it
+        # completely, the log being the only place this is visible.
+        self._quarantineAnnounced = {}
 
     def _quarantine(self, path, retryable, reason):
         """Move a file to FAILED/, saying why exactly once.
@@ -225,14 +234,15 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         Both failure arms route through here so they cannot drift: the
         undecodable one and the read-failed-too-often one differ only in the
         reason they announce."""
-        firstTime = path not in self._quarantineAnnounced
+        stamp = self._fileStamp(path)
+        firstTime = self._quarantineAnnounced.get(path, _NEVER_ANNOUNCED) != stamp
         if firstTime:
-            self._quarantineAnnounced.add(path)
+            self._quarantineAnnounced[path] = stamp
             logger.error(reason)
         try:
             shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
             self._readAttempts.pop(path, None)
-            self._quarantineAnnounced.discard(path)
+            self._quarantineAnnounced.pop(path, None)
         except Exception as moveError:
             logger.log(logging.ERROR if firstTime else logging.DEBUG,
                        "Could not move %s to FAILED/, will try again: %s", path, moveError)
