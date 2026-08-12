@@ -79,6 +79,100 @@ class TestMusicoletImport(unittest.TestCase):
         tracks = list(gen)
         self.assertEqual(len(tracks), 1)
 
+    def _musicoletRows(self, *dataRows):
+        """Rows as the importer really receives them - _convertToList strips the
+        header before anything else sees them (splitlines()[1:]), and coverage()
+        is fed the same stripped list. Nothing downstream ever meets the header
+        row, which matters here: `int("DURATION_MS")` would otherwise land in
+        the very drop counter these tests are about."""
+        return list(dataRows)
+
+    def test_an_unreadable_csv_row_is_counted_as_a_malformed_drop(self):
+        """Every other drop in this importer is counted - _parseHistory bumps
+        droppedMalformed/droppedNegativeTime, _processPlay bumps three more -
+        and _parseHistory's docstring names the uncounted drop as "the
+        uncounted drop this codebase treats as data loss". The Musicolet
+        expansion runs BEFORE that loop and swallowed bad rows silently, so the
+        two consumers of these counters could not see them: the all-unreadable
+        guard, and the overwrite import's refusal to delete a range it cannot
+        rebuild."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            "/music/a.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,1",
+            "/music/b.mp3,Song Two,Artist Two,Album Two,Artist Two,,Pop,2020,,2",   #< blank DURATION_MS
+            "/music/c.mp3,Truncated",                                               #< too few columns
+        )
+        stats = {}
+
+        expanded = importer._expandMusicoletRows(rows, stats=stats)
+
+        self.assertEqual(len(expanded), 1)   #< only the good row's single play
+        self.assertEqual(stats.get("droppedMalformed"), 2)
+        self.assertEqual(stats.get("entriesSeen"), 2)   #< the two rows that produced no entry
+
+    def test_a_wholly_unreadable_csv_reports_every_entry_as_dropped(self):
+        """entriesSeen == droppedMalformed is exactly the equality
+        import_service's all-unreadable guard tests. With the expansion
+        counting nothing, both were 0 for a file where nothing parsed, the
+        guard was skipped, and the import reported "complete" with 0 plays."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows("/music/a.mp3,Only,Two", "/music/b.mp3,Also,Short")
+        stats = {}
+
+        expanded = importer._expandMusicoletRows(rows, stats=stats)
+
+        self.assertEqual(expanded, [])
+        self.assertEqual(stats["entriesSeen"], stats["droppedMalformed"])
+        self.assertEqual(stats["entriesSeen"], 2)
+
+    def test_a_well_formed_csv_reports_no_drops(self):
+        """The guard against over-counting: a row that expands normally must
+        contribute nothing to droppedMalformed, or every Musicolet OVERWRITE
+        import aborts with "entr(y/ies) could not be read"."""
+        importer = self._mockedImporter()
+        rows = MUSICOLET_CSV.splitlines()[1:]
+        stats = {}
+
+        importer._expandMusicoletRows(rows, stats=stats)
+
+        self.assertEqual(stats.get("droppedMalformed", 0), 0)
+
+    def test_a_blank_line_is_not_a_dropped_play(self):
+        """Blank lines are formatting, not lost data - counting them would
+        abort an overwrite import over a trailing newline."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            "/music/a.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,1", "", "   ")
+        stats = {}
+
+        importer._expandMusicoletRows(rows, stats=stats)
+
+        self.assertEqual(stats.get("droppedMalformed", 0), 0)
+
+    def test_the_import_path_threads_the_drop_counters_through(self):
+        """The counters only matter if the real entry point supplies the dict -
+        _expandMusicoletRows is called from importMusicoletCSVExport, and a
+        stats parameter that never reaches it changes nothing."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            "/music/a.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,1",
+            "/music/b.mp3,Broken")
+        stats = {}
+
+        list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=lambda *a: None, stats=stats))
+
+        self.assertEqual(stats.get("droppedMalformed"), 1)
+
+    def test_coverage_does_not_pollute_an_import_s_counters(self):
+        """coverage() runs the same expansion over the same rows in the
+        overwrite path, separately from staging. It must not double-count."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows("/music/b.mp3,Broken")
+
+        result = importer.coverage(rows, "musicoletPremium")
+
+        self.assertIsNone(result)   #< nothing parsed, so there is no range to delete
+
     def test_prefetch_progress_callback_is_monotonic(self):
         importer = self._mockedImporter()
         

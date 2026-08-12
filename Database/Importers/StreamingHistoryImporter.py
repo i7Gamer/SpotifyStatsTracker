@@ -608,6 +608,9 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
         entryFunctions = {
             "spotifyAcountExport": (self._accountEntryTuple, lambda rows: rows),
             "spotifyExtendedExport": (self._extendedEntryTuple, lambda rows: rows),
+            # No stats here on purpose: coverage() runs the same expansion over
+            # the same rows as staging does, separately, and passing the import's
+            # dict would count every dropped row twice.
             "musicoletPremium": (self._musicoletEntryTuple, self._expandMusicoletRows),
         }
         if exportType not in entryFunctions:
@@ -639,7 +642,24 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
     # track only adds the new tail of plays.
     MUSICOLET_SYNTHETIC_TIME_ANCHOR = datetime.datetime(2000, 1, 1)
 
-    def _expandMusicoletRows(self, rows):
+    def _expandMusicoletRows(self, rows, stats=None):
+        """One CSV row per track, expanded into `PLAY_COUNT` synthetic plays.
+
+        This runs BEFORE _parseHistory, so it owns the same counting duty that
+        docstring describes: a row lost here produces no entry at all, and
+        _parseHistory's per-entry `entriesSeen` therefore never sees it. Both
+        consumers of these counters go blind to it - the all-unreadable guard
+        (entriesSeen == droppedMalformed) and, worse, the overwrite import's
+        refusal to delete a range it cannot rebuild. That second one has teeth
+        here specifically: every Musicolet row is anchored at the same
+        MUSICOLET_SYNTHETIC_TIME_ANCHOR, so the SURVIVING rows' covered range
+        spans the dropped row's timestamps too, and its plays are deleted with
+        nothing left to re-insert them.
+
+        The header row is NOT our problem: _convertToList strips it
+        (splitlines()[1:]) and coverage() is handed the same stripped list, so
+        `int("DURATION_MS")` never reaches the counter below. Were it to, every
+        well-formed Musicolet overwrite import would abort."""
         ### Data formatted in: FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT
         NAME = 1
         ARTISTS = 2
@@ -649,10 +669,12 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
 
         formatedData = []
         reader = csv.reader(rows)
+        loggedMalformed = 0
 
-        for song in reader:
-            if not song:
-                continue
+        for index, song in enumerate(reader):
+            if not song or not any(field.strip() for field in song):
+                continue   #< blank line: formatting, not a lost play - counting it
+                           #  would abort an overwrite import over a stray newline
 
             try:
                 name = song[NAME]
@@ -673,8 +695,19 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                     ))
                     trackTime += datetime.timedelta(milliseconds=timePlayed)
 
-            except (IndexError, ValueError):
-                continue
+            except (IndexError, ValueError) as e:
+                # entriesSeen too, not just the drop: the all-unreadable guard
+                # compares the two, and a row that never expanded is a row
+                # _parseHistory will never count.
+                self._bumpStat(stats, "entriesSeen")
+                self._bumpStat(stats, "droppedMalformed")
+                # Capped exactly as _parseHistory caps its own: a misclassified
+                # file makes every row fail. Position and error only - the row
+                # itself is the user's listening history.
+                if loggedMalformed < self.MAX_MALFORMED_ENTRY_LOG_LINES:
+                    loggedMalformed += 1
+                    logger.warning("Skipping unreadable Musicolet CSV row at position %d: %s",
+                                   index, parseError(e))
 
         return formatedData
 
@@ -683,4 +716,5 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
         return name, mainArtist, startTimestamp, timePlayed, None, albumName
 
     def importMusicoletCSVExport(self, rows, known=None, progressCallback=None, stats=None):
-        yield from self._import(self._musicoletEntryTuple, self._expandMusicoletRows(rows), known, progressCallback, stats=stats)
+        yield from self._import(self._musicoletEntryTuple, self._expandMusicoletRows(rows, stats=stats),
+                                known, progressCallback, stats=stats)
