@@ -405,7 +405,12 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
     def test_a_file_that_reads_on_a_later_pass_forgets_its_earlier_failures(
             self, mock_move, mock_makedirs, mock_exists):
         """The counter is per file and must reset on success, or a folder used
-        for months accumulates attempts against names that keep coming back."""
+        for months accumulates attempts against names that keep coming back.
+
+        Driven to the very edge of the budget on BOTH sides of the successful
+        read: a single failure either side proves nothing, because 1 and 2 are
+        both under a MAX of 3 and produce the same retryable list. With the
+        reset deleted, the second post-success failure quarantines instead."""
         from Database.Importers.AutoImporter import MAX_TRANSIENT_READ_ATTEMPTS
         mock_exists.return_value = False
         importer = AutoImporter("/dummy/path", MagicMock(return_value=["imported"]))
@@ -414,16 +419,51 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
 
         with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
             with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
-                importer._handleImport([path])
+                for _ in range(MAX_TRANSIENT_READ_ATTEMPTS - 1):
+                    importer._handleImport([path])
         with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
             importer._handleImport([path])   #< reads fine this time
+
+        self.assertEqual(importer._readAttempts, {})   #< the direct seam
+
         with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
             with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
-                retry = importer._handleImport([path])
+                for _ in range(MAX_TRANSIENT_READ_ATTEMPTS - 1):
+                    retry = importer._handleImport([path])
 
         self.assertEqual(list(retry), [path],
-                         "the successful read must have cleared the earlier attempt")
-        self.assertGreater(MAX_TRANSIENT_READ_ATTEMPTS, 1)
+                         "the successful read must have cleared the earlier attempts")
+        #< the successful read imports and moves to DONE/, so "not moved" is the
+        #  wrong assertion here - what must never happen is a QUARANTINE
+        for call in mock_move.call_args_list:
+            self.assertNotIn("FAILED", os.path.normpath(call[0][1]).split(os.sep))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_freshly_dropped_file_gets_its_own_retry_budget(
+            self, mock_move, mock_makedirs, mock_exists):
+        """_readAttempts is keyed by path and outlives the file it describes:
+        nothing pops it when the user pulls a half-copied export back out. The
+        recurring case here is the same filename every week - the second copy
+        would inherit the first's attempts and be quarantined on its FIRST
+        lock, under a message naming a count that never happened."""
+        from Database.Importers.AutoImporter import MAX_TRANSIENT_READ_ATTEMPTS
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=["imported"]))
+        path = "/dummy/path/export.json"
+        locked = PermissionError("being used by another process")
+        stamps = iter([(100, 1000.0)] * (MAX_TRANSIENT_READ_ATTEMPTS - 1) + [(250, 2000.0)])
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)), \
+             patch.object(AutoImporter, "_fileStamp", lambda self, p: next(stamps)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                for _ in range(MAX_TRANSIENT_READ_ATTEMPTS - 1):
+                    importer._handleImport([path])
+                retry = importer._handleImport([path])   #< a different file, same name
+
+        self.assertEqual(list(retry), [path], "the new copy must get the full budget")
+        mock_move.assert_not_called()
 
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
@@ -473,6 +513,28 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
 
         self.assertEqual(list(retry), [path],
                          "a file that could be neither read nor quarantined must stay reachable")
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_an_undecodable_file_whose_quarantine_fails_stays_reachable(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The decode arm's own comment says the file "simply stays for the
+        next pass". Since the watchdog keeps a delivered name in knownFiles,
+        there IS no next pass for anything the callback does not hand back -
+        which is why the sibling read-failure arm re-queues on a failed move.
+        This arm was left behind, so its comment described the sibling's
+        behaviour rather than its own."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        badBytes = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+        mock_move.side_effect = PermissionError("held by another process")
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=badBytes)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                retry = importer._handleImport(["/dummy/path/mojibake.json"])
+
+        self.assertEqual(list(retry), ["/dummy/path/mojibake.json"])
 
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")

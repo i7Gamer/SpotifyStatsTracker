@@ -198,9 +198,38 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         self.pollInterval = pollInterval
         self.keyword = keyword   #< None = import everything; else the filename must contain it
         self.wd = Watchdog()
-        # path -> consecutive unreadable deliveries. Only the watchdog thread
-        # touches it, and it is cleared per file on the first successful read.
+        # path -> (consecutive unreadable deliveries, the file's stamp when we
+        # last counted one). Only the watchdog thread touches it, and an entry
+        # is cleared on the first successful read or quarantine. The stamp is
+        # what stops a NEW file inheriting an old one's budget: nothing here
+        # can see that the user pulled a half-copied export back out and
+        # re-copied it, and this deployment drops the same filename every week,
+        # so a path alone is not an identity.
         self._readAttempts = {}
+
+    @staticmethod
+    def _fileStamp(path):
+        """(size, mtime), or None when it cannot be read right now.
+
+        A locked file still answers os.stat - that is what the watchdog's own
+        size-stabilization gate relies on - so this works in exactly the case
+        it is needed for: telling a re-copied file apart from the one that
+        failed before it."""
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return (stat.st_size, stat.st_mtime)
+
+    def _countReadFailure(self, path):
+        """Bump and return this path's consecutive unreadable-delivery count,
+        starting over when the file is not the one the last failure was
+        against."""
+        stamp = self._fileStamp(path)
+        previous = self._readAttempts.get(path)
+        attempts = previous[0] + 1 if previous and previous[1] == stamp else 1
+        self._readAttempts[path] = (attempts, stamp)
+        return attempts
 
     def _destinationPath(self, path, subdirName="DONE"):
         fileDirectory = os.path.dirname(path)
@@ -266,16 +295,21 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                 try:
                     shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
                 except Exception as moveError:
-                    # The quarantine can hit the same lock that broke the read;
-                    # the file simply stays for the next pass.
-                    logger.error(f"Could not move {path} to FAILED/: {moveError}")
+                    # Re-queued for the same reason the read-failure arm below
+                    # re-queues: the watchdog keeps a delivered name in
+                    # knownFiles, so a path not handed back is never sighted
+                    # again and the file is stranded in the watch folder under
+                    # a log line claiming it was quarantined. Re-reading it
+                    # will fail identically, but the MOVE is what needs another
+                    # go, and the counter bounds how many it gets.
+                    logger.error(f"Could not move {path} to FAILED/, will try again: {moveError}")
+                    retryable.append(path)
             except Exception as e:
                 # Transient by assumption (a lock that clears), so it is handed
                 # back for another delivery rather than quarantined - but only
                 # for a bounded number of tries, because the watchdog cannot
                 # tell a lock that clears from one that never will.
-                attempts = self._readAttempts.get(path, 0) + 1
-                self._readAttempts[path] = attempts
+                attempts = self._countReadFailure(path)
                 if attempts < MAX_TRANSIENT_READ_ATTEMPTS:
                     logger.error(f"Error reading file {path} (attempt {attempts} of "
                                  f"{MAX_TRANSIENT_READ_ATTEMPTS}, will retry): {e}")
