@@ -539,6 +539,32 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
     @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_repeatedly_unquarantinable_file_is_announced_once_not_every_poll(
+            self, mock_move, mock_makedirs, mock_exists):
+        """Re-queuing on a failed move buys recovery at the price of noise, and
+        the read-failure arm pays for it with a counter: loud on the delivery
+        that gives up, DEBUG after. The decode arm consults no counter at all,
+        so an undecodable file on a read-only mount logged BOTH its lines at
+        ERROR on every delivery - two lines per poll interval, for the life of
+        the process. Unbounded retry is intended; unbounded shouting is not."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]))
+        badBytes = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+        mock_move.side_effect = PermissionError("read-only mount")
+        path = "/dummy/path/mojibake.json"
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=badBytes)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="DEBUG") as captured:
+                for _ in range(5):
+                    retry = importer._handleImport([path])
+
+        errors = [r for r in captured.records if r.levelno >= logging.ERROR]
+        self.assertEqual(len(errors), 2, f"one announcement + one move failure, got: {errors}")
+        self.assertEqual(list(retry), [path], "it must still be re-queued every time")
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
     def test_one_undecodable_file_does_not_stop_the_rest_of_the_batch(self, mock_move, mock_makedirs, mock_exists):
         mock_exists.return_value = False
         import_callback = MagicMock(return_value=["imported"])

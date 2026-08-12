@@ -206,6 +206,37 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         # re-copied it, and this deployment drops the same filename every week,
         # so a path alone is not an identity.
         self._readAttempts = {}
+        # Paths already announced as being quarantined. A quarantine whose MOVE
+        # fails is retried on every later delivery - unbounded on purpose, so
+        # the file recovers the moment the lock or the read-only mount clears -
+        # and this is what keeps that from being an unbounded log line too.
+        self._quarantineAnnounced = set()
+
+    def _quarantine(self, path, retryable, reason):
+        """Move a file to FAILED/, saying why exactly once.
+
+        On a failed move the path is handed back for another delivery: the
+        watchdog keeps a delivered name in knownFiles, so a path not returned
+        is never sighted again and the file is stranded in the watch folder
+        under a log line claiming it was quarantined. On Windows the lock that
+        makes open() raise makes MoveFileEx fail too, so that is the expected
+        pairing, not a corner case.
+
+        Both failure arms route through here so they cannot drift: the
+        undecodable one and the read-failed-too-often one differ only in the
+        reason they announce."""
+        firstTime = path not in self._quarantineAnnounced
+        if firstTime:
+            self._quarantineAnnounced.add(path)
+            logger.error(reason)
+        try:
+            shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
+            self._readAttempts.pop(path, None)
+            self._quarantineAnnounced.discard(path)
+        except Exception as moveError:
+            logger.log(logging.ERROR if firstTime else logging.DEBUG,
+                       "Could not move %s to FAILED/, will try again: %s", path, moveError)
+            retryable.append(path)
 
     @staticmethod
     def _fileStamp(path):
@@ -289,21 +320,10 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                 # backup tool, or still being copied when the startup scan
                 # picked it up - raises OSError and reads fine on a later pass,
                 # so quarantining that one would lose a good import.
-                logger.error(f"Could not decode {os.path.basename(path)} as UTF-8 - moving to FAILED/. "
-                             f"Re-export it (or re-save it as UTF-8) and drop it back into the "
-                             f"watch folder: {e}")
-                try:
-                    shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
-                except Exception as moveError:
-                    # Re-queued for the same reason the read-failure arm below
-                    # re-queues: the watchdog keeps a delivered name in
-                    # knownFiles, so a path not handed back is never sighted
-                    # again and the file is stranded in the watch folder under
-                    # a log line claiming it was quarantined. Re-reading it
-                    # will fail identically, but the MOVE is what needs another
-                    # go, and the counter bounds how many it gets.
-                    logger.error(f"Could not move {path} to FAILED/, will try again: {moveError}")
-                    retryable.append(path)
+                self._quarantine(path, retryable,
+                                 f"Could not decode {os.path.basename(path)} as UTF-8 - moving to "
+                                 f"FAILED/. Re-export it (or re-save it as UTF-8) and drop it back "
+                                 f"into the watch folder: {e}")
             except Exception as e:
                 # Transient by assumption (a lock that clears), so it is handed
                 # back for another delivery rather than quarantined - but only
@@ -315,29 +335,13 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                                  f"{MAX_TRANSIENT_READ_ATTEMPTS}, will retry): {e}")
                     retryable.append(path)
                     continue
-                # The loud pair of lines is emitted once, on the attempt that
-                # first gives up; a file that then also refuses to MOVE keeps
-                # being retried quietly rather than filling the log forever.
-                giveUpNow = attempts == MAX_TRANSIENT_READ_ATTEMPTS
-                if giveUpNow:
-                    logger.error(f"Could not read {os.path.basename(path)} after "
+                # _quarantine owns the announce-once and the re-queue-on-failed-
+                # move, shared with the decode arm above so the two cannot drift.
+                self._quarantine(path, retryable,
+                                 f"Could not read {os.path.basename(path)} after "
                                  f"{MAX_TRANSIENT_READ_ATTEMPTS} attempts - moving to FAILED/. "
                                  f"Close whatever is holding it and drop it back into the "
                                  f"watch folder: {e}")
-                try:
-                    shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
-                    self._readAttempts.pop(path, None)
-                except Exception as moveError:
-                    # On Windows the exclusive lock that makes open() raise
-                    # makes MoveFileEx fail too, so this is the EXPECTED path
-                    # for a genuinely stuck file, not a corner case. It stays
-                    # retryable: dropping it here would strand it in the watch
-                    # folder for the life of the process - the dead end this
-                    # whole mechanism exists to remove - while the line above
-                    # claims it went to FAILED/.
-                    logger.log(logging.ERROR if giveUpNow else logging.DEBUG,
-                               "Could not move %s to FAILED/, will try again: %s", path, moveError)
-                    retryable.append(path)
 
         if not toImport:
             return retryable
