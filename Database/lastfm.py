@@ -164,6 +164,16 @@ LASTFM_VALIDATION_ARTIST = "Cher"   #< Last.fm's own docs example; any stable ar
 # as the existing "transient" status - try again.
 LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS = 5
 
+# The page-triggered bio fetches (lazyFetchArtistBio / lazyFetchAlbumBio). A
+# DIFFERENT reason from the two above: these run on a shared pool, not a
+# request thread, so nothing is being held - but shutdown cancels only the
+# tasks that have not STARTED, and one already inside the limiter's untimed
+# time.sleep parks for the whole remaining penalty window (60s on a Last.fm
+# 429). That outlasts the container's stop grace period, so the bound is what
+# keeps a running one inside the shutdown budget. A timed-out lookup is
+# "transient": unattempted, and a later page view retries it.
+LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS = 5
+
 OUTCOME_OK = "ok"
 OUTCOME_NOT_FOUND = "not_found"
 OUTCOME_TRANSIENT = "transient"

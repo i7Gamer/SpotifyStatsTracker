@@ -10,7 +10,8 @@ from __future__ import annotations
 # (stdlib, or Database/lastfm.py, which imports nothing of ours), so a real
 # import costs nothing and cannot cycle.
 from pathlib import Path
-from Database.lastfm import LastfmClient, LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS
+from Database.lastfm import (LastfmClient, LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS,
+                             LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
 
 # Module-global names (LastfmClient, requests, Importer, logger, time, Path, ...)
 # are reached through the database module, so the suite's
@@ -273,7 +274,8 @@ class MediaFetchMixin:
             apiKey = self.repo.getUserLastfmApiKey(self.user)
             if not apiKey:
                 return False   #< key removed between the claim and this task running; leave unattempted
-            outcome = _dbmod.LastfmClient(apiKey).getArtistInfo(artistName)
+            outcome = _dbmod.LastfmClient(apiKey).getArtistInfo(
+                artistName, timeout=LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
             if outcome is None or outcome.status not in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND):
                 return False   #< transient/invalid-key: stays unattempted, a later page view retries
             bio = outcome.bio if outcome.status == _dbmod.OUTCOME_OK else None
@@ -335,7 +337,9 @@ class MediaFetchMixin:
                 return False   #< key removed between the claim and this task running; leave unattempted
             client = _dbmod.LastfmClient(apiKey)
             outcome = self._lastfmLookupBioOutcome(
-                lambda name: client.getAlbumInfo(artistName, name), albumName)
+                lambda name: client.getAlbumInfo(
+                    artistName, name, timeout=LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS),
+                albumName)
             if outcome is None or outcome.status not in (_dbmod.OUTCOME_OK, _dbmod.OUTCOME_NOT_FOUND):
                 return False   #< transient/invalid-key: stays unattempted, a later page view retries
             bio = outcome.bio if outcome.status == _dbmod.OUTCOME_OK else None

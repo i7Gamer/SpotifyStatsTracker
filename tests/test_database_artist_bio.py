@@ -16,7 +16,8 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 
 from Database.database import Database
 from Database.repository import Repository
-from Database.lastfm import ArtistInfoOutcome, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+from Database.lastfm import (ArtistInfoOutcome, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT,
+                             OUTCOME_INVALID_KEY, LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
 
 
 class LazyFetchArtistBioTestCase(unittest.TestCase):
@@ -89,10 +90,28 @@ class LazyFetchArtistBioTestCase(unittest.TestCase):
             result = future.result(timeout=5)
 
         self.assertTrue(result)
-        mockClient.getArtistInfo.assert_called_once_with("Some Artist")
+        mockClient.getArtistInfo.assert_called_once_with(
+            "Some Artist", timeout=LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
         state = db.repo.getArtistBioState("art1")
         self.assertEqual(state["bio"], "A great band.")
         self.assertIsNotNone(state["attempted_at"])
+
+    def test_the_lookup_is_bounded_so_shutdown_cannot_be_outlasted(self):
+        """The lazy fetch runs on a shared pool that shutdown() cancels - but
+        cancel_futures only drops tasks that have not STARTED. One already
+        inside the limiter reaches SlotRateLimiter.acquire's untimed
+        time.sleep and parks for the whole remaining penalty window (60s after
+        a Last.fm 429), which outlasts the container's stop grace period. The
+        acquire has to be bounded, exactly as refreshLastfmEntity's is."""
+        db = self._db()
+        self._seedArtist(db, "art1")
+        mockClient = MagicMock()
+        mockClient.getArtistInfo.return_value = ArtistInfoOutcome(OUTCOME_OK, "A great band.")
+        with patch("Database.database.LastfmClient", return_value=mockClient):
+            db.lazyFetchArtistBio("art1", "Some Artist").result(timeout=5)
+
+        self.assertEqual(mockClient.getArtistInfo.call_args.kwargs.get("timeout"),
+                         LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
 
     def test_definitive_no_bio_still_stamps_attempted(self):
         """OUTCOME_OK with no bio, or OUTCOME_NOT_FOUND, are both definitive
@@ -148,7 +167,7 @@ class LazyFetchArtistBioTestCase(unittest.TestCase):
         self._seedArtist(db, "art1")
         gate = threading.Event()
 
-        def gatedGetArtistInfo(name):
+        def gatedGetArtistInfo(name, timeout=None):
             gate.wait(timeout=5)
             return ArtistInfoOutcome(OUTCOME_OK, "Bio text.")
 
@@ -175,7 +194,7 @@ class LazyFetchArtistBioTestCase(unittest.TestCase):
         self._seedArtist(db, "artSlow")
         gate = threading.Event()
 
-        def gatedGetArtistInfo(name):
+        def gatedGetArtistInfo(name, timeout=None):
             gate.wait(timeout=5)
             return ArtistInfoOutcome(OUTCOME_OK, "Bio text.")
 

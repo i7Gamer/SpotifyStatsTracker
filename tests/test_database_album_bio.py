@@ -16,7 +16,8 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
 
 from Database.database import Database
 from Database.repository import Repository
-from Database.lastfm import AlbumInfoOutcome, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+from Database.lastfm import (AlbumInfoOutcome, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT,
+                             OUTCOME_INVALID_KEY, LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
 
 
 class LazyFetchAlbumBioTestCase(unittest.TestCase):
@@ -80,10 +81,27 @@ class LazyFetchAlbumBioTestCase(unittest.TestCase):
             result = future.result(timeout=5)
 
         self.assertTrue(result)
-        mockClient.getAlbumInfo.assert_called_once_with("Some Artist", "Some Album")
+        mockClient.getAlbumInfo.assert_called_once_with(
+            "Some Artist", "Some Album", timeout=LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
         state = db.repo.getAlbumBioState("al1")
         self.assertEqual(state["bio"], "A landmark album.")
         self.assertIsNotNone(state["attempted_at"])
+
+    def test_the_lookup_is_bounded_so_shutdown_cannot_be_outlasted(self):
+        """Sibling of the artist-bio bound - shutdown() cancels only the pool
+        tasks that have not STARTED, so a running one must not be able to park
+        in the limiter's untimed sleep for a whole 60s penalty window. The
+        name-fallback retry goes through the same lambda, so it is bounded by
+        construction rather than by a second timeout argument."""
+        db = self._db()
+        self._seedAlbum(db, "al1")
+        mockClient = MagicMock()
+        mockClient.getAlbumInfo.return_value = AlbumInfoOutcome(OUTCOME_OK, "A landmark album.")
+        with patch("Database.database.LastfmClient", return_value=mockClient):
+            db.lazyFetchAlbumBio("al1", "Some Album", "Some Artist").result(timeout=5)
+
+        self.assertEqual(mockClient.getAlbumInfo.call_args.kwargs.get("timeout"),
+                         LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS)
 
     def test_decorated_album_retries_with_cleaned_name_when_verbatim_has_no_bio(self):
         """The lazy fetch must reuse the worker's "(Deluxe Edition)" fallback:
@@ -92,7 +110,7 @@ class LazyFetchAlbumBioTestCase(unittest.TestCase):
         db = self._db()
         self._seedAlbum(db, "alD", "Album D (Deluxe Edition)")
 
-        def bioSideEffect(artist, album):
+        def bioSideEffect(artist, album, timeout=None):
             if album == "Album D":
                 return AlbumInfoOutcome(OUTCOME_OK, "The deluxe-stripped bio.")
             return AlbumInfoOutcome(OUTCOME_NOT_FOUND, None)
@@ -105,8 +123,9 @@ class LazyFetchAlbumBioTestCase(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(mockClient.getAlbumInfo.call_count, 2)
-        mockClient.getAlbumInfo.assert_any_call("Artist X", "Album D (Deluxe Edition)")
-        mockClient.getAlbumInfo.assert_any_call("Artist X", "Album D")
+        timeoutKwarg = {"timeout": LASTFM_LAZY_FETCH_ACQUIRE_TIMEOUT_SECONDS}
+        mockClient.getAlbumInfo.assert_any_call("Artist X", "Album D (Deluxe Edition)", **timeoutKwarg)
+        mockClient.getAlbumInfo.assert_any_call("Artist X", "Album D", **timeoutKwarg)   #< the retry is bounded too
         state = db.repo.getAlbumBioState("alD")
         self.assertEqual(state["bio"], "The deluxe-stripped bio.")
         self.assertIsNotNone(state["attempted_at"])
@@ -157,7 +176,7 @@ class LazyFetchAlbumBioTestCase(unittest.TestCase):
         self._seedAlbum(db, "al1")
         gate = threading.Event()
 
-        def gatedGetAlbumInfo(artist, album):
+        def gatedGetAlbumInfo(artist, album, timeout=None):
             gate.wait(timeout=5)
             return AlbumInfoOutcome(OUTCOME_OK, "Bio text.")
 
@@ -184,7 +203,7 @@ class LazyFetchAlbumBioTestCase(unittest.TestCase):
         self._seedAlbum(db, "alSlow")
         gate = threading.Event()
 
-        def gatedGetAlbumInfo(artist, album):
+        def gatedGetAlbumInfo(artist, album, timeout=None):
             gate.wait(timeout=5)
             return AlbumInfoOutcome(OUTCOME_OK, "Bio text.")
 
