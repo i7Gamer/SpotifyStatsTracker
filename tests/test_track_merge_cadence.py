@@ -38,6 +38,7 @@ from Database.queries._base import (TRACK_MERGE_LAST_RUN_KEY,
 
 NOW = 1_800_000_000.0   #< a fixed clock: nothing here should depend on the real one
 WORKERS = 3             #< one metadata backfiller per live user
+ROUNDS = 25             #< see test_only_one_of_three_concurrent_claims_wins
 
 
 class CadenceTestCase(DatabaseTestCase):
@@ -87,33 +88,45 @@ class TestTheSlotIsSharedAndDurable(CadenceTestCase):
     def test_only_one_of_three_concurrent_claims_wins(self):
         """The three per-user backfillers reach the same instance-wide matcher.
         The claim is one conditional UPDATE, so the database settles it - a
-        read-then-write would let all three through."""
+        read-then-write lets more than one through the same open slot, and the
+        consequence is three concurrent full-catalog merges.
+
+        Repeated over ROUNDS days because one round is a coin flip: measured
+        against a deliberately non-atomic implementation, a single round caught
+        it 3 times in 6. Each round is its own day, so every one of them starts
+        from a free slot. The assertion can never fail spuriously - exactly one
+        winner is correct whatever order the threads happen to take - so the
+        repetition only buys detection, never flakiness."""
         db = self._db()
-        results = []
         guard = threading.Lock()
-        barrier = threading.Barrier(WORKERS)
 
-        def claim():
-            try:
-                barrier.wait()
-                granted = db.repo.claimTrackMergeRun(now=NOW)
-                with guard:
-                    results.append(granted)
-            finally:
-                #< ConnectionManager keeps one connection per THREAD, so each
-                #  worker has to hand its own back - an open handle here keeps
-                #  the temp database file locked and fails the teardown, not
-                #  the assertion
-                db.repo.connectionManager.close()
+        for round_ in range(ROUNDS):
+            #< a fresh day each time, so the slot under contention is open
+            day = NOW + round_ * TRACK_MERGE_MIN_INTERVAL_SECONDS
+            results = []
+            barrier = threading.Barrier(WORKERS)
 
-        threads = [threading.Thread(target=claim) for _ in range(WORKERS)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+            def claim(day=day, results=results):
+                try:
+                    barrier.wait()
+                    granted = db.repo.claimTrackMergeRun(now=day)
+                    with guard:
+                        results.append(granted)
+                finally:
+                    #< ConnectionManager keeps one connection per THREAD, so
+                    #  each worker has to hand its own back - an open handle
+                    #  here keeps the temp database file locked and fails the
+                    #  teardown, not the assertion
+                    db.repo.connectionManager.close()
 
-        self.assertEqual(results.count(True), 1, results)
-        self.assertEqual(len(results), WORKERS)
+            threads = [threading.Thread(target=claim) for _ in range(WORKERS)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(results.count(True), 1, f"round {round_}: {results}")
+            self.assertEqual(len(results), WORKERS)
 
     def test_the_stamp_lives_in_the_database_not_the_process(self):
         """A restart must not hand back a slot that was already spent."""
