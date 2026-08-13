@@ -206,6 +206,20 @@ BACKFILL_RETRY_DAYS_MIN = 1
 BACKFILL_RETRY_DAYS_MAX = 365
 SECONDS_PER_DAY = 24 * 3600
 
+# The ISRC matcher's daily slot. It used to run on every metadata-backfill
+# cycle - a few minutes apart, and once per user - which was fine while a run
+# that merged nothing cost nothing, and expensive the moment one merged
+# something: each such run drops the cached Wrapped years its groups touch, and
+# new ISRCs keep completing pairs. 137 tracks merged in 23 batches over two
+# days cost the live instance 147 Wrapped rebuilds a day against ~20-40 before.
+# Narrowing the invalidation (deleteCachedWrappedForTracks) cut what one batch
+# costs; this cuts how many there are, by letting the merges pile into one pass.
+# The trade: a pair completed by a new ISRC waits up to a day to fold, during
+# which both sides simply count separately. The stamp lives in app_settings, not
+# on the class, so it is shared by the per-user workers and survives a restart.
+TRACK_MERGE_LAST_RUN_KEY = "track_merge_last_run"
+TRACK_MERGE_MIN_INTERVAL_SECONDS = SECONDS_PER_DAY
+
 # getBucketedPlayTotals' fixed UTC bucket width. 15 minutes is the smallest
 # granularity any real-world UTC offset uses (e.g. Asia/Kathmandu +5:45), so
 # every play in one bucket maps to the same local day/hour/weekday no matter

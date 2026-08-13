@@ -583,16 +583,21 @@ class MetadataBackfillMixin:
                     # ordering is also why it swallows its own failures.
                     self._backfillTrackIsrcs(getAccessToken, stop_event)
 
-                    # New ISRCs can complete a pair, so the matcher re-runs
-                    # every cycle while the toggle is on - this is what "new
-                    # tracks after the checkbox" means: merges stay current
-                    # without anyone pressing anything. Every cycle rather than
-                    # only after a batch that recorded something, on purpose:
-                    # idempotent, a run that changes nothing invalidates
-                    # nothing, and it also picks up groups completed by other
-                    # workers' batches. Skipped entirely while OFF, so a
-                    # disabled feature costs nothing.
-                    if self.repo.isTrackMergeEnabled():
+                    # New ISRCs can complete a pair, so the matcher keeps
+                    # running while the toggle is on - this is what "new tracks
+                    # after the checkbox" means: merges stay current without
+                    # anyone pressing anything. Once a DAY, not once a cycle:
+                    # a run that merges something drops the cached Wrapped
+                    # years its groups touch, and at cycle cadence that was 147
+                    # full rebuilds a day on the live instance. The merges pile
+                    # into one pass instead; see TRACK_MERGE_MIN_INTERVAL_SECONDS.
+                    # The claim is instance-wide, so all three per-user workers
+                    # share the one slot and whichever gets there first spends
+                    # it - it does not matter which, because the matcher is
+                    # global and picks up every worker's batches either way.
+                    # Asked only while ON, so a disabled feature costs nothing
+                    # and cannot burn the slot.
+                    if self.repo.isTrackMergeEnabled() and self.repo.claimTrackMergeRun():
                         mergeSummary = self.repo.mergeTracksByIsrc()
                         if mergeSummary["merged"]:
                             _dbmod.logger.info(

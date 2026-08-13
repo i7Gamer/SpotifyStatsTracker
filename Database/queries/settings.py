@@ -445,6 +445,49 @@ class SettingQueries:
     def setTrackMergeEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(TRACK_MERGE_SETTING_KEY, enabled)
 
+    def claimTrackMergeRun(self, now: float | None = None) -> bool:
+        """Take the ISRC matcher's slot for the day, if it is free. True means
+        the caller owns it and should run the matcher; False means someone
+        already did, recently enough.
+
+        One conditional UPDATE rather than a read followed by a write: the
+        three per-user metadata backfillers all reach the same instance-wide
+        matcher, and a check-then-act would let every one of them through the
+        same open slot. Whichever statement commits first is the one whose
+        stamp the others then fail against.
+
+        The stamp is the moment of the claim, so the gap is measured between
+        runs rather than from some fixed hour - a pass that starts late does
+        not shorten the next wait.
+
+        Fails OPEN: a value that will not parse as a number CASTs to 0.0 and
+        reads as "never ran". One extra pass is a better failure than a matcher
+        that is silently off forever.
+
+        See TRACK_MERGE_MIN_INTERVAL_SECONDS for why the slot exists at all."""
+        stampedAt = time.time() if now is None else now
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO app_settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                WHERE CAST(app_settings.value AS REAL) <= ?
+                """,
+                (TRACK_MERGE_LAST_RUN_KEY, str(stampedAt),
+                 stampedAt - TRACK_MERGE_MIN_INTERVAL_SECONDS))
+            return cur.rowcount > 0
+
+    def stampTrackMergeRun(self, now: float | None = None) -> None:
+        """Record a matcher run that happened outside the daily claim - the one
+        the admin toggle does itself when the checkbox goes on (routes/admin.py).
+
+        Without it the backfiller would claim the same day's slot minutes later
+        and repeat a full pass that had just run. Unconditional, because the
+        run it records already happened."""
+        self.setAppSetting(TRACK_MERGE_LAST_RUN_KEY,
+                           str(time.time() if now is None else now))
+
     def setMilestonesEnabled(self, enabled: bool) -> None:
         self._setFeatureEnabled(MILESTONES_SETTING_KEY, enabled)
 

@@ -65,9 +65,12 @@ class TestTheSettingItself(ToggleTestCase):
 
 
 class TestTheBackfillerKeepsMergesCurrent(ToggleTestCase):
-    """The "new tracks" half of the question: while the toggle is on, the
-    matcher re-runs after any backfill batch that recorded ISRCs, so a pair
-    completed by a new arrival merges within a cycle of its ISRC arriving."""
+    """The "new tracks" half of the question: while the toggle is on, a pair
+    completed by a newly-arrived ISRC folds without anyone pressing anything.
+
+    WHEN it folds is test_track_merge_cadence's question - the loop now takes
+    one matcher slot a day rather than one per cycle, so the wait is up to a
+    day. This covers the mechanism: given a run, the new arrival merges."""
 
     def _runOneIsrcBatch(self, db):
         """Drive the real backfill step with a mocked per-id endpoint."""
