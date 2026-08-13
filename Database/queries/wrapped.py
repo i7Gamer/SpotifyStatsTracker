@@ -70,8 +70,8 @@ class WrappedQueries:
             ).rowcount
 
     def deleteAllWrapped(self) -> int:
-        """Drop every cached Wrapped row, for every user at once - the track
-        merge's invalidation.
+        """Drop every cached Wrapped row, for every user at once - the FULL
+        REVERT's invalidation (unmergeAllIsrcMerges), and only that one.
 
         A merge is global (sameness is a property of the recording), so its
         effect on the frozen top_songs / unique_songs / discovered_songs_list
@@ -80,6 +80,15 @@ class WrappedQueries:
         max_played_at and play counts are exactly what a merge does NOT change,
         and they are all _wrappedCacheNeedsRecalc compares. Same reasoning as
         deleteUserWrappedFromYear's, taken to the instance.
+
+        An INDIVIDUAL merge or split does not come here, and must not: the
+        matcher re-runs on every backfill batch that records an ISRC, so
+        dropping the instance each time cost a live instance 147 full-history
+        rebuilds a day. Those go to deleteCachedWrappedForTracks, which reaches
+        the same conclusion per year instead of per instance. What keeps this
+        one honest is that a full revert genuinely does touch every merged
+        group at once, so the narrowed form would name the whole merged catalog
+        and arrive back here the long way round.
 
         Cheap to invalidate, lazy to rebuild: the page recalculates a missing
         year synchronously on view (dashboard/wrapped_builder.py) and the
