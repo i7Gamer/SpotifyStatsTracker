@@ -211,15 +211,31 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         # re-copied it, and this deployment drops the same filename every week,
         # so a path alone is not an identity.
         self._readAttempts = {}
-        # path -> the stamp of the file we last announced a quarantine for. A
-        # quarantine whose MOVE fails is retried on every later delivery -
-        # unbounded on purpose, so the file recovers the moment the lock or the
-        # read-only mount clears - and this is what keeps that from being an
-        # unbounded log line too. Keyed by stamp as well as path for the same
-        # reason _readAttempts is: a replacement copy under the same name is a
-        # different file, and quarantining one in silence would hide it
-        # completely, the log being the only place this is visible.
-        self._quarantineAnnounced = {}
+        # path -> the stamp of the file whose failure we last announced at
+        # ERROR (a quarantine's reason, or the non-matching arm's failed DONE/
+        # move). A failed move is retried on every later delivery - unbounded
+        # on purpose, so the file recovers the moment the lock or the read-only
+        # mount clears - and this is what keeps that from being an unbounded
+        # log line too. Keyed by stamp as well as path for the same reason
+        # _readAttempts is: a replacement copy under the same name is a
+        # different file, and failing one in silence would hide it completely,
+        # the log being the only place this is visible. An entry lives exactly
+        # as long as the failure it describes: popped on the successful move,
+        # and on a successful READ too - a file that recovered that way can
+        # fail again later with the same stamp (the identical copy re-dropped),
+        # and a stale entry would swallow that announcement whole.
+        self._failureAnnounced = {}
+
+    def _firstAnnouncementFor(self, path):
+        """True the first time this particular file - path AND stamp - has its
+        failure announced; False for the repeats an unbounded move-retry
+        produces. Recording happens here so every announcing arm shares one
+        memory and none can drift."""
+        stamp = self._fileStamp(path)
+        first = self._failureAnnounced.get(path, _NEVER_ANNOUNCED) != stamp
+        if first:
+            self._failureAnnounced[path] = stamp
+        return first
 
     def _quarantine(self, path, retryable, reason):
         """Move a file to FAILED/, saying why exactly once.
@@ -234,15 +250,13 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         Both failure arms route through here so they cannot drift: the
         undecodable one and the read-failed-too-often one differ only in the
         reason they announce."""
-        stamp = self._fileStamp(path)
-        firstTime = self._quarantineAnnounced.get(path, _NEVER_ANNOUNCED) != stamp
+        firstTime = self._firstAnnouncementFor(path)
         if firstTime:
-            self._quarantineAnnounced[path] = stamp
             logger.error(reason)
         try:
             shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
             self._readAttempts.pop(path, None)
-            self._quarantineAnnounced.pop(path, None)
+            self._failureAnnounced.pop(path, None)
         except Exception as moveError:
             logger.log(logging.ERROR if firstTime else logging.DEBUG,
                        "Could not move %s to FAILED/, will try again: %s", path, moveError)
@@ -312,13 +326,27 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                 logger.info(f"Keyword '{self.keyword}' not found in '{fileName}'. Skipping import and moving directly to DONE.")
                 try:
                     shutil.move(path, self._destinationPath(path))
+                    self._failureAnnounced.pop(path, None)   #< an earlier failed move announced; done now
                 except Exception as moveError:
-                    logger.error(f"Could not move the non-matching file {path} to DONE/: {moveError}")
+                    # Handed back for another delivery, exactly as _quarantine
+                    # does for its own failed move: nothing else ever re-sights
+                    # a delivered name, so without this the file sits in the
+                    # watch folder until the next restart. Safe here precisely
+                    # because this file is never read - a re-delivery only
+                    # retries the move. Loud once per file, DEBUG after: the
+                    # retry is unbounded and arrives every poll.
+                    logger.log(logging.ERROR if self._firstAnnouncementFor(path) else logging.DEBUG,
+                               "Could not move the non-matching file %s to DONE/, will try again: %s",
+                               path, moveError)
+                    retryable.append(path)
                 continue
             try:
                 with open(path, encoding="utf-8") as f:
                     toImport.append((path, f.read()))
-                self._readAttempts.pop(path, None)   #< it read; earlier locks are history
+                self._readAttempts.pop(path, None)   #< it read; earlier locks are history -
+                self._failureAnnounced.pop(path, None)   #  including an announced quarantine whose
+                                                         #  move never landed. A later failure of
+                                                         #  this same file must be loud again.
             except UnicodeDecodeError as e:
                 # Undecodable content is permanent, so it is routed exactly like
                 # an import failure below: left in the watch folder it would be

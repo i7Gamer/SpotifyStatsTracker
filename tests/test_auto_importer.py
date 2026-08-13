@@ -474,7 +474,12 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
         Once that except started counting attempts and quarantining, a file
         that merely failed to MOVE - never unreadable, never meant to be
         imported - was logged as unreadable and ended up in FAILED/ after three
-        deliveries, with a message naming the wrong cause."""
+        deliveries, with a message naming the wrong cause.
+
+        Not counted as a read failure - but still handed back: a re-delivery
+        never re-reads this file (the keyword test runs first), it only
+        retries the move, so the retry is what stands between a transient lock
+        and the file sitting in the watch folder until the next restart."""
         mock_exists.return_value = False
         importer = AutoImporter("/dummy/path", MagicMock(return_value=[]), keyword="Weekly")
         mock_move.side_effect = PermissionError("held by another process")
@@ -482,10 +487,43 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
         with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
             retry = importer._handleImport(["/dummy/path/other.json"])
 
-        self.assertEqual(list(retry), [])   #< nothing to re-read; it was never read
+        self.assertEqual(list(retry), ["/dummy/path/other.json"],
+                         "handed back so the MOVE is retried - it is still never read")
         self.assertEqual(importer._readAttempts, {})
         for call in mock_move.call_args_list:
             self.assertNotIn("FAILED", os.path.normpath(call[0][1]).split(os.sep))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_non_matching_file_recovers_once_its_own_lock_clears(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The DONE/ move is the only thing between a non-matching file and
+        being done with, and a move fails transiently for the same reasons a
+        read does. Stranding it until restart was the same dead end the read
+        arm's retry removed - while the quarantine arm already retried ITS
+        failed move on every delivery. Same discipline here: unbounded retry,
+        loud once, DEBUG after."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=[]), keyword="Weekly")
+        path = "/dummy/path/other.json"
+        mock_move.side_effect = [PermissionError("held by another process"),
+                                 PermissionError("held by another process"), None]
+
+        with self.assertLogs("Database.Importers.AutoImporter", level="DEBUG") as captured:
+            self.assertEqual(list(importer._handleImport([path])), [path])
+            self.assertEqual(list(importer._handleImport([path])), [path])
+            self.assertEqual(list(importer._handleImport([path])), [],
+                             "the lock cleared - moved to DONE/, nothing left to retry")
+
+        complaints = [r for r in captured.records if "non-matching" in r.getMessage()]
+        self.assertEqual([r.levelno for r in complaints], [logging.ERROR, logging.DEBUG],
+                         "loud once, quiet after - the quarantine arm's own discipline")
+        self.assertEqual(importer._failureAnnounced, {},
+                         "recovered; a LATER failure of this path must be loud again")
+        destination = mock_move.call_args[0][1]
+        self.assertIn("DONE", os.path.normpath(destination).split(os.sep))
+        self.assertNotIn("FAILED", os.path.normpath(destination).split(os.sep))
 
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
@@ -587,6 +625,50 @@ class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
         announcements = [r for r in captured.records if "Could not decode" in r.getMessage()]
         self.assertEqual(len(announcements), 2,
                          "once for the original, once for the copy that replaced it")
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_recovered_file_that_fails_again_is_announced_again(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The announce stamp must not outlive the failure it described. A file
+        leaves the quarantine path by READING on a later delivery too - the
+        lock cleared before any move to FAILED/ ever succeeded - and its entry
+        then describes a failure that no longer exists. Left behind, it matches
+        the IDENTICAL file re-dropped later (a copy preserves size and mtime),
+        and that file's own give-up is quarantined with the announcement
+        suppressed: moved to FAILED/ with no line saying so - the silence the
+        announce-once mechanism exists to never create."""
+        from Database.Importers.AutoImporter import MAX_TRANSIENT_READ_ATTEMPTS
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock(return_value=["imported"]))
+        path = "/dummy/path/export.json"
+        locked = PermissionError("being used by another process")
+        theSameFile = (100, 1000.0)   #< re-dropping a copy preserves size and mtime
+
+        with patch.object(AutoImporter, "_fileStamp", lambda self, p: theSameFile):
+            mock_move.side_effect = PermissionError("held by another process")
+            with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+                with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                    for _ in range(MAX_TRANSIENT_READ_ATTEMPTS):
+                        importer._handleImport([path])   #< announced; the move failed too
+
+            mock_move.side_effect = None   #< the lock clears...
+            with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+                importer._handleImport([path])   #< ...and the file imports to DONE/
+
+            self.assertEqual(importer._failureAnnounced, {},
+                             "recovery must clear the announce stamp with the attempts")
+
+            with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=locked)):
+                with self.assertLogs("Database.Importers.AutoImporter", level="DEBUG") as secondRound:
+                    for _ in range(MAX_TRANSIENT_READ_ATTEMPTS):
+                        importer._handleImport([path])
+
+        announcements = [r for r in secondRound.records
+                         if r.levelno >= logging.ERROR and "Could not read" in r.getMessage()]
+        self.assertEqual(len(announcements), 1,
+                         "the identical file failing again deserves its own announcement")
 
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
