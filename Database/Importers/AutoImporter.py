@@ -226,10 +226,14 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         # and a stale entry would swallow that announcement whole.
         self._failureAnnounced = {}
 
-    def _firstAnnouncementFor(self, path):
-        """True the first time this particular file - path AND stamp - has its
-        failure announced; False for the repeats an unbounded move-retry
-        produces. Recording happens here so every announcing arm shares one
+    def _tryClaimAnnouncement(self, path):
+        """Take the one loud announcement this particular file - path AND
+        stamp - gets: True means the claim is yours and announcing is now
+        yours to do, False that an earlier delivery already announced it (the
+        repeats an unbounded move-retry produces stay DEBUG). Named for the
+        house claim idiom (tryClaimImportRunning, tryClaimImageDownload)
+        because it is one: a predicate-looking call that consumes what it
+        reports on. Claiming lives here so every announcing arm shares one
         memory and none can drift."""
         stamp = self._fileStamp(path)
         first = self._failureAnnounced.get(path, _NEVER_ANNOUNCED) != stamp
@@ -250,7 +254,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         Both failure arms route through here so they cannot drift: the
         undecodable one and the read-failed-too-often one differ only in the
         reason they announce."""
-        firstTime = self._firstAnnouncementFor(path)
+        firstTime = self._tryClaimAnnouncement(path)
         if firstTime:
             logger.error(reason)
         try:
@@ -336,7 +340,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     # because this file is never read - a re-delivery only
                     # retries the move. Loud once per file, DEBUG after: the
                     # retry is unbounded and arrives every poll.
-                    logger.log(logging.ERROR if self._firstAnnouncementFor(path) else logging.DEBUG,
+                    logger.log(logging.ERROR if self._tryClaimAnnouncement(path) else logging.DEBUG,
                                "Could not move the non-matching file %s to DONE/, will try again: %s",
                                path, moveError)
                     retryable.append(path)
