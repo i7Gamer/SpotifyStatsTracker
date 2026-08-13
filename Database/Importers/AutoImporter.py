@@ -190,9 +190,10 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
 # FAILED/ then makes it visible to someone who never reads the log.
 MAX_TRANSIENT_READ_ATTEMPTS = 3
 
-# Sentinel for "no quarantine announced for this path yet". Not None: None is a
-# real stamp, meaning the file could not be stat'd on that pass, and a missing
-# entry must not compare equal to it.
+# Sentinel for "no failure announced for this path yet" (a quarantine's reason
+# or a failed DONE/ move alike). Not None: None is a real stamp, meaning the
+# file could not be stat'd on that pass, and a missing entry must not compare
+# equal to it.
 _NEVER_ANNOUNCED = object()
 
 
@@ -319,7 +320,8 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         Everything else - imported, moved, quarantined - is absent from that
         list and so stays known."""
         toImport = []  #< (path, content) of keyword-matching, readable files
-        retryable = []  #< transiently unreadable: hand back for a later poll
+        retryable = []  #< could not be finished with (unreadable now, or a move
+                        #  that failed under a lock): hand back for a later poll
         for path in sorted(paths):
             fileName = os.path.basename(path)
             if self.keyword is not None and self.keyword not in fileName:
