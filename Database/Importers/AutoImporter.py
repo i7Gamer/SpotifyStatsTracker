@@ -309,10 +309,11 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         a replay at the start of one file from "correcting away" the skip play
         at the end of the previous file - spans the whole batch.
 
-        Returns the paths that could not be read but may read later, for the
-        watchdog to deliver again (Watchdog._forgetRetryable). Everything else
-        - imported, skipped, quarantined - is absent from that list and so
-        stays known."""
+        Returns the paths this call could not finish with - unreadable now but
+        maybe not later, or a move (to DONE/ or FAILED/) that failed under a
+        lock - for the watchdog to deliver again (Watchdog._forgetRetryable).
+        Everything else - imported, moved, quarantined - is absent from that
+        list and so stays known."""
         toImport = []  #< (path, content) of keyword-matching, readable files
         retryable = []  #< transiently unreadable: hand back for a later poll
         for path in sorted(paths):

@@ -765,8 +765,11 @@ class TestMusicoletOverwriteAbortEndToEnd(_OverwriteTestBase):
     _SHIFTED_ROW = "/music/b.mp3,Shifted"   #< too few columns: unreadable, and counted as such
 
     #< the synthetic-anchor year (MUSICOLET_SYNTHETIC_TIME_ANCHOR) every
-    #  Musicolet play lands in - which is why a prior import's play seeded
-    #  there is exactly what the covered-range delete would take
+    #  Musicolet play lands in. The seeded play below stands for pre-existing
+    #  data in that year that must come through the abort untouched - it sits
+    #  at noon, OUTSIDE the file's few-minute covered span, so what actually
+    #  proves the abort is the "failed" outcome, the guard's own message, and
+    #  that a proceeding import would have GROWN playedAts by inserting
     _ANCHOR_YEAR = 2000
 
     def _realImporter(self):
