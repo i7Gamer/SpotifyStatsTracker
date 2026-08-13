@@ -749,6 +749,75 @@ class TestWrappedInvalidationUsesTheUsersOwnYears(_OverwriteTestBase):
         self.assertEqual(years, {2019, 2020})
 
 
+class TestMusicoletOverwriteAbortEndToEnd(_OverwriteTestBase):
+    """Through the REAL Importer, not the mocked one the rest of this file
+    drives: the unreadable-row abort exists because every Musicolet row is
+    anchored at the same synthetic timestamp, so the surviving rows' covered
+    range always spans a dropped row's plays - an overwrite that proceeded
+    would delete them with nothing left to re-insert. The expansion's counters
+    and the abort guard are each unit-tested; what neither half can see is the
+    JOINT - staging threading its stats dict into the Musicolet entry point -
+    and severing that joint re-opens silent play deletion without failing
+    either unit test. This is that pin."""
+
+    _HEADER = "FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT"
+    _GOOD_ROW = "/music/a.mp3,Good Song,Good Artist,Good Album,Good Artist,,Pop,2020,200000,2"
+    _SHIFTED_ROW = "/music/b.mp3,Shifted"   #< too few columns: unreadable, and counted as such
+
+    #< the synthetic-anchor year (MUSICOLET_SYNTHETIC_TIME_ANCHOR) every
+    #  Musicolet play lands in - which is why a prior import's play seeded
+    #  there is exactly what the covered-range delete would take
+    _ANCHOR_YEAR = 2000
+
+    def _realImporter(self):
+        """A real Importer whose one outward call - the name search - finds
+        nothing, which the importer documents as the track genuinely being
+        gone from Spotify: every row takes the synthetic-track path, and the
+        import runs fully offline with none of the transient-drop stats that
+        would trip the OTHER overwrite guard and pass this test for the wrong
+        reason."""
+        from Database.Importers.StreamingHistoryImporter import Importer
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": []}}
+        return importer
+
+    def _runReal(self, db, content):
+        with patch("Database.database.Importer", return_value=self._realImporter()):
+            return db.importHistoryBatch([content], overwriteRange=True)
+
+    def test_an_unreadable_row_aborts_the_overwrite_before_anything_is_deleted(self):
+        db = self._makeDb({}, [
+            {"id": "anchored", "playedAt": _ts(self._ANCHOR_YEAR, 1), "timePlayed": 60000},
+        ])
+        before = self._playedAts(db)
+
+        outcomes = self._runReal(db, "\n".join([self._HEADER, self._GOOD_ROW, self._SHIFTED_ROW]))
+
+        self.assertEqual(outcomes, ["failed"])
+        #< the UNREADABLE guard specifically - aborting via a lookup failure or
+        #  a phase-2 crash would leave the data intact too, while proving
+        #  nothing about the counters this test exists to pin
+        self.assertIn("could not be read", db.readProgress()["message"])
+        self.assertEqual(self._playedAts(db), before,
+                         "the abort must land before the covered-range delete")
+
+    def test_a_well_formed_file_still_overwrites(self):
+        """The other direction: the counters run on every Musicolet import
+        now, so over-counting a readable row would turn every overwrite into
+        a refusal. What the covered-range delete does and does not take is the
+        rest of this file's subject - this only pins that a clean file sails
+        through the guard and lands."""
+        db = self._makeDb({}, [])
+
+        outcomes = self._runReal(db, "\n".join([self._HEADER, self._GOOD_ROW]))
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(db.readProgress()["message"],
+                         "Overwrite import complete: 1/1 files imported")
+        self.assertEqual(len(self._playedAts(db)), 2, "both expanded plays landed")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
