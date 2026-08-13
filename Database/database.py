@@ -315,6 +315,16 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     # Same idea, for the album-bio feature's lazy fetch - its own pool (see
     # ALBUM_BIO_FETCH_WORKERS) rather than sharing _artistBioFetchExecutor.
     _albumBioFetchExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=ALBUM_BIO_FETCH_WORKERS)
+    # Every shared media pool, by attribute name - the list shutdownWorkerPools
+    # walks. One registry rather than an inline tuple so a pool added beside
+    # the three above cannot be configured at startup yet never retired (its
+    # backlog would run behind CPython's untimed atexit join, the exact thing
+    # shutdownWorkerPools exists to remove). Pinned complete against the class
+    # attributes by test_app_worker_lifecycle - the WORKER_STOP_EVENT_NAMES
+    # pattern, which exists because signalStop once missed the fifth stop
+    # event the same way.
+    MEDIA_POOL_ATTRIBUTE_NAMES = ("_imageDownloadExecutor", "_artistBioFetchExecutor",
+                                  "_albumBioFetchExecutor")
     _active_backfills = set()
     # The same idea for the ISRC queue, which drains the shared tracks table and
     # so has exactly the problem albums have. A separate set because these are
@@ -362,7 +372,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         and a stray post-shutdown submit is no worse than before this method
         existed (it used to reach a live pool too). What is NOT preserved is
         the old pool's backlog, which is the whole point."""
-        for name in ("_imageDownloadExecutor", "_artistBioFetchExecutor", "_albumBioFetchExecutor"):
+        for name in cls.MEDIA_POOL_ATTRIBUTE_NAMES:
             pool = getattr(cls, name)
             try:
                 # Replacement FIRST, then retire the object we already hold: a

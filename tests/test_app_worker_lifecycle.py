@@ -334,5 +334,26 @@ class TestShutdownStopsTheSharedThreadPools(unittest.TestCase):
                 (Database._imageDownloadExecutor, Database._artistBioFetchExecutor) = originals
 
 
+class TestEverySharedPoolIsRegisteredForRetirement(unittest.TestCase):
+    """shutdownWorkerPools can only retire the pools it knows by name, and the
+    names used to be spelled inline in three places - the class attributes,
+    configureWorkerPools and shutdownWorkerPools itself. A fourth pool added by
+    copying the visible pattern would be configured at startup and silently
+    never retired: its backlog handed back to the untimed atexit join this
+    whole mechanism exists to remove, with no test failing. Same registry-and-
+    pin shape as WORKER_STOP_EVENT_NAMES, extracted after signalStop silently
+    missed the fifth stop event."""
+
+    def test_every_pool_class_attribute_is_in_the_registry(self):
+        import concurrent.futures
+        from Database.database import Database
+
+        pools = sorted(name for name, value in vars(Database).items()
+                       if isinstance(value, concurrent.futures.ThreadPoolExecutor))
+
+        self.assertEqual(pools, sorted(Database.MEDIA_POOL_ATTRIBUTE_NAMES),
+                         "a pool the registry does not name is a pool shutdown never stops")
+
+
 if __name__ == "__main__":
     unittest.main()
