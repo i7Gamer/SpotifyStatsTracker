@@ -127,6 +127,15 @@ TRACK_MERGE_SETTING_KEY = "track_merge_enabled"
 # Bumped by every wrapped-cache invalidation; an in-flight recalculation that
 # started under an older value discards its save. See deleteAllWrapped.
 WRAPPED_INVALIDATION_GENERATION_KEY = "wrapped_invalidation_generation"
+# How far either side of a UTC year boundary a play still counts as possibly
+# belonging to the neighbouring year, for deleteCachedWrappedForTracks. A
+# Wrapped year is bucketed in the USER's timezone (the worker builds its bounds
+# from datetime.now(tz=self.tz)); that delete runs in the shared repo, which has
+# no user's tz to hand, so it widens instead of guessing. The real ceiling is
+# UTC+14/UTC-12, i.e. 14h; 26h clears it with room for any DST arithmetic.
+# Erring wide costs one extra rebuild, erring narrow strands a year that is
+# permanently wrong and that nothing downstream would ever notice.
+WRAPPED_YEAR_TZ_SLACK_SECONDS = 26 * 3600
 
 # Instance-wide skip threshold (app_settings). This is the single, admin-tunable
 # boundary between a "skip" and a real listen - it replaced both the old fixed

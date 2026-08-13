@@ -97,6 +97,59 @@ class WrappedQueries:
             self._bumpWrappedGeneration(conn)
             return conn.execute("DELETE FROM user_wrapped").rowcount
 
+    def deleteCachedWrappedForTracks(self, trackIds) -> int:
+        """deleteAllWrapped narrowed to the years a merge of these tracks can
+        actually move. Returns rows dropped.
+
+        Same reasoning as deleteAllWrapped about WHY a merge has to invalidate
+        at all - past years' max_played_at and play count are exactly what a
+        merge does not change, so nothing would ever notice on its own - but
+        applied per year instead of to everything. What makes the narrowing
+        sound is that a merge only reaches a year through the group's own
+        tracks: the frozen top_songs / unique_songs / discovered_*_list JSON of
+        a year in which no member was ever played says the same thing before
+        and after.
+
+        The cost this replaces was the whole problem. The ISRC backfiller
+        re-runs the matcher every few minutes for as long as new music arrives,
+        and each batch that merged anything dropped every account's entire
+        history: a live instance logged 147 full-history rebuilds a day against
+        ~20-40 before the toggle went on, and in 529 recalculations not one
+        cached year before the current one ever survived to be reused.
+
+        `trackIds` must be the whole merge GROUP, not just the tracks whose
+        canonical_id the caller moved - see _mergeGroupTrackIds for the year
+        that goes missing otherwise.
+
+        Two deliberate widenings:
+        - the year bucket, by WRAPPED_YEAR_TZ_SLACK_SECONDS, because this runs
+          in the shared repo and a year boundary is per user's timezone;
+        - the generation stamp, which still moves for everyone. It guards
+          in-flight recalculations of ANY year against caching a snapshot whose
+          reads straddle this merge, so it cannot be narrowed with the delete -
+          and it is bumped in the same transaction, for the same serialization
+          deleteAllWrapped needs."""
+        ids = list(dict.fromkeys(trackIds))
+        conn = self._conn()
+        with conn:
+            self._bumpWrappedGeneration(conn)
+            if not ids:
+                return 0
+            return conn.execute(
+                """
+                DELETE FROM user_wrapped WHERE EXISTS (
+                    SELECT 1 FROM plays p
+                    WHERE p.username = user_wrapped.username
+                      AND p.track_id IN (SELECT value FROM json_each(?))
+                      AND user_wrapped.year BETWEEN
+                              CAST(strftime('%Y', p.played_at - ?, 'unixepoch') AS INTEGER)
+                          AND CAST(strftime('%Y', p.played_at + ?, 'unixepoch') AS INTEGER)
+                )
+                """,
+                (json.dumps(ids), WRAPPED_YEAR_TZ_SLACK_SECONDS,
+                 WRAPPED_YEAR_TZ_SLACK_SECONDS)
+            ).rowcount
+
     def getWrappedInvalidationGeneration(self) -> int:
         row = self._conn().execute(
             "SELECT value FROM app_settings WHERE key = ?",

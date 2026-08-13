@@ -1018,9 +1018,11 @@ class TrackQueries:
         conn = self._conn()
         merged = 0
         now = time.time()
+        canonicals = []
         with conn:
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
+                canonicals.append(canonicalId)
                 if group["reHeadedFrom"]:
                     #< the one canonical that arrives pointing somewhere: it was
                     #  a member of this very group until the title rule promoted
@@ -1079,9 +1081,14 @@ class TrackQueries:
                 self._clearContradictedRejection(conn, canonicalId)
         if merged:
             #< a merge moves numbers frozen inside every user's cached Wrapped
-            #  years, and past years never notice on their own - see
-            #  deleteAllWrapped for why the invalidation is instance-wide
-            self.deleteAllWrapped()
+            #  years, and past years never notice on their own. Scoped to the
+            #  years the merged groups were actually played in - by every user
+            #  who played them - because this runs on every backfill batch that
+            #  records an ISRC; see deleteCachedWrappedForTracks. Expanded from
+            #  the canonicals AFTER the commit, so the group it reads is the one
+            #  this run just made.
+            self.deleteCachedWrappedForTracks(
+                self._mergeGroupTrackIds(conn, canonicals))
         return {"groups": len(plan["groups"]), "merged": merged}
 
     def previewMergeTracksByIsrc(self) -> dict:
@@ -1209,6 +1216,39 @@ class TrackQueries:
         groups.sort(key=lambda g: -g["plays"])
         return {"groups": groups, "merged": sum(len(g["members"]) for g in groups)}
 
+    @staticmethod
+    def _mergeGroupTrackIds(conn, trackIds) -> list[str]:
+        """Expand track ids to every track that shares a merge group with them.
+
+        The scope deleteCachedWrappedForTracks needs, and it is wider than what
+        the caller wrote for one reason: a group's discovery entry is anchored
+        on its ALL-TIME first listen. A joining track whose own first play
+        predates the group's drags that anchor backwards, which pulls the group
+        out of the discovery lists of the year the old anchor fell in - a year
+        that belongs to some member this run never touched, and whose own play
+        count and max_played_at did not move. Built from the ids alone, the
+        invalidation would miss it, and nothing downstream ever would.
+
+        Resolves each id to its root - itself, when it points nowhere - then
+        collects everything pointing at those roots. One hop each way is
+        enough: a canonical never points anywhere itself (see the "never a
+        chain" rule in mergeTracksByIsrc), so root-of-root is root.
+
+        Call it BEFORE the write when a group is dissolving (unmergeTrack) and
+        AFTER when one is forming, so it sees the membership that changed."""
+        ids = list(dict.fromkeys(trackIds))
+        if not ids:
+            return []
+        roots = {row["canonical_id"] or row["id"] for row in conn.execute(
+            "SELECT id, canonical_id FROM tracks WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(ids),))}
+        group = set(ids) | roots
+        if roots:
+            group.update(row["id"] for row in conn.execute(
+                "SELECT id FROM tracks WHERE canonical_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(sorted(roots)),)))
+        return sorted(group)
+
     def unmergeTrack(self, trackId: str, decidedBy: str) -> None:
         """Take one track back out of its merge, and KEEP it out.
 
@@ -1223,6 +1263,9 @@ class TrackQueries:
         conn = self._conn()
         if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone():
             raise ValueError(f"unknown track: {trackId}")
+        #< BEFORE the split: the group this track is leaving is what moves, and
+        #  a moment from now its membership no longer says who was in it
+        group = self._mergeGroupTrackIds(conn, [trackId])
         with conn:
             conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (trackId,))
             conn.execute(
@@ -1237,7 +1280,9 @@ class TrackQueries:
                 """,
                 (trackId, time.time(), decidedBy),
             )
-        self.deleteAllWrapped()   #< one track's undo still shifts every cached year it appears in
+        #< one track's undo still shifts every cached year the group it left
+        #  appears in - both sides of the split move, so the scope is the group
+        self.deleteCachedWrappedForTracks(group)
 
     def unmergeAllIsrcMerges(self) -> int:
         """Undo everything the MATCHER did, leaving every human verdict alone.
@@ -1417,9 +1462,13 @@ class TrackQueries:
             merged += 1
             #< last, so it tests against the group this merge just made
             self._clearContradictedRejection(conn, root)
-        #< same invalidation as the automatic tier: the merge moves numbers
-        #  frozen inside every user's cached Wrapped years
-        self.deleteAllWrapped()
+        #< same invalidation as the automatic tier, and the same scope: the
+        #  merge moves numbers frozen inside the cached years the resulting
+        #  group was played in, for every user who played it. Expanded from the
+        #  root after the commit, so trackId and the dependents that rode along
+        #  are all in it.
+        self.deleteCachedWrappedForTracks(
+            self._mergeGroupTrackIds(conn, [root]))
         return merged
 
     def dismissMergeCandidate(self, trackId: str, decidedBy: str,

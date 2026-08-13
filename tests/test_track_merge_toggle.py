@@ -22,6 +22,9 @@ from conftest import DatabaseTestCase
 from Database.database import Database
 
 ISRC = "USRC12345678"
+#< _dbWithPair times every play at 1e9-ish epoch seconds, which is Sept 2001
+PAIR_PLAY_YEAR = 2001
+UNTOUCHED_YEAR = 2015
 
 
 class ToggleTestCase(DatabaseTestCase):
@@ -170,16 +173,30 @@ class TestWrappedInvalidation(ToggleTestCase):
     def _cachedYears(self, db):
         return db.repo._conn().execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0]
 
+    def _survivingYears(self, db):
+        return {(row["username"], row["year"]) for row in
+                db.repo._conn().execute("SELECT username, year FROM user_wrapped")}
+
     def test_a_merge_drops_every_users_cached_years(self):
         """Every user's, not the actor's: the merge is global, so bob's frozen
-        top_songs is as stale as alice's the moment it runs."""
+        top_songs is as stale as alice's the moment it runs.
+
+        Which YEARS go is test_wrapped_invalidation_scope's question - here only
+        that both listeners lose the one the pair was played in, and that a year
+        neither of them played it in is not collateral."""
         db = self._dbWithPair()
-        self._cacheWrappedRow(db, "alice", 2024)
-        self._cacheWrappedRow(db, "bob", 2025)
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO users (username, created_at) VALUES ('bob', 0)")
+            conn.execute("INSERT INTO plays (username, track_id, played_at, time_played) "
+                         "VALUES ('bob', ?, ?, 200000)", ("B" * 22, 1e9 + 99))
+        self._cacheWrappedRow(db, "alice", PAIR_PLAY_YEAR)
+        self._cacheWrappedRow(db, "alice", UNTOUCHED_YEAR)
+        self._cacheWrappedRow(db, "bob", PAIR_PLAY_YEAR)
 
         db.repo.mergeTracksByIsrc()
 
-        self.assertEqual(self._cachedYears(db), 0)
+        self.assertEqual(self._survivingYears(db), {("alice", UNTOUCHED_YEAR)})
 
     def test_a_run_that_merges_nothing_leaves_the_caches_alone(self):
         """Idle backfiller cycles re-run the matcher every five minutes while
@@ -212,7 +229,7 @@ class TestWrappedInvalidation(ToggleTestCase):
     def test_a_single_track_undo_drops_them(self):
         db = self._dbWithPair()
         db.repo.mergeTracksByIsrc()
-        self._cacheWrappedRow(db)
+        self._cacheWrappedRow(db, "alice", PAIR_PLAY_YEAR)
 
         db.repo.unmergeTrack("B" * 22, decidedBy="timorzipa")
 

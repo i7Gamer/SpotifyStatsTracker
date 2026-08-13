@@ -433,27 +433,32 @@ class TestManualMerge(MergeReviewTestCase):
         self.assertEqual(decision["reason"], "manual-merge")
         self.assertEqual(decision["decided_by"], "timorzipa")
 
-    def test_it_drops_every_users_cached_wrapped_years(self):
-        """Same shape as the automatic tier: the merge moves numbers frozen
-        inside every user's cached years."""
+    def test_it_drops_the_cached_wrapped_years_the_pair_was_played_in(self):
+        """Same shape as the automatic tier, scope included: the merge moves
+        numbers frozen inside the cached years the resulting group was played
+        in, and leaves the rest alone. _track times its plays in 2001; 2025 is
+        a year neither track was ever played in, so it is not this merge's to
+        drop. Full contract in test_wrapped_invalidation_scope."""
         db = self._db()
         self._track(db, "A" * 22, "Song", plays=5)
         self._track(db, "B" * 22, "Song", plays=2)
         conn = db.repo._conn()
         with conn:
-            conn.execute(
-                "INSERT INTO user_wrapped (username, year, calculated_at, max_played_at,"
-                " total_plays, total_ms, longest_streak, unique_songs, unique_artists,"
-                " discovered_songs, discovered_artists, time_series_day, time_series_week,"
-                " time_series_month, top_songs, top_artists, top_albums,"
-                " discovered_songs_list, discovered_artists_list, discovered_albums_list)"
-                " VALUES ('alice', 2025, 1, 1, 1, 1, 1, 1, 1, 1, 1, '[]', '[]', '[]', '[]',"
-                " '[]', '[]', '[]', '[]', '[]')")
+            for year in (2001, 2025):
+                conn.execute(
+                    "INSERT INTO user_wrapped (username, year, calculated_at, max_played_at,"
+                    " total_plays, total_ms, longest_streak, unique_songs, unique_artists,"
+                    " discovered_songs, discovered_artists, time_series_day, time_series_week,"
+                    " time_series_month, top_songs, top_artists, top_albums,"
+                    " discovered_songs_list, discovered_artists_list, discovered_albums_list)"
+                    " VALUES ('alice', ?, 1, 1, 1, 1, 1, 1, 1, 1, 1, '[]', '[]', '[]', '[]',"
+                    " '[]', '[]', '[]', '[]', '[]')", (year,))
 
         db.repo.mergeTrackManually("B" * 22, "A" * 22, decidedBy="timorzipa")
 
         self.assertEqual(
-            conn.execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0], 0)
+            [row["year"] for row in
+             conn.execute("SELECT year FROM user_wrapped ORDER BY year")], [2025])
 
     def test_merging_a_canonical_carries_its_members_along(self):
         """Never a chain: C already points at B, so B joining A must bring C
