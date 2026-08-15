@@ -185,5 +185,116 @@ class TestTheLoopIsWiredToIt(CadenceTestCase):
         self.assertIn("stampTrackMergeRun", source)
 
 
+class TestAFailedPassDoesNotSpendTheDay(CadenceTestCase):
+    """The claim is taken BEFORE the matcher runs - it has to be, or three
+    workers would all pass a check-then-act - so a pass that then raises has
+    stamped a run that never happened. Left alone that is the worst failure the
+    slot can produce: not one extra pass, but no pass at all for 24 hours,
+    which is the "silently off" outcome claimTrackMergeRun's own docstring says
+    it would rather fail open than reach.
+
+    The trigger is ordinary rather than exotic: mergeTracksByIsrc opens a write
+    transaction, and this database has a concurrent writer whose atomic
+    overwrite import holds the write lock long enough to exhaust busy_timeout.
+    The cycle's catch-all logs it and moves on; the stamp stays.
+
+    Driven through the real loop, because the claim, the call and the release
+    are three separate statements and only their arrangement is the fix.
+
+    These assert against time.time() rather than this file's fixed NOW, and
+    that is load-bearing: the loop stamps with the real clock, NOW is in 2027,
+    and every stamp therefore looks a day old to it - the first draft of the
+    two tests below passed with the fix absent for exactly that reason. No
+    sleeps and no tolerances follow from it; every comparison is an offset from
+    one captured instant."""
+
+    def _dbReadyForACycle(self):
+        from unittest.mock import MagicMock
+        from Database.database import Database
+        from test_metadata_backfiller import runsOneCycle
+
+        db = self._db()
+        db.repo.setTrackMergeEnabled(True)
+        db.getUserSpotifyCredentials = MagicMock(return_value=None)
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        runsOneCycle(db, db.backfiller_stop_event)
+        return db
+
+    def _runCycle(self, db):
+        db._metadataBackfillLoop()
+
+    def test_a_raising_matcher_leaves_the_slot_open(self):
+        import time
+        from unittest.mock import MagicMock
+
+        db = self._dbReadyForACycle()
+        db.repo.mergeTracksByIsrc = MagicMock(
+            side_effect=Exception("database is locked"))
+        started = time.time()
+
+        self._runCycle(db)
+
+        db.repo.mergeTracksByIsrc.assert_called_once()
+        self.assertTrue(
+            db.repo.claimTrackMergeRun(now=started),
+            "a pass that raised spent the day's slot without merging anything")
+
+    def test_a_raising_matcher_restores_the_PREVIOUS_run_not_never_ran(self):
+        """Re-opening the slot must not also forget the pass that really did
+        run three hours ago - that would re-open it for a full day's worth of
+        cycles, which is the cost the slot exists to stop."""
+        import time
+        from unittest.mock import MagicMock
+
+        db = self._dbReadyForACycle()
+        started = time.time()
+        db.repo.stampTrackMergeRun(now=started)
+        db.repo.mergeTracksByIsrc = MagicMock(side_effect=Exception("boom"))
+
+        self._runCycle(db)
+
+        self.assertFalse(db.repo.claimTrackMergeRun(now=started + 3 * 3600))
+        self.assertTrue(db.repo.claimTrackMergeRun(
+            now=started + TRACK_MERGE_MIN_INTERVAL_SECONDS + 1))
+
+    def test_a_release_that_itself_fails_keeps_the_matchers_own_error(self):
+        """Writes failing is the likeliest reason the merge failed, so the
+        give-back can fail for the same reason. It must not become the error
+        the cycle reports - the matcher's traceback is the one worth reading -
+        and it must not take the loop down with it."""
+        from unittest.mock import MagicMock
+
+        db = self._dbReadyForACycle()
+        db.repo.mergeTracksByIsrc = MagicMock(
+            side_effect=Exception("database is locked"))
+        db.repo.releaseTrackMergeRun = MagicMock(
+            side_effect=Exception("still locked"))
+
+        with self.assertLogs(level="WARNING") as captured:
+            self._runCycle(db)   #< the cycle's catch-all keeps the loop alive
+
+        db.repo.releaseTrackMergeRun.assert_called_once()
+        self.assertTrue(
+            any("database is locked" in line for line in captured.output),
+            "the matcher's own failure must still be what the cycle reports")
+
+    def test_a_succeeding_matcher_still_spends_the_slot(self):
+        """The control: without it both tests above pass against a loop that
+        simply never claims."""
+        import time
+        from unittest.mock import MagicMock
+
+        db = self._dbReadyForACycle()
+        db.repo.mergeTracksByIsrc = MagicMock(
+            return_value={"groups": 0, "merged": 0})
+        started = time.time()
+
+        self._runCycle(db)
+
+        db.repo.mergeTracksByIsrc.assert_called_once()
+        self.assertFalse(db.repo.claimTrackMergeRun(now=started))
+
+
 if __name__ == "__main__":
     unittest.main()

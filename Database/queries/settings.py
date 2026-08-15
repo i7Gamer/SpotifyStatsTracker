@@ -478,6 +478,36 @@ class SettingQueries:
                  stampedAt - TRACK_MERGE_MIN_INTERVAL_SECONDS))
             return cur.rowcount > 0
 
+    def getTrackMergeLastRun(self) -> str | None:
+        """The raw stamp behind claimTrackMergeRun, or None if the matcher has
+        never run. Read before claiming so releaseTrackMergeRun can put it
+        back; raw rather than a float because putting it back byte-for-byte is
+        the whole point, and an unparseable value has a documented meaning
+        (see claimTrackMergeRun's fails-open note) that float() would erase."""
+        return self.getAppSetting(TRACK_MERGE_LAST_RUN_KEY)
+
+    def releaseTrackMergeRun(self, previousStamp: str | None) -> None:
+        """Give the day's slot back after a claimed run failed to happen.
+
+        The claim has to be taken BEFORE the matcher runs - that is what stops
+        three workers passing the same check-then-act - so a pass that then
+        raises has stamped a run nobody made, and the matcher is off until
+        tomorrow. That is the failure claimTrackMergeRun's docstring says it
+        would rather fail open than reach.
+
+        Restores the PREVIOUS stamp rather than clearing the key, so a pass
+        that really did run earlier today still holds the slot it earned;
+        clearing it would re-open the matcher to every cycle for a full day,
+        which is the cost the slot exists to remove. `None` means the matcher
+        had never run, and the key goes back to absent."""
+        if previousStamp is None:
+            conn = self._conn()
+            with conn:
+                conn.execute("DELETE FROM app_settings WHERE key = ?",
+                             (TRACK_MERGE_LAST_RUN_KEY,))
+            return
+        self.setAppSetting(TRACK_MERGE_LAST_RUN_KEY, previousStamp)
+
     def stampTrackMergeRun(self, now: float | None = None) -> None:
         """Record a matcher run that happened outside the daily claim - the one
         the admin toggle does itself when the checkbox goes on (routes/admin.py).

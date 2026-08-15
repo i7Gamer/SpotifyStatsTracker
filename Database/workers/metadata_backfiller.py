@@ -597,12 +597,39 @@ class MetadataBackfillMixin:
                     # global and picks up every worker's batches either way.
                     # Asked only while ON, so a disabled feature costs nothing
                     # and cannot burn the slot.
-                    if self.repo.isTrackMergeEnabled() and self.repo.claimTrackMergeRun():
-                        mergeSummary = self.repo.mergeTracksByIsrc()
-                        if mergeSummary["merged"]:
-                            _dbmod.logger.info(
-                                "[Backfiller-%s] ISRC merge: %d track(s) newly merged",
-                                self.user, mergeSummary["merged"])
+                    if self.repo.isTrackMergeEnabled():
+                        #< read before the claim overwrites it: the claim is
+                        #  what makes the slot safe against three workers, but
+                        #  it also stamps a run that has not happened yet, so a
+                        #  matcher that raises would turn the feature off until
+                        #  tomorrow. The cycle's catch-all below would log that
+                        #  and move on. Giving the stamp back on the way out
+                        #  keeps the claim's concurrency and drops its cost.
+                        previousStamp = self.repo.getTrackMergeLastRun()
+                        if self.repo.claimTrackMergeRun():
+                            try:
+                                mergeSummary = self.repo.mergeTracksByIsrc()
+                            except Exception:
+                                try:
+                                    self.repo.releaseTrackMergeRun(previousStamp)
+                                except Exception:
+                                    #< the give-back is a write, and the most
+                                    #  likely reason the merge failed is that
+                                    #  writes are failing - so it can fail too.
+                                    #  Swallowed and named rather than allowed
+                                    #  to replace the merge's own traceback,
+                                    #  which is the one worth reading. The slot
+                                    #  then simply stays spent, as it did
+                                    #  before this remedy existed.
+                                    _dbmod.logger.warning(
+                                        "[Backfiller-%s] Could not release the ISRC merge slot; "
+                                        "the matcher waits out the interval", self.user,
+                                        exc_info=True)
+                                raise
+                            if mergeSummary["merged"]:
+                                _dbmod.logger.info(
+                                    "[Backfiller-%s] ISRC merge: %d track(s) newly merged",
+                                    self.user, mergeSummary["merged"])
 
                     #< here AND after the album branch's own use below, because
                     #  either step can be the one that asks for the token first
