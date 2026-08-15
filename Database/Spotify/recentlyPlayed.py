@@ -539,9 +539,18 @@ def _reconnectOrBackOff(self, consecutiveFailures: int):
     Both of the poll loop's reconnect sites go through here, because both had
     the same shape and the same gap: a reconnect that failed was retried at
     whatever rate the caller happened to loop at, forever, logging a traceback
-    every time. The streak is what escalates - a success anywhere resets it to
-    0, so an isolated failure between healthy reconnects still retries at the
-    base interval rather than inheriting an old outage's wait.
+    every time. The streak is what escalates, so an isolated failure between
+    healthy stretches still retries at the base interval rather than inheriting
+    an old outage's wait.
+
+    Two things clear it, and this function is only one of them: a reconnect
+    that succeeds (the `return True, 0` below), and - in the caller - any poll
+    that proves the transport is healthy, whether by reading player state or
+    by a connect-state PUT that went through. The second is the common one: a
+    failed reconnect still renews the session, so an outage typically ends with
+    the next poll simply working and no further reconnect ever attempted. With
+    only the first, this counted the lifetime of the loop rather than the
+    outage.
 
     A closed HTTP session returns keepRunning=False WITHOUT waiting: it can
     never reconnect, so the loop's job is to stop, not to sleep first.
@@ -623,6 +632,10 @@ def _pollLoopBody(self, callback, refreshInterval=3):
                     # as long as the user wasn't casting anything, pausing
                     # every OTHER user's tracking in 30-second slices.
                     consecutiveStateFailures = 0
+                    #< the PUT went through, so the transport is healthy and
+                    #  any earlier reconnect failure is finished history - see
+                    #  the reset on the state-read path below
+                    consecutiveReconnectFailures = 0
                     _sleepUntilStopped(self, refreshInterval)
                     continue
                 consecutiveStateFailures += 1
@@ -654,6 +667,14 @@ def _pollLoopBody(self, callback, refreshInterval=3):
                 continue
 
             consecutiveStateFailures = 0
+            #< a reconnect is not the only thing that proves the websocket came
+            #  back, and it is not even the usual one: a failed reconnect still
+            #  renews the session, so the outage commonly ends with the NEXT
+            #  poll reading state fine and no further reconnect ever attempted.
+            #  Cleared only by _reconnectOrBackOff's own success, this counter
+            #  measured the lifetime of the loop rather than the outage, and
+            #  failures hours apart compounded toward the 300s cap.
+            consecutiveReconnectFailures = 0
             # Shared with the push path - a state that can't be read
             # (inactive device, no track) is a no-op there too, so the
             # sleep below runs either way, exactly as it used to.

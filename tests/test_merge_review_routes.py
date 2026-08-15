@@ -251,6 +251,44 @@ class TestMergeReviewVerdicts(MergeReviewRouteTestCase):
         self.assertIn("Merged 1 release(s)", unquote_plus(resp.headers["Location"]))
         self.assertEqual(self._canonical(dash, "B" * 22), "A" * 22)
 
+    def test_a_merge_that_was_already_done_says_so(self):
+        """mergeTrackManually is idempotent and returns 0 for a track already
+        in the target group - the same stale-page race the reject verb answers
+        in words: the queue open in two tabs, or the daily matcher folding the
+        pair between render and click.
+
+        Reporting that as "Merged 0 release(s) into one song" tells the admin a
+        merge happened, with a count they cannot interpret, for a click that
+        deliberately did nothing. The pair really IS one song by then, so this
+        is not an error - it is the outcome they wanted, already true."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+        self._request(dash, "POST", "/admin/merge_review/merge",
+                      data={"member": "B" * 22, "canonical": "A" * 22})
+
+        resp = self._request(dash, "POST", "/admin/merge_review/merge",
+                             data={"member": "B" * 22, "canonical": "A" * 22})
+
+        location = unquote_plus(resp.headers["Location"])
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("Merged 0 release(s)", location)
+        self.assertIn("already", location.lower())
+        #< and the merge itself still stands
+        self.assertEqual(self._canonical(dash, "B" * 22), "A" * 22)
+
+    def test_a_real_merge_still_reports_its_count(self):
+        """The control: without it the assertion above is satisfied by a route
+        that says "already part of this song" for every merge."""
+        dash = self._makeApp()
+        self._seedPair(dash)
+
+        resp = self._request(dash, "POST", "/admin/merge_review/merge",
+                             data={"member": "B" * 22, "canonical": "A" * 22})
+
+        location = unquote_plus(resp.headers["Location"])
+        self.assertIn("Merged 1 release(s)", location)
+        self.assertNotIn("already", location.lower())
+
     def test_reject_pins_and_reports_back(self):
         dash = self._makeApp()
         self._seedPair(dash)

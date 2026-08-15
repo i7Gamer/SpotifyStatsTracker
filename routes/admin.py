@@ -705,8 +705,16 @@ def register(app, dashboard):
                 request.form.get("member", ""), canonical, decidedBy=username)
         except ValueError:
             abort(400)
+        #< 0 is the verb's idempotent no-op: the release is already in this
+        #  group. Same stale-page race the reject verb answers in words - the
+        #  queue open in two tabs, or the daily matcher folding the pair
+        #  between render and click - and not an error, because the outcome
+        #  the admin clicked for is already true. "Merged 0 release(s)" claimed
+        #  a merge had happened and handed over a count nothing explains.
+        message = (f"Merged {merged} release(s) into one song." if merged else
+                   "That release is already part of this song - nothing to merge.")
         return redirect(url_for("adminMergeReview", main=canonical or None,
-                                message=f"Merged {merged} release(s) into one song."))
+                                message=message))
     app.add_url_rule("/admin/merge_review/merge", "adminMergeReviewMerge",
                      adminMergeReviewMerge, methods=["POST"])
 

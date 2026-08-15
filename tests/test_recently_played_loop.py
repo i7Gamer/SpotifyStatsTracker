@@ -604,6 +604,50 @@ class TestReconnectBackoff(unittest.TestCase):
         backoffs = [w for w in waits if w >= _reconnectBackoffSeconds(1)]
         self.assertEqual(backoffs, [_reconnectBackoffSeconds(1), _reconnectBackoffSeconds(1)])
 
+    def test_a_healthy_poll_clears_the_streak_too(self):
+        """A reconnect is not the only thing that proves the transport came
+        back - reading player state proves it just as well, and is how the loop
+        usually recovers: the reconnect that failed may have half-worked, or
+        the outage may have ended between attempts, and the very next poll
+        succeeds without another reconnect ever being attempted.
+
+        Cleared only on the RECONNECT's success, the streak became a lifetime
+        counter: failures separated by hours compounded toward the cap, so an
+        isolated failure after a healthy week would wait five minutes instead
+        of thirty seconds. That contradicts the class docstring above ("a
+        single failed reconnect between healthy ones still retries promptly")
+        and the helper's own "a success anywhere resets it to 0"."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+        from Database.Spotify.recentlyPlayed import (
+            STATE_FAILURE_RECONNECT_THRESHOLD, _reconnectBackoffSeconds)
+        #< outage, then a clean read, then a second unrelated outage. The
+        #  reconnect fails BOTH times, so only the healthy poll in between can
+        #  clear the streak.
+        script = (
+            [ValueError("Could not get player state")] * STATE_FAILURE_RECONNECT_THRESHOLD
+            + [None]
+            + [ValueError("Could not get player state")] * STATE_FAILURE_RECONNECT_THRESHOLD
+        )
+        manager = _ScriptedStateManager(script)
+        manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
+        lpm = self._makeLpm(manager)
+        waits = []
+
+        def recordSleep(_lpm, seconds):
+            waits.append(seconds)
+            if manager.reconnect.call_count >= 2:
+                lpm.run = False
+            return True
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True), \
+                patch("Database.Spotify.recentlyPlayed._sleepUntilStopped", recordSleep):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        backoffs = [w for w in waits if w >= _reconnectBackoffSeconds(1)]
+        self.assertEqual(backoffs,
+                         [_reconnectBackoffSeconds(1), _reconnectBackoffSeconds(1)],
+                         "the second outage inherited the first one's wait")
+
     def test_the_backoff_never_sleeps_past_the_join_window(self):
         """The backoff is minutes and the shutdown join is seconds, so it has
         to go through _sleepUntilStopped like every other wait here - the same
