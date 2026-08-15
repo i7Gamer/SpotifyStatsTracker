@@ -129,9 +129,10 @@ class SweepTestCase(unittest.TestCase):
         self.assertEqual(self._find(), [])
 
     def test_skip_rows_are_ignored_on_both_sides(self):
-        """The reconciler's own filter: a backfill row must never dedup
-        against a merged skip row - and a skipped backfill row is not a
-        double-recorded LISTEN."""
+        """This pairing anchors on created_at, which only means "play end" for
+        a real listener play: a skip's created_at is when the user skipped
+        AWAY. The skip-side duplicates have their own pairing (see
+        TestSweepSkipDuplicates), which matches played_at instead."""
         self._insertPlay("t1", START, createdAt=END, created_reason=LISTENER_REASON, is_skip=1)
         self._insertPlay("t1", END + 1, created_reason=BACKFILL_REASON)
         self._insertPlay("t2", START, createdAt=END, created_reason=LISTENER_REASON)
@@ -218,6 +219,115 @@ class SweepTestCase(unittest.TestCase):
 
         self.assertEqual(exitCode, 0)
         self.assertEqual(len(self._playedAts()), 7, "every backfill copy should be gone")
+
+
+class TestSweepSkipDuplicates(SweepTestCase):
+    """The second pairing: a backfill row sitting on a same-track SKIP.
+
+    A backfill row is is_skip=0 by construction (no ms_played from the Web API,
+    so the source stamps the whole track duration), so the end-time pairing -
+    which requires both sides real plays - can never reach one. The gap is
+    matched played_at-to-played_at and kept tight: at 95s+ "skip, then a genuine
+    replay the listener missed" is the likelier reading."""
+
+    def _findSkips(self, tolerance=20):
+        return sweep.findBackfillSkipDuplicates(self._sweepConn(), tolerance)
+
+    def test_a_backfill_row_sitting_on_a_skip_is_found(self):
+        self._insertPlay("t1", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", START - 15, created_reason=BACKFILL_REASON)
+
+        found = self._findSkips()
+
+        self.assertEqual([(r["username"], r["track_id"], r["played_at"]) for r in found],
+                         [("alice", "t1", START - 15)])
+
+    def test_a_skip_outside_the_tight_tolerance_pairs_nothing(self):
+        self._insertPlay("t1", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", START + 95, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(self._findSkips(), [])
+
+    def test_a_skips_created_at_never_anchors_the_pairing(self):
+        """Only played_at counts on the skip side - its created_at is when the
+        user skipped away, not an end the feed still owes us."""
+        self._insertPlay("t1", START, createdAt=END, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", END + 1, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(self._findSkips(), [])
+
+    def test_a_real_play_never_pairs_here(self):
+        """The end-time pairing owns real plays; matching them by played_at too
+        would delete a genuine replay recorded seconds after a short track."""
+        self._insertPlay("t1", START, createdAt=START + 25, created_reason=LISTENER_REASON)
+        self._insertPlay("t1", START - 15, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(self._findSkips(), [])
+
+    def test_a_skipped_backfill_row_is_never_deleted(self):
+        """Only the backfill copy of a listen goes, and a skipped backfill row
+        is not one - it is also impossible today, so this pins the filter
+        rather than a live shape."""
+        self._insertPlay("t1", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", START - 15, created_reason=BACKFILL_REASON, is_skip=1)
+
+        self.assertEqual(self._findSkips(), [])
+
+    def test_pairing_never_crosses_users_or_tracks(self):
+        self._insertPlay("t1", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t2", START - 15, created_reason=BACKFILL_REASON)
+        self._insertPlay("t1", START - 15, created_reason=BACKFILL_REASON, username="bob")
+
+        self.assertEqual(self._findSkips(), [])
+
+    def test_a_copy_pairing_with_two_skips_is_one_deletion(self):
+        """Live shape (7kevinegger, 2026-08-12): one backfill row between two
+        skips of the same track, 9s and 110s away."""
+        self._insertPlay("t1", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", START + 20, createdAt=START + 30, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", START + 6, created_reason=BACKFILL_REASON)
+
+        found = self._findSkips()
+
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["skip_played_at"], START, "the report must describe the closest pairing")
+
+    def test_dry_run_reports_both_pairings_and_deletes_nothing(self):
+        self._insertPlay("t1", START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay("t1", END + 1, created_reason=BACKFILL_REASON)          #< end-time pairing
+        self._insertPlay("t2", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t2", START - 15, created_reason=BACKFILL_REASON)       #< skip pairing
+
+        exitCode = sweep.main(["--db", str(self.dbPath)])
+
+        self.assertEqual(exitCode, 0)
+        self.assertEqual(len(self._playedAts()), 4)
+
+    def test_apply_deletes_the_skip_shadowed_copy_too(self):
+        self._insertPlay("t2", START, createdAt=START + 25, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t2", START - 15, created_reason=BACKFILL_REASON)
+        self._insertPlay("t1", START, created_reason=BACKFILL_REASON)  #< genuine, no sibling
+
+        exitCode = sweep.main(["--db", str(self.dbPath), "--apply"])
+
+        self.assertEqual(exitCode, 0)
+        self.assertEqual(self._playedAts(), [START, START])  #< the skip + the genuine backfill
+
+    def test_a_row_caught_by_both_pairings_is_deleted_once(self):
+        """deleteBackfillDuplicates binds ids; the same id reaching it twice
+        would report a deletion count the operator cannot reconcile with the
+        row count above it."""
+        self._insertPlay("t1", START, createdAt=START + 5, created_reason=LISTENER_REASON, is_skip=1)
+        self._insertPlay("t1", START + 3, createdAt=START + 9, created_reason=LISTENER_REASON)
+        self._insertPlay("t1", START + 10, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(len(self._findSkips()), 1)
+        self.assertEqual(len(self._find()), 1)
+
+        exitCode = sweep.main(["--db", str(self.dbPath), "--apply"])
+
+        self.assertEqual(exitCode, 0)
+        self.assertEqual(self._playedAts(), [START, START + 3])
 
 
 if __name__ == "__main__":

@@ -269,11 +269,16 @@ class TestGetPlayTimesInRange(unittest.TestCase):
         end-time arm meant a skip could suppress the backfill of a real play -
         the user skips a track, the listener then dies and misses the full
         replay, and the Web API's start-reading of that replay lands within
-        10s of the skip's stamp. The item is dropped before it ever reaches
-        the insert guard, whose own is_skip=0 would have let it through, and
-        every later poll collides identically: the play is lost for good.
-        The three sibling implementations of this pairing rule all restrict
-        to is_skip=0 (hasPlayNearTime, getPlaysWithSourceInRange, the sweep)."""
+        10s of the skip's stamp. Suppressing here is unrecoverable - the item
+        is dropped before it ever reaches the insert guard, and every later
+        poll collides identically: the play is lost for good.
+
+        This nulls the ANCHOR only. The skip's played_at still comes through
+        for the caller's two played_at arms, and the insert guard behind this
+        check matches it directly on a tight tolerance (hasPlayNearTime's
+        skipToleranceSeconds) - which is where a backfill row re-recording a
+        skipped listen gets dropped, with per-row knowledge this layer has
+        not got."""
         self._insertPlayCreatedAt("t4", self.base + 300, self.base + 700,
                                   "listener_play (user: alice)", is_skip=1)
 

@@ -107,7 +107,8 @@ class PlayQueries:
         return cur.rowcount > 0
 
     def hasPlayNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float,
-                        listenerEndToleranceSeconds: float | None = None) -> bool:
+                        listenerEndToleranceSeconds: float | None = None,
+                        skipToleranceSeconds: float | None = None) -> bool:
         """True if a play for this exact track already exists for this user
         within toleranceSeconds of playedAt (inclusive both directions).
         Reuses idx_plays_user_track. See Database.appendTrackData for why this
@@ -120,18 +121,35 @@ class PlayQueries:
         observed end of the play, pauses included - which the duration-based
         window above cannot cover, since a mid-track pause stretches
         start-to-end by an unbounded amount. Listener rows only: any other
-        source's created_at is an import/poll moment, not a play end."""
+        source's created_at is an import/poll moment, not a play end.
+
+        Both of those arms are is_skip=0, which near-time matching has been
+        since skips lived in their own table: a backfill row must never dedup
+        against, or claim/correct, a merged skip row. That filter cannot hold
+        for this caller, though - the Web API reports no ms_played, so a
+        backfill row stamps the track's whole duration and is is_skip=0 by
+        construction, and a listen the listener classified as a SKIP was
+        therefore invisible to every arm and got re-added as a full play.
+        skipToleranceSeconds is the answer: a third arm matching a skip's
+        played_at, kept far tighter than the duration window because at that
+        distance a skip followed by a genuine replay is the likelier reading
+        (see Database.BACKFILL_SKIP_MATCH_TOLERANCE_SECONDS). played_at only -
+        a skip's created_at is when the user skipped AWAY, not an end the feed
+        still owes us, the same rule getPlaysWithSourceInRange enforces. Not
+        restricted by source, unlike the end arm: that one needs created_at to
+        MEAN a play end, while played_at is recorded honestly by all of them."""
         conn = self._conn()
         timeMatch = "played_at BETWEEN ? AND ?"
         params: list = [playedAt - toleranceSeconds, playedAt + toleranceSeconds]
         if listenerEndToleranceSeconds is not None:
             timeMatch += " OR (created_reason LIKE 'listener_play%' AND created_at BETWEEN ? AND ?)"
             params += [playedAt - listenerEndToleranceSeconds, playedAt + listenerEndToleranceSeconds]
-        # is_skip=0: near-time matching only ever considered real plays (skips
-        # used to live in a separate table); a backfill row must never dedup
-        # against, or claim/correct, a merged skip row.
+        clauses = f"(is_skip=0 AND ({timeMatch}))"
+        if skipToleranceSeconds is not None:
+            clauses += " OR (is_skip=1 AND played_at BETWEEN ? AND ?)"
+            params += [playedAt - skipToleranceSeconds, playedAt + skipToleranceSeconds]
         row = conn.execute(
-            f"SELECT 1 FROM plays WHERE username=? AND track_id=? AND ({timeMatch}) AND is_skip=0 LIMIT 1",
+            f"SELECT 1 FROM plays WHERE username=? AND track_id=? AND ({clauses}) LIMIT 1",
             (username, trackId, *params),
         ).fetchone()
         return row is not None
@@ -187,9 +205,10 @@ class PlayQueries:
         meaningless as a play end, and comes through as None. So is a SKIP's:
         that stamp is when the user skipped away, not the end of a play the
         feed still owes us, and letting it anchor the arm let a skip suppress
-        the backfill of a real play seconds later (is_skip=0, matching
-        hasPlayNearTime and getPlaysWithSourceInRange - a backfill row must
-        never dedup against a merged skip row). Real listener plays are also
+        the backfill of a real play seconds later. Note this nulls the ANCHOR
+        only - a skip's played_at still comes through, and the insert guard
+        behind this check matches it directly on a tight tolerance (see
+        hasPlayNearTime's skipToleranceSeconds). Real listener plays are also
         matched INTO the window by that created_at, not just by played_at: a
         paused play can start more than one track-length before its end, which
         is exactly when the played_at-only window would miss the row the

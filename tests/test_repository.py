@@ -1229,12 +1229,13 @@ class TestHasPlayNearTime(RepositoryTestCase):
         self.repo.upsertUser("bob", "bob@example.com")
         self.assertFalse(self.repo.hasPlayNearTime("bob", "t1", 1050.0, 100))
 
-    def _insertPlayCreatedAt(self, trackId, playedAt, createdAt, created_reason):
+    def _insertPlayCreatedAt(self, trackId, playedAt, createdAt, created_reason, is_skip=0):
         """created_at is stamped with time.time() inside insertPlay - pin the
         clock so the test controls the row's insert-time stamp."""
         with patch("Database.queries.plays.time") as mockTime:
             mockTime.time.return_value = createdAt
-            self.repo.insertPlay("alice", trackId, playedAt, 5000, created_reason=created_reason)
+            self.repo.insertPlay("alice", trackId, playedAt, 5000, created_reason=created_reason,
+                                 is_skip=is_skip)
         self.repo.commit()
 
     def test_listener_end_tolerance_matches_a_row_by_its_created_at(self):
@@ -1263,6 +1264,61 @@ class TestHasPlayNearTime(RepositoryTestCase):
                                                    listenerEndToleranceSeconds=10))
         self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 5010.0, 100,
                                                   listenerEndToleranceSeconds=10))
+
+    def test_skip_tolerance_matches_a_skip_by_its_played_at(self):
+        """2026-08-14: the listener recorded a 3.6s skip at 16:29:06, the Web
+        API reported the same listen at 16:28:51 - 15s away, inside a wide
+        window of 280s - and the backfill re-added it as a full 220s play.
+        Every arm was is_skip=0, so the row was never a candidate.
+
+        The filter cannot work for this source: the Web API gives no ms_played,
+        so a backfill row stamps the track's whole duration and is is_skip=0 by
+        construction (verified: 479/479 live rows). An is_skip=0-only guard
+        therefore cannot see a skipped listen AT ALL - the miss is systematic,
+        not a coincidence of timing."""
+        self._insertPlayCreatedAt("t2", 2000.0, 2025.0, "listener_play (user: alice)", is_skip=1)
+
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 1985.0, 280))
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 1985.0, 280,
+                                                  skipToleranceSeconds=20))
+
+    def test_skip_tolerance_is_a_tight_point_match(self):
+        self._insertPlayCreatedAt("t2", 2000.0, 2025.0, "listener_play (user: alice)", is_skip=1)
+
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 2020.0, 280, skipToleranceSeconds=20))
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 2021.0, 280, skipToleranceSeconds=20))
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 1980.0, 280, skipToleranceSeconds=20))
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 1979.0, 280, skipToleranceSeconds=20))
+
+    def test_a_skip_never_gets_the_wide_duration_window(self):
+        """Measured over live data (2026-08-15): the provable duplicates sat
+        3-15s from their skip, the two ambiguous ones 95s and 291s away - and
+        at that distance "skip, then a genuine replay the listener missed" is
+        the likelier reading. Handing the skip the wide duration+60s window
+        would suppress those, and suppression is unrecoverable: the next poll's
+        page collides identically and nothing retries it."""
+        self._insertPlayCreatedAt("t2", 2000.0, 2025.0, "listener_play (user: alice)", is_skip=1)
+
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 2095.0, 280, skipToleranceSeconds=20))
+
+    def test_a_skips_created_at_never_anchors_an_end(self):
+        """A skip's created_at is when the user skipped AWAY, not the end of a
+        play the feed still owes us - the rule getPlaysWithSourceInRange already
+        enforces on the announce side. Only a skip's played_at counts."""
+        self._insertPlayCreatedAt("t2", 1000.0, 5000.0, "listener_play (user: alice)", is_skip=1)
+
+        self.assertFalse(self.repo.hasPlayNearTime("alice", "t2", 5000.0, 100,
+                                                   listenerEndToleranceSeconds=10,
+                                                   skipToleranceSeconds=20))
+
+    def test_the_skip_arm_is_not_restricted_to_listener_rows(self):
+        """Unlike the end arm - which needs created_at to MEAN a play end, true
+        of listener rows only - this arm matches played_at, which every source
+        records honestly. An imported skip at the same instant is the same
+        physical event."""
+        self._insertPlayCreatedAt("t2", 2000.0, 2025.0, "history_import (user: alice)", is_skip=1)
+
+        self.assertTrue(self.repo.hasPlayNearTime("alice", "t2", 2010.0, 280, skipToleranceSeconds=20))
 
 
 def makeSearchableTrack(trackId, name, artistName, albumName):

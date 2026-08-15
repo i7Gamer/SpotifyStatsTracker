@@ -80,7 +80,8 @@ class TestAppendTrackDataDedupGuard(unittest.TestCase):
 
         db.repo.hasPlayNearTime.assert_called_once_with(
             "alice", "t1", 1000.0, 180 + Database.BACKFILL_INSERT_GUARD_EXTRA_SECONDS,
-            listenerEndToleranceSeconds=Database.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS
+            listenerEndToleranceSeconds=Database.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS,
+            skipToleranceSeconds=Database.BACKFILL_SKIP_MATCH_TOLERANCE_SECONDS
         )
 
     @patch("Database.database.Client")
@@ -95,7 +96,8 @@ class TestAppendTrackDataDedupGuard(unittest.TestCase):
 
         db.repo.hasPlayNearTime.assert_called_once_with(
             "alice", "t1", 1000.0, Database.BACKFILL_INSERT_GUARD_EXTRA_SECONDS,
-            listenerEndToleranceSeconds=Database.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS
+            listenerEndToleranceSeconds=Database.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS,
+            skipToleranceSeconds=Database.BACKFILL_SKIP_MATCH_TOLERANCE_SECONDS
         )
 
     @patch("Database.database.Client")

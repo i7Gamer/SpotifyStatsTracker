@@ -241,6 +241,18 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                      #  474s after a 287s track's start). Kept a tight point
                                                      #  match: live insert lag is ~1s, poll-mode detection a few
                                                      #  seconds - anything minutes away is a different listen.
+    BACKFILL_SKIP_MATCH_TOLERANCE_SECONDS = 20  #< max gap between a backfill row's played_at and a same-track
+                                                 #  SKIP row's played_at for the two to count as the same listen.
+                                                 #  The Web API reports no ms_played, so a backfill row stamps the
+                                                 #  track's whole duration and is is_skip=0 by construction - which
+                                                 #  means the is_skip=0 arms above can never see a listen the
+                                                 #  listener classified as a skip, and the backfill re-added it as
+                                                 #  a full play (2026-08-14: a 3.6s skip came back as 220s, 15s
+                                                 #  away). Deliberately much tighter than those arms' duration+60s:
+                                                 #  measured over live data the provable duplicates sat 3-15s from
+                                                 #  their skip while the ambiguous ones sat 95s and 291s away,
+                                                 #  where "skip, then a genuine replay the listener missed" is the
+                                                 #  likelier reading - and suppression there is unrecoverable.
     #< the module-level import above, re-exposed on the class because the mixins
     #  reach it as self.WEB_API_BACKFILL_SOURCE. It is DEFINED in Database/db.py,
     #  the leaf module Listeners/spotifyListener.py can import too - which is the

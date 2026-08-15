@@ -135,10 +135,19 @@ class ImportMixin:
             # listener inserts at the track-change moment), so an entry whose
             # played_at sits at that stamp is the same listen however long the
             # pause was (see BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS).
+            #
+            # Both of those only ever look at real plays, and this source can
+            # never produce one that matches a SKIP: with no ms_played from the
+            # Web API the row below stamps the track's whole duration, so it is
+            # is_skip=0 by construction and a skipped listen was invisible to
+            # the guard entirely (2026-08-14: a 3.6s skip came back as a full
+            # 220s play recorded 15s away). The skip tolerance is that third
+            # arm, and is tight for the reason its constant explains.
             durationSeconds = (track.get("duration_ms", 0) or 0) // 1000
             tolerance = durationSeconds + self.BACKFILL_INSERT_GUARD_EXTRA_SECONDS
             if self.repo.hasPlayNearTime(self.user, track_id, formatted_track["playedAt"], tolerance,
-                                         listenerEndToleranceSeconds=self.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS):
+                                         listenerEndToleranceSeconds=self.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS,
+                                         skipToleranceSeconds=self.BACKFILL_SKIP_MATCH_TOLERANCE_SECONDS):
                 if flaskDebugEnabled():
                     _dbmod.logger.info(
                         "Skipping backfilled play for track %s (%s): an existing play already exists "
