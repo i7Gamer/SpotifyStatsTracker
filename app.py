@@ -649,6 +649,18 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                     # No release has ever been published - nothing to notify about.
                     with self._version_lock:
                         self.latestVersion = None
+                else:
+                    # Neither a release nor evidence that none exists - a 429 off
+                    # the unauthenticated hourly cap this endpoint shares with
+                    # everything else on the egress IP, or a GitHub 5xx. Leave
+                    # latestVersion alone (blinking the badge off would read as
+                    # the update having been withdrawn) but say so: an instance
+                    # stuck on this would otherwise just never show the badge,
+                    # with nothing in the log to explain it. WARNING, unlike the
+                    # transport failures below, because it can't spam at one
+                    # line an hour and DEBUG is off in production.
+                    logger.warning("Version check got unexpected HTTP %s from %s",
+                                   resp.status_code, url)
             except Exception as e:
                 # Transient (DNS/TLS/GitHub outage) - debug, not warning, so an
                 # offline instance doesn't spam its log every hour.

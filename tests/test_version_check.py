@@ -131,6 +131,28 @@ class TestVersionCheckSurvivesFailures(AppTestCase):
                 self.assertEqual(dash.latestVersion, "1.31.0")
                 dash._stop_event.wait.assert_any_call(HOURLY_WAIT_SECONDS)
 
+    def test_an_unhandled_status_is_logged_with_its_code(self):
+        """Regression: 200 and 404 used to be the only statuses the loop reacted
+        to, so anything else fell through leaving no trace at all - an instance
+        stuck behind a shared-IP 429 would just never show the badge, with
+        nothing in the log to say why.
+
+        WARNING, not the DEBUG the transport failures get: those are the
+        expected steady state for an offline instance, whereas GitHub answering
+        at all but with neither a release nor a 404 is odd enough to surface,
+        and at one line an hour it cannot spam. DEBUG would also be invisible
+        here - the app configures the root logger at INFO."""
+        for status in (429, 500, 503):
+            with self.subTest(status=status):
+                dash = self._dashWithAKnownUpdate()
+
+                with patch("app.requests.get", return_value=_response(status_code=status)), \
+                     self.assertLogs("app", level="WARNING") as logs:
+                    _runOnePass(dash)
+
+                self.assertTrue(any(str(status) in line for line in logs.output),
+                                f"the status must be named in the log: {logs.output}")
+
     def test_a_malformed_response_body_is_swallowed(self):
         """A 200 carrying HTML instead of JSON - a captive portal or a proxy
         error page - raises inside .json(), not at the request."""
