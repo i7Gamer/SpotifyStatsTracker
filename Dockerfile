@@ -16,11 +16,24 @@ COPY requirements.txt .
 # the same tag differing by a patched libssl is the trade that is worth making.
 # Everything the app's behaviour depends on - Python packages, spotapi's commit -
 # is pinned, so this can only move OS-level packages.
+#
+# pip goes the same way as gcc and git: it is a build tool, and nothing at
+# runtime invokes it (CMD is `python wsgi.py`). Leaving it behind put a
+# fetch-and-install tool inside a container that deliberately runs as root -
+# see the note below - and it was also the sole source of every "fixable"
+# finding in the image scan. Both packages the scanner names, msgpack and
+# setuptools, come from pip/_vendor/vendor.txt rather than requirements.txt;
+# setuptools isn't even present as code, and msgpack only ever runs as
+# pip._vendor.msgpack while pip itself is running. No requirements pin can
+# reach either, because the vendored version is pip's to choose.
+# `python -m ensurepip` restores pip from the bundled wheel if a container
+# ever needs it for debugging.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends gcc git \
     && pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y git gcc \
     && apt-get autoremove --purge -y \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip
 
 # The application itself (everything .dockerignore lets through)
 COPY . .
