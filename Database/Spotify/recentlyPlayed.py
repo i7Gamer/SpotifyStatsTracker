@@ -87,6 +87,29 @@ STATE_FAILURE_RECONNECT_THRESHOLD = 5
 
 UPDATE_LOOP_ERROR_SLEEP_SECONDS = 10  #< back off after an unexpected updateLoop error before reconnecting
 
+# How long the poll loop waits before retrying a websocket reconnect that keeps
+# failing, doubling from the base to the cap.
+#
+# Sized against the one real outage this was written for (2026-08-13): Spotify
+# answered register_device with 400 INVALID_USER for 18 minutes, and the loop
+# retried on a fixed ~56s cycle - 20 attempts, each logging a full traceback -
+# before recovering on its own. The reconnect is not what was wrong; it renews
+# the session every attempt, and the same code succeeded the moment Spotify
+# stopped refusing. Retrying a remote outage of unknown length at a fixed rate
+# was. Replayed against that same 18 minutes and its measured ~56s cycle, these
+# values spend 5 attempts (30s, 60s, 120s, 240s, 300s) rather than 20.
+#
+# The cap is the worst-case time now-playing stays dark after Spotify recovers,
+# which is why it is minutes and not longer: no play is at risk either way (the
+# recently-played poll captures those, and this loop only drives now-playing),
+# so the cost of waiting is staleness, not data.
+RECONNECT_BACKOFF_BASE_SECONDS = 30
+RECONNECT_BACKOFF_MAX_SECONDS = 300
+#< a bound on the shift itself, not on the wait - RECONNECT_BACKOFF_MAX_SECONDS
+#  is what actually caps it, and this only stops a long outage computing
+#  2**(a very large number) on its way to being clamped
+RECONNECT_BACKOFF_MAX_DOUBLINGS = 8
+
 # This loop's thread is named "<prefix><logUser>", for the reasons
 # LISTENER_THREAD_NAME_PREFIX gives for the listener's poll thread beside it.
 # Both halves matter: the prefix must also be in conftest's
@@ -501,8 +524,60 @@ def _runPollLoop(self, callback, refreshInterval=3):
                 logger.debug("[Spotify] Could not clear the poll renewal stamp", exc_info=True)
 
 
+def _reconnectBackoffSeconds(consecutiveFailures: int) -> float:
+    """How long to wait before the next reconnect attempt, given how many have
+    failed in a row (1 for the first). Doubles from
+    RECONNECT_BACKOFF_BASE_SECONDS and stops at RECONNECT_BACKOFF_MAX_SECONDS."""
+    doublings = min(max(consecutiveFailures - 1, 0), RECONNECT_BACKOFF_MAX_DOUBLINGS)
+    return min(RECONNECT_BACKOFF_BASE_SECONDS * (2 ** doublings),
+               RECONNECT_BACKOFF_MAX_SECONDS)
+
+
+def _reconnectOrBackOff(self, consecutiveFailures: int):
+    """Rebuild the websocket. Returns (keepRunning, consecutiveFailures).
+
+    Both of the poll loop's reconnect sites go through here, because both had
+    the same shape and the same gap: a reconnect that failed was retried at
+    whatever rate the caller happened to loop at, forever, logging a traceback
+    every time. The streak is what escalates - a success anywhere resets it to
+    0, so an isolated failure between healthy reconnects still retries at the
+    base interval rather than inheriting an old outage's wait.
+
+    A closed HTTP session returns keepRunning=False WITHOUT waiting: it can
+    never reconnect, so the loop's job is to stop, not to sleep first.
+
+    The wait goes through _sleepUntilStopped for the reason every wait in this
+    file does - it is minutes long and the shutdown join is seconds."""
+    try:
+        self.manager.reconnect()
+    except Exception as reconnectErr:
+        if _isSessionClosedError(reconnectErr):
+            logger.error(
+                "[Spotify] Player-state loop exiting: the HTTP session is "
+                "closed and cannot be revived: %s", reconnectErr,
+            )
+            return False, consecutiveFailures
+        consecutiveFailures += 1
+        wait = _reconnectBackoffSeconds(consecutiveFailures)
+        if consecutiveFailures == 1:
+            #< the traceback once per outage. The 19 that followed it on
+            #  2026-08-13 said nothing the first had not, and buried every
+            #  other line in the log between them
+            logger.error("[Spotify] Websocket reconnect failed; retrying in %gs: %s",
+                         wait, reconnectErr, exc_info=True)
+        else:
+            logger.warning(
+                "[Spotify] Websocket reconnect still failing (attempt %d); "
+                "retrying in %gs: %s", consecutiveFailures, wait, reconnectErr)
+        _sleepUntilStopped(self, wait)
+        return True, consecutiveFailures
+    return True, 0
+
+
 def _pollLoopBody(self, callback, refreshInterval=3):
     consecutiveStateFailures = 0
+    #< spans both reconnect sites below: one outage, one streak
+    consecutiveReconnectFailures = 0
     while self.run:
         if getattr(self.manager, "_deliberate_close", False):
             # Listener.stop()/signalStop() closed this websocket on
@@ -570,17 +645,11 @@ def _pollLoopBody(self, callback, refreshInterval=3):
                     # single blip doesn't pause every user.
                     SPOTIFY_LIMITER.applyBackoff(SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
                                                  reason=ENDPOINT_CONNECT_STATE)
-                    try:
-                        self.manager.reconnect()
-                    except Exception as reconnect_err:
-                        if _isSessionClosedError(reconnect_err):
-                            logger.error(
-                                "[Spotify] Player-state loop exiting: the HTTP session is "
-                                "closed and cannot be revived: %s", reconnect_err,
-                            )
-                            self.run = False
-                            return
-                        logger.error("[Spotify] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
+                    keepRunning, consecutiveReconnectFailures = _reconnectOrBackOff(
+                        self, consecutiveReconnectFailures)
+                    if not keepRunning:
+                        self.run = False
+                        return
                 _sleepUntilStopped(self, refreshInterval)
                 continue
 
@@ -612,17 +681,11 @@ def _pollLoopBody(self, callback, refreshInterval=3):
                 # prevent - a leftover loop spamming reconnect errors through
                 # shutdown (2026-07-17). Let that head log and exit instead.
                 continue
-            try:
-                self.manager.reconnect()
-            except Exception as reconnect_err:
-                if _isSessionClosedError(reconnect_err):
-                    logger.error(
-                        "[Spotify] Player-state loop exiting: the HTTP session is "
-                        "closed and cannot be revived: %s", reconnect_err,
-                    )
-                    self.run = False
-                    return
-                logger.error("[Spotify] Websocket reconnect failed; will keep retrying: %s", reconnect_err, exc_info=True)
+            keepRunning, consecutiveReconnectFailures = _reconnectOrBackOff(
+                self, consecutiveReconnectFailures)
+            if not keepRunning:
+                self.run = False
+                return
 
 
 class RecentlyPlayedManager:

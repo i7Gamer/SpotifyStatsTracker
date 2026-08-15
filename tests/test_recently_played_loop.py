@@ -468,7 +468,15 @@ class TestUpdateLoopShutdown(unittest.TestCase):
 
     def test_keeps_retrying_on_other_reconnect_errors(self):
         """A non-closed-session reconnect failure keeps the retry loop alive -
-        transient outages must still recover once Spotify is reachable again."""
+        transient outages must still recover once Spotify is reachable again.
+        HOW LONG it waits before the next attempt is TestReconnectBackoff's
+        question; this one is only that it lives to make one.
+
+        Stopped by the script draining rather than by counting sleeps: the
+        backoff is minutes of POLL_STOP_POLL_SECONDS steps, so a raw
+        time.sleep tally now trips inside the wait instead of after the poll
+        that follows it, and the loop would look dead when it was merely
+        waiting."""
         from Database.Spotify.recentlyPlayed import STATE_FAILURE_RECONNECT_THRESHOLD
 
         from Database.rate_limit import SPOTIFY_LIMITER
@@ -478,12 +486,10 @@ class TestUpdateLoopShutdown(unittest.TestCase):
         manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
         lpm = self._makeLpm(manager)
 
-        sleepCount = [0]
-
-        def mockSleep(_secs):
-            sleepCount[0] += 1
-            if sleepCount[0] >= len(script):
+        def stopOnceTheScriptIsSpent(_lpm, _seconds):
+            if not manager._results:
                 lpm.run = False
+            return True
 
         # Escalating to a reconnect also opens a process-wide backoff window
         # (see TestConnectStatePollLimiting), which would hold the poll after
@@ -491,11 +497,184 @@ class TestUpdateLoopShutdown(unittest.TestCase):
         # it could prove it survived the failed reconnect. Grant every slot so
         # this test stays about the reconnect path alone.
         with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True):
-            with patch("time.sleep", side_effect=mockSleep):
+            with patch("Database.Spotify.recentlyPlayed._sleepUntilStopped",
+                       stopOnceTheScriptIsSpent):
                 lpm.updateLoop(MagicMock(), refreshInterval=1)
 
         manager.reconnect.assert_called_once_with()
         self.assertEqual(manager._results, [])  #< loop survived past the failed reconnect
+
+
+class TestReconnectBackoff(unittest.TestCase):
+    """A reconnect that keeps failing has to slow down.
+
+    Observed live on 2026-08-13: Spotify answered register_device with
+    400 INVALID_USER for 18 minutes, and the loop retried on a fixed ~56s
+    cycle - five state failures, a reconnect, an ERROR with a full traceback -
+    20 times over, then recovered on its own. Nothing was lost (plays come
+    from the recently-played poll; the websocket only drives now-playing), and
+    the reconnect itself is sound: it renews the session every attempt, and
+    the same code path succeeded once Spotify stopped refusing. What was wrong
+    was the cadence - a fixed retry against a remote outage of unknown length,
+    logging a traceback a minute for as long as it lasted.
+
+    So: the STREAK is what backs off, not the individual failure. A single
+    failed reconnect between healthy ones still retries promptly."""
+
+    def _makeLpm(self, manager):
+        from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+        with patch("spotapi.status.PlayerStatus"):
+            lpm = RecentlyPlayedManager(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+        return lpm
+
+    def _failingStateScript(self, reconnects):
+        from Database.Spotify.recentlyPlayed import STATE_FAILURE_RECONNECT_THRESHOLD
+        return [ValueError("Could not get player state")] * (
+            STATE_FAILURE_RECONNECT_THRESHOLD * reconnects)
+
+    def test_the_first_failure_waits_the_base_interval(self):
+        from Database.Spotify.recentlyPlayed import (
+            RECONNECT_BACKOFF_BASE_SECONDS, _reconnectBackoffSeconds)
+
+        self.assertEqual(_reconnectBackoffSeconds(1), RECONNECT_BACKOFF_BASE_SECONDS)
+
+    def test_each_further_failure_doubles_the_wait(self):
+        from Database.Spotify.recentlyPlayed import (
+            RECONNECT_BACKOFF_BASE_SECONDS, _reconnectBackoffSeconds)
+
+        self.assertEqual(_reconnectBackoffSeconds(2), RECONNECT_BACKOFF_BASE_SECONDS * 2)
+        self.assertEqual(_reconnectBackoffSeconds(3), RECONNECT_BACKOFF_BASE_SECONDS * 4)
+
+    def test_the_wait_stops_growing_at_the_cap(self):
+        """Capped, not unbounded: the outage ends on Spotify's schedule, and a
+        wait that kept doubling would leave now-playing dark long after it
+        had. The cap is the worst-case recovery latency."""
+        from Database.Spotify.recentlyPlayed import (
+            RECONNECT_BACKOFF_MAX_SECONDS, _reconnectBackoffSeconds)
+
+        self.assertEqual(_reconnectBackoffSeconds(50), RECONNECT_BACKOFF_MAX_SECONDS)
+        self.assertLessEqual(_reconnectBackoffSeconds(9), RECONNECT_BACKOFF_MAX_SECONDS)
+
+    def test_a_repeated_failure_backs_off_instead_of_hammering(self):
+        from Database.rate_limit import SPOTIFY_LIMITER
+        from Database.Spotify.recentlyPlayed import _reconnectBackoffSeconds
+        ATTEMPTS = 3
+        manager = _ScriptedStateManager(self._failingStateScript(ATTEMPTS))
+        manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
+        lpm = self._makeLpm(manager)
+        waits = []
+
+        def recordSleep(_lpm, seconds):
+            waits.append(seconds)
+            if manager.reconnect.call_count >= ATTEMPTS:
+                lpm.run = False
+            return True
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True), \
+                patch("Database.Spotify.recentlyPlayed._sleepUntilStopped", recordSleep):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        backoffs = [w for w in waits if w >= _reconnectBackoffSeconds(1)]
+        self.assertEqual(backoffs, [_reconnectBackoffSeconds(n) for n in range(1, ATTEMPTS + 1)])
+
+    def test_a_successful_reconnect_clears_the_streak(self):
+        """The counter measures the OUTAGE, not the lifetime of the loop. One
+        failure hours after the last must not inherit a long wait."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+        from Database.Spotify.recentlyPlayed import _reconnectBackoffSeconds
+        manager = _ScriptedStateManager(self._failingStateScript(3))
+        #< fail, succeed, fail: the last wait must be the base again
+        manager.reconnect = MagicMock(
+            side_effect=[RuntimeError("down"), None, RuntimeError("down again")])
+        lpm = self._makeLpm(manager)
+        waits = []
+
+        def recordSleep(_lpm, seconds):
+            waits.append(seconds)
+            if manager.reconnect.call_count >= 3:
+                lpm.run = False
+            return True
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True), \
+                patch("Database.Spotify.recentlyPlayed._sleepUntilStopped", recordSleep):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        backoffs = [w for w in waits if w >= _reconnectBackoffSeconds(1)]
+        self.assertEqual(backoffs, [_reconnectBackoffSeconds(1), _reconnectBackoffSeconds(1)])
+
+    def test_the_backoff_never_sleeps_past_the_join_window(self):
+        """The backoff is minutes and the shutdown join is seconds, so it has
+        to go through _sleepUntilStopped like every other wait here - the same
+        contract test_no_single_sleep_outlasts_the_join_that_waits_for_this_loop
+        pins for the poll interval."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+        from Database.Spotify.recentlyPlayed import (
+            POLL_STOP_POLL_SECONDS, RECONNECT_BACKOFF_BASE_SECONDS)
+
+        self.assertGreater(RECONNECT_BACKOFF_BASE_SECONDS, POLL_STOP_POLL_SECONDS,
+                           "a backoff shorter than one stop-check step would prove nothing")
+        manager = _ScriptedStateManager(self._failingStateScript(2))
+        manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
+        lpm = self._makeLpm(manager)
+        sleeps = []
+
+        def recordAndStop(seconds):
+            sleeps.append(seconds)
+            if manager.reconnect.call_count:
+                lpm.run = False
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True), \
+                patch("time.sleep", side_effect=recordAndStop):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertTrue(sleeps)
+        self.assertLessEqual(max(sleeps), POLL_STOP_POLL_SECONDS)
+
+    def test_a_closed_session_exits_without_backing_off(self):
+        """The one failure that is not worth waiting on: a closed HTTP session
+        can never reconnect, so the loop stops instead of sleeping first."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+        from Database.Spotify.recentlyPlayed import _reconnectBackoffSeconds
+        from spotapi.exceptions import RequestError
+
+        manager = _ScriptedStateManager(self._failingStateScript(1))
+        manager.reconnect = MagicMock(side_effect=RequestError(
+            "Failed to complete request.",
+            error="Session is closed, cannot send request."))
+        lpm = self._makeLpm(manager)
+        waits = []
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True), \
+                patch("Database.Spotify.recentlyPlayed._sleepUntilStopped",
+                      lambda _lpm, seconds: waits.append(seconds) or True):
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        self.assertFalse(lpm.run)
+        self.assertEqual([w for w in waits if w >= _reconnectBackoffSeconds(1)], [])
+
+    def test_only_the_first_failure_of_a_streak_carries_a_traceback(self):
+        """20 identical tracebacks say nothing the first one did not, and they
+        buried the merge and backfill lines around them."""
+        from Database.rate_limit import SPOTIFY_LIMITER
+        ATTEMPTS = 3
+        manager = _ScriptedStateManager(self._failingStateScript(ATTEMPTS))
+        manager.reconnect = MagicMock(side_effect=RuntimeError("Spotify unreachable"))
+        lpm = self._makeLpm(manager)
+
+        def stopAfterAttempts(_lpm, _seconds):
+            if manager.reconnect.call_count >= ATTEMPTS:
+                lpm.run = False
+            return True
+
+        with patch.object(SPOTIFY_LIMITER, "acquire", return_value=True), \
+                patch("Database.Spotify.recentlyPlayed._sleepUntilStopped", stopAfterAttempts), \
+                self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING") as logs:
+            lpm.updateLoop(MagicMock(), refreshInterval=1)
+
+        withTraceback = [r for r in logs.records if r.exc_info and "reconnect" in r.getMessage()]
+        self.assertEqual(len(withTraceback), 1, [r.getMessage() for r in withTraceback])
 
 
 def pushedCluster(trackUri="spotify:track:aaa", uid="uid-1", timestampMs="1785367061986",
