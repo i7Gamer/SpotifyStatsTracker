@@ -145,11 +145,25 @@ class GenresPageTestCase(AppTestCase):
 
     def test_trend_buckets_control_hidden_on_single_day_windows(self):
         # Mirrors charts.html: single-day views bucket by hour, so the control
-        # would be a no-op - it's hidden, not just ignored.
+        # would be a no-op - it's hidden, not just ignored. The rule's one
+        # server-side home is dashboard.date_ranges.isSingleDayInterval, which
+        # the route passes as isSingleDayView; the template reads only that.
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="day")
         resp = self._get(dash, db)
         self.assertIn(b'id="groupByContainer" style="display: none;"', resp.data)
+
+    def test_trend_buckets_control_shows_on_a_multi_day_window(self):
+        # The control for the test above: since the template reads a flag the
+        # route computes, a template hiding the control unconditionally - or a
+        # route that stopped passing the flag (Jinja renders the missing name
+        # as falsy, i.e. VISIBLE) - must fail one of the pair. Charts pins the
+        # same pair in test_charts_route.
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="month")
+        resp = self._get(dash, db)
+        self.assertIn(b'id="groupByContainer"', resp.data)
+        self.assertNotIn(b'id="groupByContainer" style="display: none;"', resp.data)
 
     def test_explicit_groupby_scopes_every_trend_query(self):
         dash = self._makeApp()
