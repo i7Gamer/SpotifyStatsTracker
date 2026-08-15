@@ -1,47 +1,20 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Shared chrome for every authenticated page: the debounced search-filter
-// helpers the templates' inline on*= attributes call, the jump-to-page box,
-// and the scroll-to-top button.
+// Shared chrome for every authenticated page: the jump-to-page box and the
+// scroll-to-top button.
 //
 // Lived inline in layout.html, where no linter could see it. Moved verbatim -
 // it carries no Jinja at all, and a classic <script src> in the same position
 // executes in the same order, so the inline handlers keep resolving these off
 // window exactly as before.
-window.__searchDebounceTimers = window.__searchDebounceTimers || {};
-
-window.scheduleSearchFilter = function(searchInputId, applyFilterFn, delayMs = 500) {
-  const searchInput = document.getElementById(searchInputId);
-  if (!searchInput) {
-    return;
-  }
-
-  window.clearTimeout(window.__searchDebounceTimers[searchInputId]);
-  window.__searchDebounceTimers[searchInputId] = window.setTimeout(() => {
-    applyFilterFn();
-  }, delayMs);
-};
-
-window.handleSearchKeydown = function(event, applyFilterFn) {
-  if (event.key !== 'Enter') {
-    return;
-  }
-
-  event.preventDefault();
-  applyFilterFn();
-};
-
-// Search boxes only navigate on Enter or when the field is left (blur) -
-// not on every keystroke - so typing doesn't reload the page/reset
-// scroll and focus mid-word.
-window.handleSearchBlur = function(event, applyFilterFn) {
-  const params = new URLSearchParams(window.location.search);
-  const currentQ = params.get('q') || '';
-  if (event.target.value.trim() !== currentQ.trim()) {
-    applyFilterFn();
-  }
-};
+//
+// It also carried three debounced search-filter helpers (scheduleSearchFilter,
+// handleSearchKeydown, handleSearchBlur) until the htmx migration replaced
+// every search box's on*= wiring with hx-trigger="input changed delay:400ms"
+// (see the note at templates/compare.html). They were removed once nothing
+// called them: their tests still passed, which is exactly what made them read
+// as load-bearing to anyone wiring up a new filter page.
 
 // _pagination.html's "Go to page" input - Enter navigates, clamped to
 // [1, totalPages] so a stray typo can't request a nonexistent page.

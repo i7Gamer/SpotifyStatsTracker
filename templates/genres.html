@@ -97,7 +97,7 @@
 
       {# Hidden on single-day views like charts.html: those bucket by hour,
          so the control would be a no-op there. #}
-      <div class="filter-group" id="groupByContainer" {% if interval in ['today', 'day'] %}style="display: none;"{% endif %}>
+      <div class="filter-group" id="groupByContainer" {% if isSingleDayView %}style="display: none;"{% endif %}>
         <label for="groupBy">Trend buckets:</label>
         <select id="groupBy" name="groupBy">
           <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>

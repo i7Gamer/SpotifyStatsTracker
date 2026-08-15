@@ -47,12 +47,9 @@ def isHtmxSwap() -> bool:
                 and not request.headers.get(HTMX_HISTORY_RESTORE_HEADER))
 
 
-def isHtmxHistoryRestore() -> bool:
-    """True for the Back/Forward re-fetch specifically.
-
-    Separate from ``not isHtmxSwap()`` because the two answer different
-    questions: routes ask the first to choose a template, while a caller that
-    must not send ``HX-Redirect`` - which the restore XHR ignores, leaving an
-    empty 204 to be swapped into ``document.body`` - asks this one.
-    """
-    return bool(request.headers.get(HTMX_HISTORY_RESTORE_HEADER))
+#< There was an isHtmxHistoryRestore() here, documented as the question "a
+#  caller that must not send HX-Redirect" asks. No such caller ever existed:
+#  app.py's unauthenticatedResponse - the one place that sends HX-Redirect -
+#  asks isHtmxSwap(), which is already False for a restore, and says so in its
+#  own docstring. A predicate that describes a caller it does not have reads as
+#  a guarantee something is protected, so it went rather than grew a caveat.

@@ -23,6 +23,7 @@ from config import (
 )
 from routes._htmx import isHtmxSwap
 from routes._auth import makeRequiresUser
+from dashboard.date_ranges import isSingleDayInterval
 from Database.database import Database
 from Database.utils import dateToString, msToString
 from services.genre_gate import (
@@ -1072,7 +1073,7 @@ def register(app, dashboard):
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd,
                                                     default=defaultWindow)
 
-        isSingleDayView = interval in ("day", "today")
+        isSingleDayView = isSingleDayInterval(interval)
         lastDayDate = startDate.strftime("%Y-%m-%d") if isSingleDayView and startDate else None
 
         # The admin's instance-wide kill switch: checked before spending any

@@ -51,7 +51,7 @@ from config import (
     GENRE_PAGE_LIST_LIMIT, GENRE_MIX_TREND_TOP_N, GENRE_PAGE_TOP_ARTISTS_LIMIT,
     GENRE_PAGE_TOP_TRACKS_LIMIT, LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS,
 )
-from dashboard.date_ranges import GROUP_BY_APPROX_BUCKET_DAYS
+from dashboard.date_ranges import GROUP_BY_APPROX_BUCKET_DAYS, isSingleDayInterval
 from Database.utils import msToString, convertToDatetime
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
@@ -216,6 +216,9 @@ def register(app, dashboard):
                 customStart=customStart,
                 customEnd=customEnd,
                 groupBy=groupByParam,
+                #< the first paint's half of the Trend-buckets hide rule; every
+                #  change after it goes through htmx-filters' hidesTrendBuckets
+                isSingleDayView=isSingleDayInterval(interval),
                 #< the raw genre, for the form's hidden field: genres.js replaces
                 #  it with the resolved one as soon as the first fragment lands
                 selectedGenre=requestedGenre,

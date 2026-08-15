@@ -261,5 +261,47 @@ class TestChartsRoute(AppTestCase):
         self.assertIn(b"2026-07-01", resp.data)
 
 
+class TestTheTrendBucketsHideRuleHasOneServerSideHome(AppTestCase):
+    """A single-day window buckets by hour, so the Trend-buckets control is a
+    no-op and hides.
+
+    /charts and /genres each spelled that rule out as its own literal interval
+    list, while the route computed the same answer and passed it under a name
+    no template read - which is exactly the divergence htmx-filters.js's
+    SINGLE_DAY_INTERVALS was introduced to end on the client side. The first
+    paint had no such home.
+
+    Driven FROM the constant rather than from hardcoded 'today'/'day', so
+    adding a fourth single-day interval extends this test to both pages
+    automatically instead of leaving two literals behind for it to miss."""
+
+    HIDDEN = b'id="groupByContainer" style="display: none;"'
+
+    def _makeDb(self):
+        return TestChartsRoute._makeDb(self)
+
+    def _get(self, dash, db, query=""):
+        return TestChartsRoute._get(self, dash, db, query)
+
+    def test_charts_hides_it_for_every_single_day_interval(self):
+        from dashboard.date_ranges import SINGLE_DAY_INTERVALS
+
+        for interval in SINGLE_DAY_INTERVALS:
+            with self.subTest(interval=interval):
+                dash = self._makeApp()
+                resp = self._get(dash, self._makeDb(), query=f"?interval={interval}")
+                self.assertIn(self.HIDDEN, resp.data)
+
+    def test_charts_shows_it_on_a_multi_day_window(self):
+        """The control: without it the assertions above pass against a template
+        that hides the control unconditionally."""
+        dash = self._makeApp()
+
+        resp = self._get(dash, self._makeDb(), query="?interval=month")
+
+        self.assertIn(b'id="groupByContainer"', resp.data)
+        self.assertNotIn(self.HIDDEN, resp.data)
+
+
 if __name__ == "__main__":
     unittest.main()

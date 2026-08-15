@@ -15,6 +15,21 @@ from config import (
 # underestimate how many buckets a choice implies.
 GROUP_BY_APPROX_BUCKET_DAYS = {"day": 1, "week": 7, "month": 28}
 
+# The intervals a page renders bucketed by HOUR, which makes the Trend-buckets
+# control a no-op that hides. The server-side twin of htmx-filters.js's
+# SINGLE_DAY_INTERVALS, and it exists for the same reason that one does: the
+# rule had been spelled out separately on /charts and /genres, and two
+# spellings of one rule is how they stop mirroring. One home per side - this
+# for the first paint, SINGLE_DAY_INTERVALS for every filter change after it.
+SINGLE_DAY_INTERVALS = ("today", "day")
+
+
+def isSingleDayInterval(interval) -> bool:
+    """Whether `interval` is bucketed by hour, so the Trend-buckets control is
+    meaningless for it. Feeds the templates' own hide rule - see
+    SINGLE_DAY_INTERVALS."""
+    return interval in SINGLE_DAY_INTERVALS
+
 
 class DateRangeMixin:
     """Interval/date-range resolution, interval labels, and time-series/heatmap text embedding."""

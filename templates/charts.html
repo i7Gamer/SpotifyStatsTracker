@@ -85,7 +85,7 @@
        does not apply there (the route forces hour buckets), but the value has
        to survive switching back to a multi-day range, and a disabled control
        would drop out of the URL and reset the choice to Auto. #}
-    <div class="filter-group" id="groupByContainer" {% if interval in ['today', 'day'] %}style="display: none;"{% endif %}>
+    <div class="filter-group" id="groupByContainer" {% if isSingleDayView %}style="display: none;"{% endif %}>
       <label for="groupBy">Trend buckets:</label>
       <select id="groupBy" name="groupBy">
         <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>

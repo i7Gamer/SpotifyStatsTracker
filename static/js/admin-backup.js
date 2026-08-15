@@ -88,7 +88,19 @@
   var exportsObj = {
     getBackupFlashColor: getBackupFlashColor,
     formatBackupStatusPayload: formatBackupStatusPayload,
+    initAdminBackupForm: initAdminBackupForm,
   };
+
+  // The Backups card sits inside #admin-tab-body, so an AJAX subnav switch
+  // replaces the very form the load-time call above bound. admin-page.js
+  // re-runs the initialiser by name off window - the same way it re-runs
+  // onSkipModeChange, which survives only because its inline script is
+  // declared OUTSIDE the swapped body. This one is not: without the
+  // assignment the lookup found nothing and "Create backup now" quietly
+  // degraded to a full-page POST after any tab switch.
+  if (typeof window !== 'undefined') {
+    window.initAdminBackupForm = initAdminBackupForm;
+  }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = exportsObj;
