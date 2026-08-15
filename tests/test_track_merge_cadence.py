@@ -242,21 +242,35 @@ class TestAFailedPassDoesNotSpendTheDay(CadenceTestCase):
 
     def test_a_raising_matcher_restores_the_PREVIOUS_run_not_never_ran(self):
         """Re-opening the slot must not also forget the pass that really did
-        run three hours ago - that would re-open it for a full day's worth of
-        cycles, which is the cost the slot exists to stop."""
+        run - clearing the key would hand the matcher a full day of per-cycle
+        re-claims, which is the cost the slot exists to stop.
+
+        The previous run is seeded OLDER than the interval, and that is what
+        makes this test real: seeded fresh, the loop's claim is REFUSED, the
+        raising matcher never executes, and every assertion holds against a
+        stamp nothing touched - the first version of this test did exactly
+        that and passed with the release logic deleted. assert_called_once is
+        the proof the claimed-then-raised path actually ran; the stamp
+        equality is the release's documented contract (byte-for-byte back),
+        and it tells restore apart from both clearing (None) and leaving the
+        claim's own fresh stamp behind."""
         import time
         from unittest.mock import MagicMock
 
         db = self._dbReadyForACycle()
-        started = time.time()
-        db.repo.stampTrackMergeRun(now=started)
+        #< 25h ago: old enough that the loop's claim GOES THROUGH
+        previousRunAt = time.time() - TRACK_MERGE_MIN_INTERVAL_SECONDS - 3600
+        db.repo.stampTrackMergeRun(now=previousRunAt)
+        previousStamp = db.repo.getTrackMergeLastRun()
         db.repo.mergeTracksByIsrc = MagicMock(side_effect=Exception("boom"))
 
         self._runCycle(db)
 
-        self.assertFalse(db.repo.claimTrackMergeRun(now=started + 3 * 3600))
-        self.assertTrue(db.repo.claimTrackMergeRun(
-            now=started + TRACK_MERGE_MIN_INTERVAL_SECONDS + 1))
+        db.repo.mergeTracksByIsrc.assert_called_once()
+        self.assertEqual(db.repo.getTrackMergeLastRun(), previousStamp,
+                         "the release must put back the run that really "
+                         "happened - neither clear the key nor leave the "
+                         "failed claim's own stamp standing")
 
     def test_a_release_that_itself_fails_keeps_the_matchers_own_error(self):
         """Writes failing is the likeliest reason the merge failed, so the

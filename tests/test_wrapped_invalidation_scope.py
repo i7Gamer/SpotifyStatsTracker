@@ -340,6 +340,24 @@ class TestTheTornReadGuardIsUnchanged(ScopeTestCase):
         self.assertEqual(db.repo.getWrappedInvalidationGeneration(), before)
 
 
+def _wrappedPayload():
+    """The minimum saveCachedWrapped accepts - mirrors test_wrapped_cache's
+    _wrappedRow; the tests below care about the verdict, not the contents.
+    Module-level because two unrelated classes need it."""
+    return {
+        "calculated_at": 1.0, "max_played_at": 1775000000,
+        "total_plays": 2, "total_ms": 60000, "longest_streak": 1,
+        "peak_day": "Monday", "peak_plays": 1,
+        "unique_songs": 1, "unique_artists": 1,
+        "discovered_songs": 1, "discovered_artists": 1,
+        "time_series_day": "[]", "time_series_week": "[]",
+        "time_series_month": "[]",
+        "top_songs": "[]", "top_artists": "[]", "top_albums": "[]",
+        "discovered_songs_list": "[]", "discovered_artists_list": "[]",
+        "discovered_albums_list": "[]",
+    }
+
+
 class TestEveryInvalidationMovesTheStamp(ScopeTestCase):
     """The torn-read guard belongs to the CACHE, not to the merge.
 
@@ -354,29 +372,13 @@ class TestEveryInvalidationMovesTheStamp(ScopeTestCase):
     Stated as the outcome rather than as "it calls the bump", so it holds
     whichever way the serialization is implemented."""
 
-    def _payload(self):
-        """The minimum saveCachedWrapped accepts - mirrors test_wrapped_cache's
-        _wrappedRow; these tests care about the verdict, not the contents."""
-        return {
-            "calculated_at": 1.0, "max_played_at": 1775000000,
-            "total_plays": 2, "total_ms": 60000, "longest_streak": 1,
-            "peak_day": "Monday", "peak_plays": 1,
-            "unique_songs": 1, "unique_artists": 1,
-            "discovered_songs": 1, "discovered_artists": 1,
-            "time_series_day": "[]", "time_series_week": "[]",
-            "time_series_month": "[]",
-            "top_songs": "[]", "top_artists": "[]", "top_albums": "[]",
-            "discovered_songs_list": "[]", "discovered_artists_list": "[]",
-            "discovered_albums_list": "[]",
-        }
-
     def _saveAcross(self, db, invalidate):
         """Run `invalidate` in the middle of a recalculation of 2026 and
         return whether the recalculation's save was accepted."""
         self._user(db, "alice")
         startedUnder = db.repo.getWrappedInvalidationGeneration()
         invalidate()
-        return db.repo.saveCachedWrapped("alice", 2026, self._payload(),
+        return db.repo.saveCachedWrapped("alice", 2026, _wrappedPayload(),
                                          expectedGeneration=startedUnder)
 
     def test_an_imports_from_year_drop_discards_a_recalculation_in_flight(self):
@@ -478,12 +480,13 @@ class TestTheGenerationCheckIsAtomicWithItsWrite(ScopeTestCase):
     def _statementsFor(self, db, call):
         log = []
         proxy = _RecordingConnection(db.repo._conn(), log)
-        original = db.repo._conn
+        #< instance attribute shadowing the class method; `del` restores the
+        #  class lookup exactly, rather than freezing a bound method back on
         db.repo._conn = lambda: proxy
         try:
             call()
         finally:
-            db.repo._conn = original
+            del db.repo._conn
         return log
 
     def _assertGuardIsAtomic(self, statements):
@@ -500,7 +503,7 @@ class TestTheGenerationCheckIsAtomicWithItsWrite(ScopeTestCase):
     def test_saveCachedWrapped_decides_and_writes_as_one_unit(self):
         db = self._db()
         self._user(db, "alice")
-        payload = TestEveryInvalidationMovesTheStamp._payload(self)
+        payload = _wrappedPayload()
         generation = db.repo.getWrappedInvalidationGeneration()
 
         statements = self._statementsFor(
