@@ -8,8 +8,8 @@ lossless undo rather than a display filter.
 
 New tracks are the reason it is a checkbox and not a button: the ISRC
 backfiller keeps stamping new arrivals, so merge candidates appear for as long
-as anyone listens to new music, and each backfill batch that records ISRCs
-re-runs the matcher while the toggle is on.
+as anyone listens to new music, and the backfiller re-runs the matcher - once a
+day, see test_track_merge_cadence - while the toggle is on.
 """
 import os
 import sys

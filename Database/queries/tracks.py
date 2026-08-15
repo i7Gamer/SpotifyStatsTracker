@@ -1083,8 +1083,10 @@ class TrackQueries:
             #< a merge moves numbers frozen inside every user's cached Wrapped
             #  years, and past years never notice on their own. Scoped to the
             #  years the merged groups were actually played in - by every user
-            #  who played them - because this runs on every backfill batch that
-            #  records an ISRC; see deleteCachedWrappedForTracks. Expanded from
+            #  who played them - because a pass that merges anything is on a
+            #  daily backfiller cadence rather than a one-off (see
+            #  TRACK_MERGE_MIN_INTERVAL_SECONDS) and new ISRCs keep completing
+            #  pairs; see deleteCachedWrappedForTracks. Expanded from
             #  the canonicals AFTER the commit, so the group it reads is the one
             #  this run just made.
             self.deleteCachedWrappedForTracks(
@@ -1112,8 +1114,11 @@ class TrackQueries:
         # honest if an ISRC ever arrives by another route.
         #< t.name is here for two readers: _electCanonical's title rule, and the
         #  group descriptions below. It used to be a second query over the same
-        #  WHERE clause, which is one scan of the duplicate set per planner run
-        #  - and this runs every backfill cycle while the toggle is on.
+        #  WHERE clause, which is one scan of the duplicate set per planner run.
+        #  The backfiller's pass is down to one a day
+        #  (TRACK_MERGE_MIN_INTERVAL_SECONDS), so that saving is smaller than it
+        #  was - but the planner also backs previewMergeTracksByIsrc, which the
+        #  admin page runs on demand and where a second scan is felt directly.
         rows = conn.execute(
             f"""
             SELECT t.id, t.name, t.isrc, t.canonical_id, t.created_at,
@@ -1436,6 +1441,16 @@ class TrackQueries:
 
         now = time.time()
         merged = 0
+        #< BEFORE the write, and the reason unmergeTrack takes the same
+        #  snapshot: this is the one verb that can DISSOLVE a group and form
+        #  one in a single call. When trackId is a member of some other group,
+        #  that group's head stays behind and loses a listen - which moves its
+        #  all-time discovery anchor - while the post-write expansion below can
+        #  only ever see the group trackId JOINED. In the ordinary case (an
+        #  unmerged track) this is trackId and its dependents, every one of
+        #  which the write below moves into root's group anyway - so the union
+        #  widens nothing and only the cross-group case pays for it.
+        leaving = self._mergeGroupTrackIds(conn, [trackId])
         with conn:
             #< dependents first: re-pointing them is what keeps "a canonical
             #  never points anywhere itself" true through this merge
@@ -1466,9 +1481,11 @@ class TrackQueries:
         #  merge moves numbers frozen inside the cached years the resulting
         #  group was played in, for every user who played it. Expanded from the
         #  root after the commit, so trackId and the dependents that rode along
-        #  are all in it.
+        #  are all in it - unioned with the group trackId left, captured above.
+        #< sorted, like _mergeGroupTrackIds' own return: the ids become a JSON
+        #  array bound into the DELETE, and a set's order is not stable
         self.deleteCachedWrappedForTracks(
-            self._mergeGroupTrackIds(conn, [root]))
+            sorted(set(leaving) | set(self._mergeGroupTrackIds(conn, [root]))))
         return merged
 
     def dismissMergeCandidate(self, trackId: str, decidedBy: str,
@@ -1511,8 +1528,18 @@ class TrackQueries:
         againstId = againstId or None
         conn = self._conn()
         with conn:
-            #< inside the write's own transaction, so the state it checks is
-            #  the state the row lands in
+            #< BEGIN IMMEDIATE, so the state it checks really is the state the
+            #  row lands in. `with conn:` alone does not give that: sqlite3
+            #  under legacy transaction control opens a transaction for DML
+            #  only, so these SELECTs would run in autocommit holding no lock,
+            #  and a matcher pass could merge trackId between the check and the
+            #  INSERT - landing the merged-track row this very guard refuses,
+            #  which nothing downstream can clear (decided_by is set, so
+            #  unmergeAllIsrcMerges spares it, and _clearContradictedRejection
+            #  only fires on the merge side). See saveCachedWrapped for the
+            #  same remedy against the same mechanism.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()
             if not row:
