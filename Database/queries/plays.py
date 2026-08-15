@@ -469,7 +469,36 @@ class PlayQueries:
         created_at (an import/poll moment) comes through as None. Listener
         rows are also matched into the window by that created_at: a paused
         play can start before the window the API items span while still
-        ending inside it."""
+        ending inside it.
+
+        is_skip=0 is DELIBERATE, and it is not the same omission the insert
+        guard had. hasPlayNearTime was blind to skips and re-added a skipped
+        listen as a full play, which is why it grew a third arm; this reads as
+        the matching gap and is not one, because the two do different things.
+        hasPlayNearTime declines to INSERT - free, reversible, and wrong only
+        by leaving a play out that the next poll re-offers. This DELETES, on
+        the live history, with nothing to recover from.
+
+        The tolerances are what make reusing this path wrong rather than
+        merely unnecessary. Skips pair on BACKFILL_SKIP_MATCH_TOLERANCE_SECONDS
+        (20s), which is tight on purpose: measured against live data the
+        provable duplicates sat 3-15s from their skip while the ambiguous ones
+        sat 95s and 291s away, where "skip, then a genuine replay the listener
+        missed" is the likelier reading. The reconciler's own windows are tuned
+        for pairing real plays - 5s proximity, and an end-time arm reaching 10s
+        off a listener created_at that a mid-track pause can stretch by minutes
+        - and its mixed-sources rule then deletes the backfill row from any
+        cluster holding a sibling from another source. Letting skips into these
+        clusters would delete genuine replays.
+
+        So the skip case is OWNED by hasPlayNearTime's skip arm, which stops
+        the duplicate being written at all, and by sweep_backfill_duplicates.py
+        for anything that landed before that arm existed (its own
+        --skip-tolerance, same constant). Reaching it from here would need a
+        separate arm in _isSameListen keyed to the skip tolerance, not a
+        widening of this filter. The ordering the gap would require is also the
+        unnatural one: the listener writes its skip at the track-change moment
+        while the backfill only sees a play after it has ended."""
         conn = self._conn()
         rows = conn.execute(
             "SELECT track_id, played_at, time_played, created_reason, "
