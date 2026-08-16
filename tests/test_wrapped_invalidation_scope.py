@@ -38,7 +38,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from conftest import DatabaseTestCase
+from conftest import DatabaseTestCase, RecordingConnection
 
 ISRC = "USRC12345678"
 OTHER_ISRC = "USRC87654321"
@@ -434,29 +434,6 @@ class TestEveryInvalidationMovesTheStamp(ScopeTestCase):
         self.assertTrue(stored)
 
 
-class _RecordingConnection:
-    """A connection that notes, for every statement, whether a transaction was
-    already open when it ran. Enough to answer "was this read holding the
-    write lock?" without a second thread and without a clock."""
-
-    def __init__(self, conn, log):
-        self._conn = conn
-        self._log = log
-
-    def execute(self, sql, *args, **kwargs):
-        self._log.append((" ".join(sql.split()), self._conn.in_transaction))
-        return self._conn.execute(sql, *args, **kwargs)
-
-    def __enter__(self):
-        return self._conn.__enter__()
-
-    def __exit__(self, *exc):
-        return self._conn.__exit__(*exc)
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-
 class TestTheGenerationCheckIsAtomicWithItsWrite(ScopeTestCase):
     """A guard that reads in one statement and acts in another is not a guard.
 
@@ -479,7 +456,7 @@ class TestTheGenerationCheckIsAtomicWithItsWrite(ScopeTestCase):
 
     def _statementsFor(self, db, call):
         log = []
-        proxy = _RecordingConnection(db.repo._conn(), log)
+        proxy = RecordingConnection(db.repo._conn(), log)
         #< instance attribute shadowing the class method; `del` restores the
         #  class lookup exactly, rather than freezing a bound method back on
         db.repo._conn = lambda: proxy

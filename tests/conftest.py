@@ -334,3 +334,30 @@ class DatabaseTestCase(unittest.TestCase):
         self.addCleanup(Database._active_backfills.clear)
         self.addCleanup(Database._active_isrc_backfills.clear)
         return db
+
+
+class RecordingConnection:
+    """A connection that notes, for every statement, whether a transaction was
+    already open when it ran. Enough to answer "was this read holding the
+    write lock?" without a second thread and without a clock.
+
+    Shared by test_wrapped_invalidation_scope (where the technique originated)
+    and test_guard_transactions (the 2026-08-16 repo-wide sweep of the same
+    defect class)."""
+
+    def __init__(self, conn, log):
+        self._conn = conn
+        self._log = log
+
+    def execute(self, sql, *args, **kwargs):
+        self._log.append((" ".join(sql.split()), self._conn.in_transaction))
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __enter__(self):
+        return self._conn.__enter__()
+
+    def __exit__(self, *exc):
+        return self._conn.__exit__(*exc)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)

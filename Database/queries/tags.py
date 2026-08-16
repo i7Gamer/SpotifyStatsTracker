@@ -49,6 +49,13 @@ class TagQueries:
         conn = self._conn()
         with conn:
             if entity_type == "track":
+                #< BEGIN IMMEDIATE before the resolve: the group DELETE below
+                #  is built from its answer, and a re-head landing between the
+                #  two makes the subselect miss members - the tag survives its
+                #  own removal until another click resolves the new head. Same
+                #  remedy as dismissMergeCandidate and saveCachedWrapped.
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
                 #< the whole merge group: the union-read shows a member's legacy
                 #  row on the canonical's page, so a targeted delete would leave
                 #  an unremovable tag

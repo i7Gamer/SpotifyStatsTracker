@@ -694,6 +694,14 @@ class TrackQueries:
             return False
         conn = self._conn()
         with conn:
+            #< BEGIN IMMEDIATE: the no-links check IS the decision, and under
+            #  legacy transaction control it would run in autocommit holding no
+            #  lock. The backfiller and an import can both reach the same
+            #  blanked track; both passing an unlocked check ends in doubled
+            #  links or an IntegrityError aborting whichever lands second. Same
+            #  remedy as dismissMergeCandidate and saveCachedWrapped.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM track_artists WHERE track_id=? LIMIT 1",
                             (trackId,)).fetchone() is not None:
                 return False
@@ -1020,6 +1028,16 @@ class TrackQueries:
         now = time.time()
         canonicals = []
         with conn:
+            #< BEGIN IMMEDIATE: the carry-along below re-reads each member's
+            #  dependents mid-surgery and re-points what it finds; unlocked,
+            #  those reads run in autocommit, and a manual merge re-pointing a
+            #  dependent between read and write strands it one hop from its
+            #  group. The PLAN above stays outside on purpose: the run is
+            #  single-flighted (claimTrackMergeRun), and a manual verdict
+            #  landing in the plan-apply gap is exactly what these in-lock
+            #  re-reads absorb.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
                 canonicals.append(canonicalId)
@@ -1266,12 +1284,19 @@ class TrackQueries:
         the check the decision INSERT hits the tracks(id) FOREIGN KEY
         instead, which the route cannot turn into a 400."""
         conn = self._conn()
-        if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone():
-            raise ValueError(f"unknown track: {trackId}")
-        #< BEFORE the split: the group this track is leaving is what moves, and
-        #  a moment from now its membership no longer says who was in it
-        group = self._mergeGroupTrackIds(conn, [trackId])
         with conn:
+            #< BEGIN IMMEDIATE: the existence check and the group snapshot
+            #  decide the split and its invalidation scope; unlocked they can
+            #  capture a membership a concurrent merge changes before the
+            #  UPDATE lands, leaving the years the OLD group appeared in
+            #  uninvalidated. Same remedy as mergeTrackManually.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone():
+                raise ValueError(f"unknown track: {trackId}")
+            #< BEFORE the split: the group this track is leaving is what moves, and
+            #  a moment from now its membership no longer says who was in it
+            group = self._mergeGroupTrackIds(conn, [trackId])
             conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?", (trackId,))
             conn.execute(
                 """
@@ -1427,31 +1452,41 @@ class TrackQueries:
         drops no caches). Returns tracks newly pointed, dependents included.
         Raises ValueError for an unknown track on either side."""
         conn = self._conn()
-        root = self.resolveCanonicalTrackId(canonicalId)
-        known = {row["id"] for row in conn.execute(
-            "SELECT id FROM tracks WHERE id IN (?, ?)", (trackId, root))}
-        if trackId not in known:
-            raise ValueError(f"unknown track: {trackId}")
-        if root not in known:
-            raise ValueError(f"unknown track: {root}")
-        current = conn.execute(
-            "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()
-        if trackId == root or current["canonical_id"] == root:
-            return 0
-
         now = time.time()
         merged = 0
-        #< BEFORE the write, and the reason unmergeTrack takes the same
-        #  snapshot: this is the one verb that can DISSOLVE a group and form
-        #  one in a single call. When trackId is a member of some other group,
-        #  that group's head stays behind and loses a listen - which moves its
-        #  all-time discovery anchor - while the post-write expansion below can
-        #  only ever see the group trackId JOINED. In the ordinary case (an
-        #  unmerged track) this is trackId and its dependents, every one of
-        #  which the write below moves into root's group anyway - so the union
-        #  widens nothing and only the cross-group case pays for it.
-        leaving = self._mergeGroupTrackIds(conn, [trackId])
         with conn:
+            #< BEGIN IMMEDIATE: the resolve, the existence checks and the
+            #  leaving-group snapshot are decisions about what the writes below
+            #  make true; under legacy transaction control they would run in
+            #  autocommit holding no lock, and a matcher pass re-heading `root`
+            #  between resolve and write leaves trackId pointing at a track
+            #  that itself now points away - a chain, which every reader
+            #  resolves exactly one hop of. Same remedy as
+            #  dismissMergeCandidate and saveCachedWrapped.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            root = self.resolveCanonicalTrackId(canonicalId)
+            known = {row["id"] for row in conn.execute(
+                "SELECT id FROM tracks WHERE id IN (?, ?)", (trackId, root))}
+            if trackId not in known:
+                raise ValueError(f"unknown track: {trackId}")
+            if root not in known:
+                raise ValueError(f"unknown track: {root}")
+            current = conn.execute(
+                "SELECT canonical_id FROM tracks WHERE id=?", (trackId,)).fetchone()
+            if trackId == root or current["canonical_id"] == root:
+                return 0
+
+            #< BEFORE the write, and the reason unmergeTrack takes the same
+            #  snapshot: this is the one verb that can DISSOLVE a group and form
+            #  one in a single call. When trackId is a member of some other group,
+            #  that group's head stays behind and loses a listen - which moves its
+            #  all-time discovery anchor - while the post-write expansion below can
+            #  only ever see the group trackId JOINED. In the ordinary case (an
+            #  unmerged track) this is trackId and its dependents, every one of
+            #  which the write below moves into root's group anyway - so the union
+            #  widens nothing and only the cross-group case pays for it.
+            leaving = self._mergeGroupTrackIds(conn, [trackId])
             #< dependents first: re-pointing them is what keeps "a canonical
             #  never points anywhere itself" true through this merge
             dependents = [r["id"] for r in conn.execute(
