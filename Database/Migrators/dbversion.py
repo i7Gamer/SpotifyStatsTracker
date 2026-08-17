@@ -15,6 +15,31 @@ import sqlite3
 import time
 from pathlib import Path
 
+# How long these helpers wait for a lock rather than failing on it. A raw
+# sqlite3 connection's busy_timeout is 0, so any lock held at that instant -
+# a checkpoint, a VACUUM, the live instance mid-write - is an immediate
+# "database is locked" instead of a wait. Every ConnectionManager connection
+# already waits (see Database/db.py), and Database/backup.py closed this same
+# gap for the snapshot connection; a startup version read that uniquely
+# refuses to wait fails for something the rest of the app is happy to sit out.
+MIGRATION_BUSY_TIMEOUT_MS = 30_000
+
+
+def openMigrationConnection(dbPath: Path, readOnly: bool = False) -> sqlite3.Connection:
+    """A connection for the helpers below, with MIGRATION_BUSY_TIMEOUT_MS set.
+
+    readOnly opens through a file: URI so a read can neither create the file
+    nor write to it - readDbVersion documents itself as never writing, and
+    "never writing" has to include never bringing a missing database into
+    existence."""
+    if readOnly:
+        conn = sqlite3.connect(f"file:{Path(dbPath).resolve().as_posix()}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(dbPath)
+    conn.execute(f"PRAGMA busy_timeout = {MIGRATION_BUSY_TIMEOUT_MS}")
+    return conn
+
+
 SCHEMA_VERSION_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version     TEXT NOT NULL,
@@ -26,8 +51,14 @@ CREATE TABLE IF NOT EXISTS schema_version (
 def readDbVersion(dbPath: Path) -> str | None:
     """The most recently recorded version, or None if this database predates
     the schema_version table (or the table exists but is empty - same
-    meaning, just written by a prior readDbVersion() call)."""
-    conn = sqlite3.connect(dbPath)
+    meaning, just written by a prior readDbVersion() call).
+
+    Answers None for a database that isn't there: a version read is also how
+    a caller asks "is this a new install", and raising at it would make the
+    answer an exception rather than a value."""
+    if not Path(dbPath).exists():
+        return None
+    conn = openMigrationConnection(dbPath, readOnly=True)
     try:
         # Probe rather than CREATE TABLE IF NOT EXISTS: a read must not write.
         # Creating the table here would fail on a read-only file/filesystem
@@ -51,7 +82,7 @@ def readDbVersion(dbPath: Path) -> str | None:
 def writeDbVersion(dbPath: Path, version: str) -> None:
     """Appends a new current-version row rather than overwriting the last one
     - a cheap audit trail, and it means this can never lose a prior write."""
-    conn = sqlite3.connect(dbPath)
+    conn = openMigrationConnection(dbPath)
     try:
         conn.execute(SCHEMA_VERSION_TABLE_SQL)
         conn.execute(
@@ -68,7 +99,7 @@ def hasAnyData(dbPath: Path) -> bool:
     row - distinguishes a genuinely fresh/empty database (safe to stamp with
     the current version, no migration needed) from a legacy database that has
     real data but was never given a version marker."""
-    conn = sqlite3.connect(dbPath)
+    conn = openMigrationConnection(dbPath, readOnly=True)
     try:
         tables = [row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"

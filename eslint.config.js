@@ -14,9 +14,16 @@
 // these files only ever run in a browser, so the pytest suite never executes
 // them.
 //
+// no-unused-vars was in the deliberately-NOT-enabled list below for one
+// reason: event-handler params (`e`, `event`) are conventionally kept for
+// readability even when unread, and a gate that fails on those is a gate
+// people bypass. `args: "none"` says exactly that and nothing more, so the
+// objection is answered rather than traded away - and with it, the whole tree
+// passes today with zero findings, which is the bar for widening this file.
+// caughtErrors: "none" for the same reason (`catch (e) {}` where the error is
+// genuinely not wanted); varsIgnorePattern for a deliberately-unused binding.
+//
 // Deliberately NOT enabled, so nobody re-adds them expecting an easy win:
-//   no-unused-vars - event-handler params (`e`, `event`) are conventionally
-//                    kept for readability even when unread.
 //   eqeqeq         - pre-existing `==`/`!=` comparisons throughout; a gate that
 //                    fails on dozens of findings gets bypassed, then deleted.
 // Stylistic/formatting rules are unused on purpose, same as ruff's formatter:
@@ -91,7 +98,8 @@ module.exports = [
       reportUnusedDisableDirectives: "error",
     },
     rules: {
-      "no-undef": "error",            //< the ReferenceError class above
+      "no-undef": "error",
+      "no-unused-vars": ["error", { "args": "none", "caughtErrors": "none", "varsIgnorePattern": "^_" }],            //< the ReferenceError class above
       "no-dupe-keys": "error",        //< a silently dropped object property
       "no-dupe-args": "error",
       "no-duplicate-case": "error",   //< an unreachable switch branch
@@ -121,6 +129,7 @@ module.exports = [
     linterOptions: { reportUnusedDisableDirectives: "error" },
     rules: {
       "no-undef": "error",
+      "no-unused-vars": ["error", { "args": "none", "caughtErrors": "none", "varsIgnorePattern": "^_" }],
       "no-dupe-keys": "error",
       "no-dupe-args": "error",
       "no-duplicate-case": "error",
@@ -152,6 +161,7 @@ module.exports = [
     linterOptions: { reportUnusedDisableDirectives: "error" },
     rules: {
       "no-undef": "error",
+      "no-unused-vars": ["error", { "args": "none", "caughtErrors": "none", "varsIgnorePattern": "^_" }],
       "no-dupe-keys": "error",
       "no-dupe-args": "error",
       "no-duplicate-case": "error",

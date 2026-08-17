@@ -10,6 +10,12 @@ from config import MEDIA_FOLDER_SIZE_CACHE_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
 
+# Ceiling on the OS-level folder scan (`du` on Linux, PowerShell on Windows).
+# It is the fast path, not the answer: a scan that hits this falls through to
+# the Python walk below rather than failing, so the number is only "long enough
+# that a healthy scan of a real media directory never trips it".
+FOLDER_SIZE_SCAN_TIMEOUT_SECONDS = 30
+
 # The media cache directory is shared across every user (Database/db.py's
 # `images` table dedups downloads instance-wide), so its on-disk size is
 # cached at module level - keyed by path, not per-Repository-instance, since
@@ -55,7 +61,7 @@ class SettingQueries:
                     ["du", "-sb", str(folder_path)],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=FOLDER_SIZE_SCAN_TIMEOUT_SECONDS
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return int(result.stdout.split()[0])
@@ -77,7 +83,7 @@ class SettingQueries:
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=FOLDER_SIZE_SCAN_TIMEOUT_SECONDS,
                     env={**os.environ, "SPOTIFY_MEDIA_SCAN_DIR": str(folder_path)},
                 )
                 if result.stdout.strip():

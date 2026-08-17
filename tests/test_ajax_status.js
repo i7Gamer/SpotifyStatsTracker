@@ -94,7 +94,7 @@ run('showBanner adds a Retry banner, and Retry clears it then re-fires', () => {
 });
 
 run('showBanner reuses the existing banner instead of stacking', () => {
-  const { byId, main } = installDom();
+  const { main } = installDom();
   AjaxStatus.showBanner(() => {});
   AjaxStatus.showBanner(() => {});
   const banners = main.children.filter(c => c.id === 'ajax-error-banner');

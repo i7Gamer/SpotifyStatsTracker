@@ -97,7 +97,6 @@ function makeEl(tag, attrs) {
 
 /* Build a minimal profile-card DOM tree and attach to global.document. */
 function installProfileDom() {
-  const byId  = {};
   const bySel = {};
 
   const card    = makeEl('div', { className: 'login-card profile-card' });
@@ -237,21 +236,6 @@ run('_parse returns a queryable document', () => {
 
 /* Node has no DOMParser; test _extractBody/_extractNav via a stub. */
 run('_extractBody and _extractNav work with a stub document', () => {
-  // Build a tiny stub document mimicking the parsed result.
-  function el(cls, innerHTML) {
-    const siblings = [];
-    return {
-      className: cls,
-      outerHTML: `<div class="${cls}">${innerHTML}</div>`,
-      querySelector(sel) {
-        if (sel === '.profile-subnav')     return siblings[0] || null;
-        if (sel === '.profile-logout-row') return siblings[siblings.length - 1] || null;
-        return null;
-      },
-      _siblings: siblings,
-    };
-  }
-
   // Simulate what DOMParser would produce.
   const nav     = { outerHTML: '<nav class="profile-subnav"></nav>' };
   const sec1    = { outerHTML: '<section class="profile-section"><h2>A</h2></section>' };
@@ -307,7 +291,7 @@ run('_syncNav marks the matching link active and clears others', () => {
 });
 
 run('_swapBody removes old siblings and inserts new ones', () => {
-  const { card, nav, section, logout } = installProfileDom();
+  const { card, section } = installProfileDom();
 
   // Check initial state
   assert.ok(card.children.includes(section), 'section should start in card');

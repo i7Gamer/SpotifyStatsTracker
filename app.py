@@ -462,7 +462,16 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         """The (email, username, db) triple for the authenticated session, or
         (None, None, None) when no live session exists - route handlers redirect
         to /login on the None case. Also self-heals a session whose username
-        drifted from its email mapping, and stashes the db on g for teardown."""
+        drifted from its email mapping.
+
+        The db is stashed on `g` so anything later in the SAME request can
+        reach it without a second lookup - the context processors, chiefly.
+        This said "for teardown" for a long time, and no teardown hook has ever
+        been registered: the Database instances are long-lived and per-user
+        (see user_databases), owned by the registry rather than by a request,
+        so there is nothing here for a teardown to release. Naming a hook that
+        does not exist reads as a guarantee that something is being cleaned
+        up."""
         email = session.get("email")
         if not email or not self.is_user_logged_in(email):
             return None, None, None
