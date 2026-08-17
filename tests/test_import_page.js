@@ -222,12 +222,16 @@ run('a non-OK progress response is dropped rather than rendered as zero', async 
   assert.deepStrictEqual(calls.timeouts.map(t => t.ms), [5000]);
 });
 
-run('an expired session ends the poll instead of retrying', async () => {
-  const { calls } = pollScenario({}, false, 401);
+run('an expired session ends the poll and says why', async () => {
+  const { calls, message } = pollScenario({}, false, 401);
   await new Promise(resolve => setImmediate(resolve));
 
   assert.deepStrictEqual(calls.timeouts, [],
     'the session is gone, so every retry is a guaranteed 401 - stop, as the other polls do');
+  //< stopping SILENTLY leaves the same frozen bar the retry logic above exists
+  //  to prevent, and the import carries on server-side either way
+  assert.ok(message.textContent.includes('session expired'),
+    'the user must be told why the bar stopped moving: ' + message.textContent);
 });
 
 run('a failure that never clears gives up rather than polling forever', async () => {

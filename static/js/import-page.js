@@ -42,8 +42,12 @@
     try {
       var response = await fetch(window.IMPORT_PROGRESS_URL);
       if (response.status === UNAUTHORIZED_STATUS) {
-        //< the session is gone, so every retry is a guaranteed 401 - the same
-        //  rule the other polls follow (see static/js/visibility-poll.js)
+        // The session is gone, so every retry is a guaranteed 401 - stopping is
+        // the same rule the other polls follow (see static/js/visibility-poll.js).
+        // Said out loud, though: the import keeps running server-side, and a bar
+        // that simply stops moving is the failure the retry logic below exists
+        // to prevent - it should not come back through this door.
+        progressMessage.textContent = 'Your session expired - log in again to follow this import.';
         return;
       }
       if (!response.ok) {
