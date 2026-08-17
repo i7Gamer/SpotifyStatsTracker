@@ -9,6 +9,37 @@
 // pieces (version badge, listener pill, nav toggle, search helpers) stay
 // in layout-chrome.js.
 
+// The theme, kept in step across a user's open tabs.
+//
+// It is chosen on /profile, which writes the class onto <html> and the value
+// into localStorage; the <head> bootstrap in both layouts reads it back at the
+// next page load. Every OTHER tab already open kept the old theme until it
+// happened to reload - and the canvas charts are worse off than the CSS, since
+// they read their colours from the variables once, at paint time, and hold
+// them until something repaints.
+//
+// charts.js and genres.js each carried a listener for that repaint, bound to
+// '#theme-selector'. That element exists only on /profile, a page with no
+// charts, so neither had ever fired. A storage event is what actually crosses
+// tabs. Applying the theme is the layout's job, so it happens here; the chart
+// files only need to know it changed, which is what THEME_CHANGE_EVENT says.
+const THEME_STORAGE_KEY = 'spotify-stats-theme';
+const THEME_DEFAULT_CLASS = 'theme-rose';   //< must match both layouts' <head> bootstrap
+const THEME_CHANGE_EVENT = 'themechange';
+
+(function() {
+  window.addEventListener('storage', (event) => {
+    if (!event || event.key !== THEME_STORAGE_KEY) return;
+    //< null is what a localStorage.clear() in the other tab delivers
+    const theme = event.newValue || THEME_DEFAULT_CLASS;
+    //< a storage event fires for a write that changed nothing, and announcing
+    //  that would cost every chart on the page a full repaint for no reason
+    if (document.documentElement.className === theme) return;
+    document.documentElement.className = theme;
+    window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
+  });
+})();
+
 // Smooth fade-in for track cover images. The capture-phase listener catches
 // `load` on any img.track-cover including ones swapped in later by AJAX.
 (function() {

@@ -12,8 +12,16 @@
    and suppressDetailLinks follows _track_card.html's rule: counterpart
    items (Compare page) link to Spotify instead of detail pages, and only
    when a real URL exists. #}
+{# The id is checked, not assumed: url_for DROPS a None value before building
+   and artistDetailPage requires artist_id, so an id-less artist is a
+   BuildError - the whole page render lost to one bad row in one list - rather
+   than the dead link it looks like it would be. An empty id builds "/artist/",
+   which matches no rule. Every render site is a database row today and
+   track_artists.artist_id is NOT NULL, so this is insurance; it costs one
+   condition and reuses the two fallbacks below, which already exist for
+   exactly this case and were simply unreachable without suppressDetailLinks. #}
 {% macro artistLink(artist, suppressDetailLinks) -%}
-  {%- if not suppressDetailLinks -%}
+  {%- if not suppressDetailLinks and artist.get('id') -%}
     <a href="{{ url_for('artistDetailPage', artist_id=artist.get('id')) }}">{{ artist.get('name', '') }}</a>
   {%- elif artist.get('url') -%}
     <a href="{{ artist.get('url') }}" target="_blank" rel="noreferrer noopener">{{ artist.get('name', '') }}</a>

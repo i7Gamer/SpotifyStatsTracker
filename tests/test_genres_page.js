@@ -360,12 +360,12 @@ run('a resize is coalesced into one debounced repaint', () => {
   assert.deepStrictEqual(page.timeouts.map(t => t.ms), [150, 150]);
 });
 
+// See the same test in test_charts_render.js: this stubbed a '#theme-selector'
+// that only exists on /profile, so it pinned a listener that could never fire.
 run('a theme change repaints after letting the new CSS variables land', () => {
-  const selector = makeElement();
-  selector.addEventListener = function (type, fn) { this.handlers = { [type]: fn }; };
-  const page = loadGenres({ elements: { 'theme-selector': selector } });
+  const page = loadGenres({});
 
-  selector.handlers.change();
+  page.windowListeners.themechange();
 
   assert.deepStrictEqual(page.timeouts.map(t => t.ms), [50]);
 });

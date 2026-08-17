@@ -167,7 +167,12 @@
     var lastStepIndex = Math.floor(lastIndex / step) * step;
 
     for (var i = 0; i <= lastStepIndex; i += step) {
-      ctx.textAlign = (i === lastIndex) ? 'right' : 'center';
+      //< right-aligned only when there is something to its LEFT: the last label
+      //  is pulled in so it ends at the plot edge rather than overflowing it,
+      //  but with a single bucket the last label is also the first, sitting at
+      //  x = paddingLeft - and right-aligning there draws it backwards off the
+      //  canvas. One bucket is what a new account's daily trend has on day one.
+      ctx.textAlign = (labels.length > 1 && i === lastIndex) ? 'right' : 'center';
       ctx.fillText(formatAxisLabel(labels[i]), labelForIndex(i), paddingTop + plotHeight + 8);
     }
 

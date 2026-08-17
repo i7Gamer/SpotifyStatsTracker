@@ -248,11 +248,16 @@ run('a resize is coalesced into one debounced repaint', () => {
   assert.deepStrictEqual(page.timeouts.map(t => t.ms), [150, 150]);
 });
 
+// This used to stub a '#theme-selector' element into existence and fire its
+// change handler - which passed, and pinned nothing: that element lives only on
+// /profile, a page with no charts, so the listener could never fire in a real
+// browser. The event chrome-common.js raises on a cross-tab theme change is the
+// one that reaches this page, and stubbing it is no longer possible to get
+// wrong: there is no element to invent.
 run('a theme change waits for the new CSS variables before repainting', () => {
-  const selector = { addEventListener(type, fn) { this.handlers = { [type]: fn }; } };
-  const page = loadCharts({ defer: true, elements: { 'theme-selector': selector } });
+  const page = loadCharts({ defer: true });
 
-  selector.handlers.change();
+  page.windowListeners.themechange();
 
   assert.deepStrictEqual(page.timeouts.map(t => t.ms), [50]);
 });

@@ -295,12 +295,12 @@
     resizeTimer = setTimeout(renderAll, RESIZE_REDRAW_MS);
   });
 
-  var themeSelector = byId('theme-selector');
-  if (themeSelector) {
-    themeSelector.addEventListener('change', function () {
-      setTimeout(renderAll, THEME_REDRAW_MS);
-    });
-  }
+  //< see charts.js: this listened on '#theme-selector', which lives only on
+  //  /profile - a page with no charts - so it had never fired. chrome-common.js
+  //  raises this when another tab switches the theme.
+  window.addEventListener('themechange', function () {
+    setTimeout(renderAll, THEME_REDRAW_MS);
+  });
 })();
 //< no module.exports: the pure filter helpers moved to static/js/htmx-filters.js,
 //  which is where the plain-node unit test points (tests/test_htmx_filters.js)

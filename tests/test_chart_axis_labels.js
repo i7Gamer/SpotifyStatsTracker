@@ -16,6 +16,41 @@ function run(name, fn) {
   }
 }
 
+// The alignment half of the same function. Only the LAST label is right-
+// aligned, so it ends at the plot's right edge instead of overflowing it. With
+// a single bucket that label is also the first: it sits at x = paddingLeft,
+// the left edge, and right-aligning it draws the text backwards off the canvas.
+// One bucket is what a brand-new account's daily trend has on day one, which
+// is the worst moment to show them a clipped chart.
+function alignmentsFor(labelCount) {
+  const alignments = [];
+  const ctx = {
+    set textAlign(value) { alignments.push(value); },
+    get textAlign() { return alignments[alignments.length - 1]; },
+    textBaseline: '', fillStyle: '', font: '',
+    fillText() {},
+  };
+  const labels = Array.from({ length: labelCount }, (_, i) => `2026-07-${10 + i}`);
+  //< plotWidth wide enough that every label is drawn (no sparse stepping)
+  ChartUtils.drawSparseXLabels(ctx, labels, 40, 1000, 200, 16, i => 40 + i * 20, 10);
+  return alignments;
+}
+
+run('a single-bucket chart centres its only label instead of clipping it', () => {
+  assert.deepStrictEqual(alignmentsFor(1), ['center']);
+});
+
+run('the last of several labels is still right-aligned', () => {
+  const alignments = alignmentsFor(4);
+  assert.strictEqual(alignments[alignments.length - 1], 'right',
+    'the rightmost label must end at the plot edge, not overflow it');
+});
+
+run('the labels before the last are centred', () => {
+  const alignments = alignmentsFor(4);
+  assert.deepStrictEqual(alignments.slice(0, -1), ['center', 'center', 'center']);
+});
+
 run('day/week buckets keep month-day (year dropped, not collapsed)', () => {
   assert.strictEqual(formatAxisLabel('2026-07-18'), '07-18');
   assert.strictEqual(formatAxisLabel('2026-07-25'), '07-25');

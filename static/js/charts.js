@@ -545,16 +545,21 @@
     renderAllCharts();
   }
 
+  var RESIZE_REDRAW_MS = 150;       //< coalesce a drag-resize into one repaint
+  var THEME_REDRAW_MS = 50;         //< let the new theme's CSS variables land first
+
   var resizeTimer;
   window.addEventListener('resize', function () {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderAllCharts, 150);
+    resizeTimer = setTimeout(renderAllCharts, RESIZE_REDRAW_MS);
   });
 
-  var themeSelector = document.getElementById('theme-selector');
-  if (themeSelector) {
-    themeSelector.addEventListener('change', function () {
-      setTimeout(renderAllCharts, 50);
-    });
-  }
+  //< the canvas reads its colours from the CSS variables at paint time, so a
+  //  theme change needs an explicit repaint. This listened on '#theme-selector'
+  //  instead - an element that exists only on /profile, a page with no charts,
+  //  so it had never fired. chrome-common.js raises this event when another
+  //  tab switches the theme, which is the only way it can change under a chart.
+  window.addEventListener('themechange', function () {
+    setTimeout(renderAllCharts, THEME_REDRAW_MS);
+  });
 })();

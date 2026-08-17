@@ -213,4 +213,84 @@ run('a height change re-evaluates it, not only a scroll', () => {
   assert.ok(docListeners['htmx:afterSwap'], 'a deferred body swap re-evaluates');
 });
 
+// ---- Cross-tab theme -------------------------------------------------------
+//
+// The theme is chosen on /profile, which writes the class onto <html> and the
+// value into localStorage. Every OTHER open tab keeps the old theme until it
+// reloads, and the canvas charts read their colours from CSS variables at
+// paint time - so charts.js and genres.js each carried a listener on
+// '#theme-selector' to repaint. That element only exists on /profile, a page
+// with no charts, so both listeners had never once fired.
+//
+// A storage event is the thing that actually crosses tabs. Handled here (not in
+// each chart file) because it is the layout's job to APPLY the theme; the chart
+// files only need to know it changed, which is what the event below tells them.
+function loadWithTheme(initialClass) {
+  const html = { className: initialClass };
+  const windowListeners = {};
+  const dispatched = [];
+  global.Event = function EventStub(type) { this.type = type; };
+  global.window = {
+    addEventListener(type, fn) { (windowListeners[type] = windowListeners[type] || []).push(fn); },
+    dispatchEvent(event) { dispatched.push(event); },
+    location: { href: '' },
+  };
+  global.document = {
+    readyState: 'interactive',
+    documentElement: html,
+    addEventListener() {},
+    querySelectorAll() { return []; },
+    getElementById: () => null,
+  };
+  delete require.cache[require.resolve(SCRIPT)];
+  require(SCRIPT);
+
+  function fireStorage(key, newValue) {
+    (windowListeners['storage'] || []).forEach(fn => fn({ key, newValue }));
+  }
+  return { html, dispatched, fireStorage, windowListeners };
+}
+
+run('another tab changing the theme repaints this one', () => {
+  const { html, fireStorage } = loadWithTheme('theme-rose');
+
+  fireStorage('spotify-stats-theme', 'theme-ocean');
+
+  assert.strictEqual(html.className, 'theme-ocean');
+});
+
+run('the theme change is announced so the canvas charts can redraw', () => {
+  const { dispatched, fireStorage } = loadWithTheme('theme-rose');
+
+  fireStorage('spotify-stats-theme', 'theme-ocean');
+
+  assert.deepStrictEqual(dispatched.map(e => e.type), ['themechange']);
+});
+
+run('an unrelated storage key is ignored', () => {
+  const { html, dispatched, fireStorage } = loadWithTheme('theme-rose');
+
+  fireStorage('some-other-key', 'whatever');
+
+  assert.strictEqual(html.className, 'theme-rose');
+  assert.deepStrictEqual(dispatched, []);
+});
+
+run('a storage event that changes nothing announces nothing', () => {
+  const { dispatched, fireStorage } = loadWithTheme('theme-ocean');
+
+  fireStorage('spotify-stats-theme', 'theme-ocean');
+
+  assert.deepStrictEqual(dispatched, [], 'a no-op must not cost every chart a repaint');
+});
+
+run('clearing the stored theme falls back to the default rather than no class', () => {
+  const { html, fireStorage } = loadWithTheme('theme-ocean');
+
+  //< localStorage.clear() in another tab delivers newValue: null
+  fireStorage('spotify-stats-theme', null);
+
+  assert.strictEqual(html.className, 'theme-rose');
+});
+
 console.log('all chrome-common tests passed');
