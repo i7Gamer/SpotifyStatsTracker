@@ -18,6 +18,7 @@ from Database.Listeners.spotifyListener import (
     _get_current_user_from_web_api,
     _SCOPE_ERROR,
 )
+from Database.rate_limit import SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS
 from Database.utils import timeToInt
 
 # Comfortably past WEB_API_POLL_INTERVAL_SECONDS so _checkWebApiBackfill's
@@ -216,6 +217,70 @@ class ApiBackfillTestCase(unittest.TestCase):
     def test_fetch_recently_played_returns_none_on_network_exception(self, mock_get):
         result = _fetch_recently_played_from_web_api("token123")
         self.assertIsNone(result)
+
+    # A 429 used to land in the generic "failed to fetch" log line and nothing
+    # else: no Retry-After read, and no stand-down applied. This call is made
+    # with a bare requests.get, so it never even passes the shared limiter -
+    # the one thing that would have paced it. Left alone, every poll walked
+    # straight back into the window Spotify had just announced, and did it on
+    # a path whose refusals never reached /admin's rate-limit card either.
+    @patch("requests.get")
+    def test_a_429_applies_the_backoff_spotify_asked_for(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {"Retry-After": "17"}
+        mock_response.text = "rate limited"
+        mock_get.return_value = mock_response
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            result = _fetch_recently_played_from_web_api("token123")
+
+        self.assertIsNone(result)
+        applyBackoff.assert_called_once()
+        self.assertEqual(applyBackoff.call_args.args[0], 17.0)
+
+    @patch("requests.get")
+    def test_a_429_without_a_retry_after_still_stands_down(self, mock_get):
+        """No header is not "retry immediately" - that is how a caller hammers
+        a limit it has already been told about."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {}
+        mock_response.text = "rate limited"
+        mock_get.return_value = mock_response
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            _fetch_recently_played_from_web_api("token123")
+
+        self.assertEqual(applyBackoff.call_args.args[0], SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS)
+
+    @patch("requests.get")
+    def test_the_backoff_is_labelled_so_the_admin_card_can_name_it(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {"Retry-After": "5"}
+        mock_response.text = "rate limited"
+        mock_get.return_value = mock_response
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            _fetch_recently_played_from_web_api("token123")
+
+        self.assertTrue(applyBackoff.call_args.kwargs.get("reason"))
+
+    @patch("requests.get")
+    def test_an_ordinary_failure_does_not_stand_the_whole_process_down(self, mock_get):
+        """The backoff is process-wide and shared with every other Spotify
+        caller, so a 500 from this one endpoint must not pause them."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.headers = {}
+        mock_response.text = "Internal Server Error"
+        mock_get.return_value = mock_response
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            _fetch_recently_played_from_web_api("token123")
+
+        applyBackoff.assert_not_called()
 
     @patch("requests.get")
     def test_get_current_user_failure_logs_the_account_it_belongs_to(self, mock_get):

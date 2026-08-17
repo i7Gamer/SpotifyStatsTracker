@@ -16,6 +16,11 @@ def _fakeOpenByName(path, *args, **kwargs):
     assertions can tell files apart."""
     return io.StringIO(f"data:{os.path.basename(path)}")
 
+
+def _raiseFileExists(path):
+    """What a real os.makedirs does when someone else won the race."""
+    raise FileExistsError(17, "File exists", path)
+
 class TestAutoImporterLogging(unittest.TestCase):
     def setUp(self):
         # Set up a caplog-like context or use logging assertLogs
@@ -40,6 +45,34 @@ class TestAutoImporterLogging(unittest.TestCase):
             wd.watchFolder_blocking("/dummy/path", lambda x: None, callbackInitialFiles=False)
             
         self.assertTrue(any("Monitoring /dummy/path for new files (Polling)..." in record for record in log_capture.output))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_a_drop_folder_created_between_the_check_and_the_mkdir_is_fine(
+            self, mock_listdir, mock_exists):
+        """The watcher creates its drop folder on first run, and the check and
+        the create are two separate calls. Anything else that makes the folder
+        in between - the other user's watcher starting at the same moment, a
+        `docker compose up` mounting it, the operator - turned the create into
+        a FileExistsError that killed the watch thread for the life of the
+        process, so that user's exports were never picked up again.
+
+        exist_ok is the whole fix: the post-condition wanted here is "the
+        folder exists", and who created it is not this thread's business."""
+        mock_exists.return_value = False   #< not there when we looked...
+        mock_listdir.return_value = []
+
+        wd = Watchdog()
+        wd.run = False
+
+        with patch("Database.Importers.AutoImporter.os.makedirs") as makedirs:
+            #< ...but there by the time we asked for it
+            makedirs.side_effect = lambda path, **kwargs: (
+                None if kwargs.get("exist_ok") else _raiseFileExists(path))
+
+            wd.watchFolder_blocking("/dummy/path", lambda x: None, callbackInitialFiles=False)
+
+        makedirs.assert_called_once()
 
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")

@@ -287,6 +287,27 @@ class MediaFetchMixin:
         finally:
             self._releaseLastfmEntities("bio", [{"id": artistId}])
 
+    def _submitOrRelease(self, executor, kind: str, entityId: str, task, *taskArgs):
+        """Dispatch `task`, handing the in-flight claim back if it never runs.
+
+        Every claimed entity is released by its TASK's `finally`, which is the
+        right place - the task is what holds it. But that makes the dispatch
+        itself a gap: if submit() raises, the claim has been taken and no task
+        exists to give it back. _lastfm_active is class-level and process-wide,
+        so the entity is then permanently unfetchable by every user's worker
+        and every page view until the process restarts.
+
+        Not hypothetical: submit() raises RuntimeError once the executor is
+        shut down, and shutdown closes these pools while page renders are
+        still arriving. Re-raised rather than swallowed - the caller asked for
+        a Future and there isn't one, and the caller's own error handling is
+        better placed to say so than a silently-False return here."""
+        try:
+            return executor.submit(task, *taskArgs)
+        except Exception:
+            self._releaseLastfmEntities(kind, [{"id": entityId}])
+            raise
+
     def lazyFetchArtistBio(self, artistId: str, artistName: str):
         """Best-effort, on-demand fetch of an artist's biography via Last.fm's
         artist.getinfo (see Database.lastfm.getArtistInfo for the HTML-
@@ -324,7 +345,14 @@ class MediaFetchMixin:
             return False
 
         if self._claimLastfmEntities("bio", [{"id": artistId}]):
-            return self._artistBioFetchExecutor.submit(self._lazyFetchArtistBioTask, artistId, artistName)
+            #< the claim is released by the TASK's finally, so a submit() that
+            #  never produces a task has to hand it back here - otherwise the
+            #  entity stays claimed by nothing, process-wide, for the life of
+            #  the process. Reachable during shutdown, when the pools close
+            #  while page renders are still arriving.
+            return self._submitOrRelease(
+                self._artistBioFetchExecutor, "bio", artistId,
+                self._lazyFetchArtistBioTask, artistId, artistName)
         return False
 
     def _lazyFetchAlbumBioTask(self, albumId: str, albumName: str, artistName: str) -> bool:
@@ -375,7 +403,10 @@ class MediaFetchMixin:
             return False
 
         if self._claimLastfmEntities("album_bio", [{"id": albumId}]):
-            return self._albumBioFetchExecutor.submit(self._lazyFetchAlbumBioTask, albumId, albumName, artistName)
+            #< see lazyFetchArtistBio: a dispatch that never ran still owns the claim
+            return self._submitOrRelease(
+                self._albumBioFetchExecutor, "album_bio", albumId,
+                self._lazyFetchAlbumBioTask, albumId, albumName, artistName)
         return False
 
     def saveImagesFromTrack(self, track: dict):

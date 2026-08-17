@@ -29,6 +29,9 @@ applyBackoff also counts what it saw, and snapshot() reports it. That is
 deliberate: a rate-limit event used to be a log line nobody counted, so
 "is this getting worse?" could only be answered by grepping app.log.
 """
+import datetime
+import email.utils
+import math
 import threading
 import time
 
@@ -164,6 +167,59 @@ class SlotRateLimiter:
                 "lastReason": self._lastReason,
                 "backoffRemainingSeconds": max(0.0, self._backoffUntil - now),
             }
+
+
+def retryAfterSeconds(resp, default: float, maximum: float) -> float:
+    """How long the server asked us to wait, bounded into [0, maximum].
+
+    Honoured rather than guessed at wherever it is offered: the window belongs
+    to the server, and a retry inside it is worse than useless. RFC 9110 gives
+    the header two forms and this reads both - the delta-seconds one that every
+    API here sends today, and the HTTP-date one that a caller written against
+    only the first silently downgrades to `default`. That downgrade is SAFE,
+    which is exactly why it could sit unnoticed in metadata_backfiller: a
+    5-second date read as a 45-minute stand-down and nothing looked broken.
+
+    Bounded in both directions, which matters more than the parsing. A missing
+    or unparseable header is not "retry immediately" - that is how a caller
+    hammers a limit it has already hit. An absurd one is not "stop for a week".
+    A date in the past is 0, not a negative wait. And NaN is refused rather
+    than clamped: min/max propagate it silently, and a NaN deadline compares
+    False against every clock reading, so the window would never end."""
+    header = (getattr(resp, "headers", None) or {}).get("Retry-After")
+    seconds = _deltaSeconds(header)
+    if seconds is None:
+        seconds = _httpDateSeconds(header)
+    if seconds is None:
+        return default
+    return max(0.0, min(seconds, maximum))
+
+
+def _deltaSeconds(header) -> float | None:
+    """The plain-number form, or None if it isn't one. NaN counts as "isn't
+    one" - see retryAfterSeconds."""
+    try:
+        seconds = float(header)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(seconds) else seconds
+
+
+def _httpDateSeconds(header) -> float | None:
+    """The HTTP-date form as seconds from now, or None if it isn't one."""
+    if not isinstance(header, str):
+        return None
+    try:
+        when = email.utils.parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    #< RFC 9110 says an HTTP-date is always GMT, but servers omit the marker;
+    #  a naive datetime raises on comparison with an aware one
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
 
 
 # Shared by the Spotify call sites that acquire it - which is NOT all of them.

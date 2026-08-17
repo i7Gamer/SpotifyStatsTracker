@@ -14,6 +14,7 @@ from Database.db import WEB_API_BACKFILL_SOURCE
 from Database.Spotify import Spotify
 from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
+    retryAfterSeconds,
 )
 from Database.utils import parseError, timeToInt, flaskDebugEnabled
 #< the connect-state string-number coercion, shared with the poll/push tracking
@@ -183,6 +184,17 @@ RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< how long THIS listener's poll loop pau
                                         #  separately - see the backoff branch in startListener.
 
 RATE_LIMIT_REASON_LISTENER_POLL = "listener poll"  #< label for the shared limiter's snapshot
+#< the other Spotify path that can be pushed back on: the official Web API's
+#  recently-played read (see _fetch_recently_played_from_web_api). Labelled
+#  apart from the poll so /admin's card says WHICH endpoint was refused.
+RATE_LIMIT_REASON_WEB_API_BACKFILL = "web API backfill"
+
+# Ceiling on a Retry-After from the recently-played endpoint. Far above
+# anything Spotify actually sends (seconds to a couple of minutes), because its
+# job is only to stop a malformed or absurd header from parking every Spotify
+# call in the process for hours - the backoff is shared, so one bad header on
+# this endpoint would take play tracking offline with it.
+WEB_API_MAX_BACKOFF_SECONDS = 15 * 60
 
 # How long the poll loop stands down when it trips over the shared limiter's
 # OWN open window (as opposed to Spotify pushing back). Short: the window is
@@ -505,6 +517,23 @@ def _fetch_recently_played_from_web_api(access_token: str, logUser: str | None =
                 "Spotify Web API rejected recently-played request for user %s: refresh token lacks "
                 "user-read-recently-played scope - re-authorization required: %s", logUser, resp.text)
             return _SCOPE_ERROR
+        if resp.status_code == 429:
+            # This request is made with a bare requests.get and never passes
+            # SPOTIFY_LIMITER, so nothing was pacing it: a 429 used to be
+            # logged and forgotten, and the next poll walked straight back
+            # into the window Spotify had just announced. Standing the SHARED
+            # limiter down is the point - the limit is per-IP, so every other
+            # Spotify caller in this process is inside the same window - and it
+            # also puts the refusal on /admin's rate-limit card, which this
+            # path was invisible to.
+            standDown = retryAfterSeconds(resp,
+                                          default=SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+                                          maximum=WEB_API_MAX_BACKOFF_SECONDS)
+            SPOTIFY_LIMITER.applyBackoff(standDown, reason=RATE_LIMIT_REASON_WEB_API_BACKFILL)
+            logger.warning(
+                "Spotify Web API rate-limited the recently-played read for user %s - "
+                "standing down for %.0fs", logUser, standDown)
+            return None
         logger.error("Failed to fetch recently played tracks from Web API for user %s: %s %s", logUser, resp.status_code, resp.text)
     except Exception as e:
         logger.error("Error fetching recently played tracks from Web API for user %s: %s", logUser, str(e))

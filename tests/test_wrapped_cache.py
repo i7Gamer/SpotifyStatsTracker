@@ -528,6 +528,62 @@ class TestWrappedRecalcLocking(DatabaseTestCase):
         finally:
             lock.release()
 
+    def test_a_play_landing_while_we_wait_for_the_lock_is_in_the_snapshot(self):
+        """max_played_at is the freshness STAMP written next to the computed
+        numbers, so it has to describe the data actually read.
+
+        It was read before the lock was taken, and the recompute can wait there
+        for the length of a full Wrapped calculation. Any play arriving in that
+        gap was included in the numbers but not in the stamp, so the very next
+        freshness check compared the new max against the old stamp, called the
+        cache stale, and recomputed - work that the merge feature multiplied
+        (see the 147-rebuilds-a-day incident).
+
+        Deterministic by construction: the play is inserted by the lock's own
+        __enter__, so it lands in the gap every run without a sleep or a
+        second thread."""
+        db = self._makeDb({}, [])
+        self._seedOnePlayIn2026(db)
+        latePlayedAt = 1774000600.0
+
+        realLockFor = db._getWrappedRecalcLock
+
+        class _LockThatRacesUs:
+            """Delegates to the real lock, inserting a play as it is entered."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __enter__(self):
+                entered = self._inner.__enter__()
+                db.repo.insertPlay(db.user, "t1", latePlayedAt, 30000, "listener")
+                return entered
+
+            def __exit__(self, *exc):
+                return self._inner.__exit__(*exc)
+
+        with patch.object(db, "_getWrappedRecalcLock",
+                          side_effect=lambda year: _LockThatRacesUs(realLockFor(year))), \
+             patch.object(db, "_calculateAndSaveWrapped") as spy:
+            db.recalculateWrappedForYear(2026)
+
+        spy.assert_called_once()
+        #< (year, yearStart, yearEnd, max_played_at)
+        self.assertEqual(spy.call_args.args[3], latePlayedAt,
+                         "the stamp must describe the plays the recompute actually saw")
+
+    def test_a_year_with_no_plays_still_returns_before_taking_the_lock(self):
+        """Reading max_played_at under the lock must not cost every empty year
+        a lock acquisition - the periodic worker walks all of them."""
+        db = self._makeDb({}, [])
+
+        with patch.object(db, "_getWrappedRecalcLock") as lockFor, \
+             patch.object(db, "_calculateAndSaveWrapped") as spy:
+            db.recalculateWrappedForYear(1999)
+
+        lockFor.assert_not_called()
+        spy.assert_not_called()
+
     def test_on_demand_recalc_skips_if_already_fresh_after_acquiring_lock(self):
         """After waiting for the lock, recalculateWrappedForYear must re-check
         freshness rather than blindly recomputing - otherwise a request that

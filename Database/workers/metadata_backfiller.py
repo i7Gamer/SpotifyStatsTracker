@@ -19,6 +19,7 @@ import threading
 from Database.dbmodule import dbmod as _dbmod
 #< a direct import, unlike _dbmod above: Database.utils imports nothing but the
 #  standard library, so it cannot take part in the cycle _dbmod exists to break
+from Database.rate_limit import retryAfterSeconds
 from Database.utils import flaskDebugEnabled
 
 
@@ -100,16 +101,13 @@ CATALOG_QUOTA_BACKOFF_MAX_SECONDS = 24 * 3600
 def _retryAfterSeconds(resp) -> float:
     """How long Spotify asked us to wait, or the default stand-down.
 
-    Honoured rather than guessed at wherever it is offered: the window belongs
-    to Spotify, and a retry inside it is worse than useless. Capped both ways -
-    a missing or unparseable header is not "retry immediately", and an absurd
-    one is not "stop for a week"."""
-    header = (getattr(resp, "headers", None) or {}).get("Retry-After")
-    try:
-        seconds = float(header)
-    except (TypeError, ValueError):
-        return CATALOG_QUOTA_BACKOFF_SECONDS
-    return max(0.0, min(seconds, CATALOG_QUOTA_BACKOFF_MAX_SECONDS))
+    This module's bounds on the shared parser (Database/rate_limit.py), which
+    is where the two RFC 9110 forms are read. The copy that used to live here
+    understood only delta-seconds, so an HTTP-date fell through to the hour -
+    safe, and therefore invisible."""
+    return retryAfterSeconds(resp,
+                             default=CATALOG_QUOTA_BACKOFF_SECONDS,
+                             maximum=CATALOG_QUOTA_BACKOFF_MAX_SECONDS)
 
 
 def _responseDetail(resp) -> str:

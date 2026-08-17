@@ -99,7 +99,13 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
             return
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
         if not os.path.exists(pathToWatch):   #< first run for this user
-            os.makedirs(pathToWatch)   #< create the drop folder before the initial scan
+            # exist_ok: the check and the create are two calls, and anything
+            # that makes the folder in between - another user's watcher
+            # starting at the same moment, a compose mount, the operator -
+            # turned this into a FileExistsError that killed the watch thread
+            # for the life of the process. The post-condition wanted is "the
+            # folder exists"; who created it is not this thread's business.
+            os.makedirs(pathToWatch, exist_ok=True)   #< create the drop folder before the initial scan
         try:
             knownFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
             if callbackInitialFiles and knownFiles:

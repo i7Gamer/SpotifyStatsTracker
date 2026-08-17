@@ -242,15 +242,29 @@ class WrappedWorkerMixin:
         blocks until it's done instead of duplicating the (expensive) work,
         then re-checks whether the cache is still stale before doing anything -
         the worker may have already brought it up to date while we waited.
+
+        max_played_at is read TWICE, and the second read is the one that
+        counts. It is the freshness stamp written next to the computed numbers,
+        so it has to describe the data actually read - and the wait above can
+        be as long as a whole Wrapped calculation. A play landing in that gap
+        was included in the numbers but not in the stamp, so the next freshness
+        check compared the new max against the old stamp and recomputed
+        immediately. The first read stays outside the lock because it is a
+        different question ("has this user any plays this year at all"), and
+        answering it under the lock would make every empty year - which the
+        periodic worker walks in full - pay an acquisition to learn nothing.
         """
         nowLocal = _dbmod.datetime.datetime.now(tz=self.tz)
         yearStart = nowLocal.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         yearEnd = nowLocal.replace(year=year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        max_played_at = self.repo.getMaxPlayedAtInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
-        if max_played_at is None:
+        if self.repo.getMaxPlayedAtInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp()) is None:
             return
 
         with self._getWrappedRecalcLock(year):
+            max_played_at = self.repo.getMaxPlayedAtInPeriod(
+                self.user, yearStart.timestamp(), yearEnd.timestamp())
+            if max_played_at is None:
+                return   #< an overwrite-import wiped the year while we waited
             isStale, _, _, _ = self._wrappedCacheNeedsRecalc(year, yearStart, yearEnd, max_played_at)
             if isStale:
                 self._calculateAndSaveWrapped(year, yearStart, yearEnd, max_played_at)

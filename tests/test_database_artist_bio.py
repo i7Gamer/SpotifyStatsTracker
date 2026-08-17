@@ -182,6 +182,50 @@ class LazyFetchArtistBioTestCase(unittest.TestCase):
         self.assertFalse(secondResult)
         mockClient.getArtistInfo.assert_called_once()
 
+    def test_a_failed_dispatch_hands_the_claim_back(self):
+        """The claim is taken before submit() and released by the TASK's
+        finally - so a submit() that never produces a task (a shut-down
+        executor is the real one; the pools close during shutdown while page
+        renders are still arriving) left the artist claimed by a task that
+        does not exist. Nothing ever releases it, and process-wide: no worker
+        and no later page view can fetch that artist's bio again for the life
+        of the process."""
+        db = self._db()
+        self._seedArtist(db, "artDispatchFails")
+        #< _lastfm_active is CLASS-level and process-wide, so an id this test
+        #  leaks would silently disable the fetch in every later test too -
+        #  which is exactly the production consequence, and not one to spread
+        self.addCleanup(Database._lastfm_active.discard, ("bio", "artDispatchFails"))
+
+        with patch.object(db._artistBioFetchExecutor, "submit",
+                          side_effect=RuntimeError("cannot schedule new futures after shutdown")):
+            with self.assertRaises(RuntimeError):
+                db.lazyFetchArtistBio("artDispatchFails", "Some Artist")
+
+        self.assertNotIn(("bio", "artDispatchFails"), Database._lastfm_active,
+                         "a dispatch that never ran must not hold the entity forever")
+
+    def test_the_artist_can_be_fetched_again_after_a_failed_dispatch(self):
+        """The consequence the release exists to prevent, stated as behaviour."""
+        db = self._db()
+        self._seedArtist(db, "artRetryAfterFail")
+        self.addCleanup(Database._lastfm_active.discard, ("bio", "artRetryAfterFail"))
+
+        with patch.object(db._artistBioFetchExecutor, "submit",
+                          side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                db.lazyFetchArtistBio("artRetryAfterFail", "Some Artist")
+
+        mockClient = MagicMock()
+        mockClient.getArtistInfo.return_value = ArtistInfoOutcome(OUTCOME_OK, "Bio text.")
+        with patch("Database.database.LastfmClient", return_value=mockClient):
+            future = db.lazyFetchArtistBio("artRetryAfterFail", "Some Artist")
+            self.assertTrue(hasattr(future, "result"),
+                            "the claim was still held, so nothing was dispatched")
+            future.result(timeout=5)
+
+        self.assertEqual(db.repo.getArtistBioState("artRetryAfterFail")["bio"], "Bio text.")
+
     def test_exception_is_swallowed_and_leaves_the_artist_unattempted(self):
         db = self._db()
         with patch("Database.database.LastfmClient", side_effect=Exception("boom")):
