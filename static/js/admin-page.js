@@ -17,6 +17,9 @@
   var SUBNAV_SEL    = '.admin-subnav';
   var BODY_ID       = 'admin-tab-body';
   var LOADING_CLASS = 'admin-tab-loading';
+  // Bumped by every navigate(). A response whose sequence is no longer the
+  // current one belongs to a tab the user has already left - see navigate().
+  var _navSeq = 0;
 
   function _parse(html) {
     if (typeof DOMParser !== 'undefined') {
@@ -90,6 +93,7 @@
     BODY_ID: BODY_ID,
 
     navigate: function (url) {
+      var seq = ++_navSeq;
       var bodyElem = document.getElementById(BODY_ID);
       if (bodyElem) bodyElem.classList.add(LOADING_CLASS);
 
@@ -99,6 +103,17 @@
           return resp.text();
         })
         .then(function (html) {
+          // Two quick clicks leave two fetches in flight, and nothing cancels
+          // the first - so when it answered last it swapped its body in on top,
+          // leaving the abandoned tab on screen under the newer tab's URL and
+          // nav highlight.
+          //
+          // A sequence check rather than an AbortController: aborting REJECTS
+          // the superseded promise, and init()'s catch below turns a rejection
+          // into `location.href = href` - a hard navigation back to the tab the
+          // user just left, which is worse than the bug.
+          if (seq !== _navSeq) return false;
+
           var doc = _parse(html);
           if (!doc) throw new Error('DOMParser unavailable');
 
@@ -111,6 +126,9 @@
           return true;
         })
         .finally(function () {
+          //< the class is shared, so a stale response clearing it would stop the
+          //  page looking busy while the request it is waiting on is still open
+          if (seq !== _navSeq) return;
           if (bodyElem) bodyElem.classList.remove(LOADING_CLASS);
         });
     },
@@ -120,7 +138,13 @@
       if (!nav || nav._adminAjaxWired) return;
       nav._adminAjaxWired = true;
 
-      if (typeof history !== 'undefined' && history.replaceState && !history.state) {
+      // Guarded on OUR key, not merely on a state being present: the popstate
+      // handler below only re-renders when state.adminTab is set, so an entry
+      // carrying somebody else's state would skip the seed here and then be
+      // ignored on the way back - leaving the swapped tab on screen under the
+      // original URL, which is the case this seed exists for.
+      if (typeof history !== 'undefined' && history.replaceState &&
+          !(history.state && history.state.adminTab)) {
         history.replaceState({ adminTab: location.href }, '', location.href);
       }
 

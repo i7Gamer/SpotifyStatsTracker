@@ -211,8 +211,13 @@
 
       /* The entry this page loaded into has state === null, so the popstate
          handler below would decline to re-render it: Back after a tab switch
-         left the URL on /profile with the swapped tab still on screen. */
-      if (typeof history !== 'undefined' && history.replaceState && !history.state) {
+         left the URL on /profile with the swapped tab still on screen.
+
+         Guarded on OUR key rather than on a state merely being present: an
+         entry carrying somebody else's state hits that same case, since the
+         handler below only re-renders on state.profileTab. */
+      if (typeof history !== 'undefined' && history.replaceState &&
+          !(history.state && history.state.profileTab)) {
         history.replaceState({ profileTab: location.href }, '', location.href);
       }
 

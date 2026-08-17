@@ -191,6 +191,27 @@ run('SUBNAV_SEL constant matches the nav class', () => {
   assert.strictEqual(ProfilePage.SUBNAV_SEL, '.profile-subnav');
 });
 
+run('init seeds its own state even when a foreign one is already present', () => {
+  /* Same shape as admin-page.js (see tests/test_admin_page.js): `!history.state`
+     also skipped the seed for an entry whose state came from somebody else, and
+     the popstate handler only re-renders on state.profileTab - which is exactly
+     the "Back leaves the swapped tab on screen" case the seed exists for. */
+  installProfileDom();
+  const replaced = [];
+  //< installProfileDom's history stub carries pushState only, and init feature-
+  //  detects replaceState before seeding
+  global.history.replaceState = function (state, title, url) {
+    replaced.push({ state, url });
+    global.history.state = state;
+  };
+  global.history.state = { notOurs: true };
+
+  ProfilePage.init();
+
+  assert.strictEqual(replaced.length, 1, 'a state without profileTab is not this page\'s - seed ours');
+  assert.strictEqual(replaced[0].state.profileTab, '/profile');
+});
+
 run('LOADING_CLASS constant is correct', () => {
   assert.strictEqual(ProfilePage.LOADING_CLASS, 'profile-tab-loading');
 });

@@ -14,6 +14,11 @@ tab while the DOM keeps showing the second one - until a refresh silently
 changes what is on screen. admin-page.js got the prime; its twin didn't, which
 is the drift this pins.
 
+`null` is not the only unprimed shape. The prime used to be guarded on
+`!history.state`, which also skipped an entry whose state was written by
+somebody else - and a foreign state fails the popstate check for exactly the
+same reason `null` does. Both modules now test for their OWN key.
+
 Cheap file-level assertions - no browser needed.
 """
 import os
@@ -60,13 +65,18 @@ class TestTabSwitcherHistoryState(unittest.TestCase):
     def test_every_switcher_primes_the_initial_history_entry(self):
         """The first page load's entry has state === null, so Back from a
         swapped tab lands on an entry the handler above refuses to re-render:
-        the URL says one tab, the DOM shows another."""
+        the URL says one tab, the DOM shows another.
+
+        The condition is "does this entry carry MY key", not "does it carry a
+        state at all" - see the module docstring."""
         for module, stateKey in _TAB_SWITCHERS.items():
             with self.subTest(module=module):
                 source = _readModule(module)
-                self.assertIn(
-                    "!history.state", source,
-                    f"{module} never checks for an unprimed initial entry")
+                self.assertRegex(
+                    source,
+                    r"!\(\s*history\.state\s*&&\s*history\.state\." + re.escape(stateKey),
+                    f"{module} treats any state as primed, so an entry holding somebody "
+                    "else's state is left unseeded and Back over it does nothing")
                 self.assertRegex(
                     source,
                     r"history\.replaceState\(\s*\{\s*" + re.escape(stateKey),
