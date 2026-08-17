@@ -24,6 +24,14 @@ README.md
 .vscode
 .idea
 .pytest_cache
+# Local tooling state. Not private, but not runnable in an image either, and
+# the agent's symbol cache alone is ~11 MB of the developer's tree baked into a
+# public layer. .claude/ below covers the rest of it; these sit at the ROOT,
+# where nothing else here reaches them.
+.token-savior-cache.json
+.coverage
+.coverage.*
+.ruff_cache
 # Local agent state, and .claude/worktrees holds a COMPLETE second copy of this
 # tree - so every root-anchored rule below (Database/Data, secrets/, *.db,
 # *.log) misses the copy inside it. Hence the **/ spellings that follow.

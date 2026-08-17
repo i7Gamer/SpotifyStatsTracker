@@ -61,6 +61,14 @@ MUST_BE_EXCLUDED = (
     #  published image that can never execute there - the same reason dev.py,
     #  tests/ and *.ps1 are already excluded.
     "Database/Spotify/smoketest.py",
+    #< local tooling state. Not private, but not runnable in an image either,
+    #  and the agent's symbol cache alone is ~11 MB of the developer's tree
+    #  baked into a public layer. .claude/ is already excluded; this one sits
+    #  at the ROOT, so nothing covered it.
+    ".token-savior-cache.json",
+    ".coverage",
+    ".coverage.HOSTNAME.12345.678901",   #< pytest-xdist writes one per worker
+    ".ruff_cache/CACHEDIR.TAG",
 )
 
 # The image genuinely needs these - a rule broad enough to catch the above must
