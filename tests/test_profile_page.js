@@ -4,6 +4,14 @@
 
 const assert = require('assert');
 
+/* Captured before any test runs. installNavigableProfileDom stubs both, and a
+   stub left installed would silently serve a later test that feature-detects
+   what it replaced - '_parse returns a queryable document' below skips itself on
+   exactly `typeof DOMParser === 'undefined'`. The last test asserts they were
+   handed back. Same guard as tests/test_admin_page.js. */
+const BASELINE_FETCH = global.fetch;
+const BASELINE_PARSER = global.DOMParser;
+
 /* ------------------------------------------------------------------ */
 /* Minimal DOM stub                                                     */
 /* ------------------------------------------------------------------ */
@@ -510,6 +518,12 @@ run('init wires the subnav exactly once (idempotent)', () => {
   ProfilePage.init(); // second call should be a no-op
 
   assert.strictEqual(clickHandlers, 1, 'click handler registered exactly once');
+});
+
+//< runs last on purpose: it checks what the tests above left behind
+run('no navigate stub outlived its test', () => {
+  assert.strictEqual(global.fetch, BASELINE_FETCH, 'a fetch stub is still installed');
+  assert.strictEqual(global.DOMParser, BASELINE_PARSER, 'a DOMParser stub is still installed');
 });
 
 (async () => {

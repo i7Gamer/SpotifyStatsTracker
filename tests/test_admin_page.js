@@ -8,6 +8,15 @@ const assert = require('assert');
 const results = [];
 function run(name, fn) { results.push({ name, fn }); }
 
+// Captured before any test runs. setupNavigableWindow stubs both, and a stub
+// left installed would silently serve any later test that feature-detects what
+// it replaced - `typeof DOMParser !== 'undefined'` is exactly how admin-page.js
+// itself decides whether it can parse a response. The last test asserts they
+// were handed back. (window/document/history are not in scope here: node has no
+// baseline for them, so every test installs its own outright.)
+const BASELINE_FETCH = global.fetch;
+const BASELINE_PARSER = global.DOMParser;
+
 // Mock DOM environment for node execution
 function setupMockWindow(initialUrl = 'http://localhost/admin') {
   const listeners = {};
@@ -92,6 +101,8 @@ function setupNavigableWindow(url) {
   };
   const nav = { _adminAjaxWired: false, addEventListener() {}, querySelectorAll: () => [] };
   const pending = [];
+  const priorFetch = global.fetch;
+  const priorParser = global.DOMParser;
 
   global.document = {
     querySelector: (sel) => (sel === '.admin-subnav' ? nav : null),
@@ -109,7 +120,9 @@ function setupNavigableWindow(url) {
 
   delete require.cache[require.resolve('../static/js/admin-page.js')];
   const AdminPage = require('../static/js/admin-page.js');
-  return { AdminPage, body, pending };
+  //< called from a finally, so a failed assertion leaves no stub behind either
+  const restore = () => { global.fetch = priorFetch; global.DOMParser = priorParser; };
+  return { AdminPage, body, pending, restore };
 }
 
 function tabResponse(html) {
@@ -120,36 +133,42 @@ run('a superseded tab response never lands', async () => {
   // Two quick clicks. Nothing cancels the first fetch, so when it answers last
   // it used to swap its body in on top - leaving the Sync tab on screen under a
   // URL and a highlighted nav link that both said Users.
-  const { AdminPage, body, pending } = setupNavigableWindow('http://localhost/admin');
+  const { AdminPage, body, pending, restore } = setupNavigableWindow('http://localhost/admin');
+  try {
+    const first = AdminPage.navigate('/admin?tab=sync');
+    const second = AdminPage.navigate('/admin?tab=users');
+    assert.strictEqual(pending.length, 2, 'both requests are in flight');
 
-  const first = AdminPage.navigate('/admin?tab=sync');
-  const second = AdminPage.navigate('/admin?tab=users');
-  assert.strictEqual(pending.length, 2, 'both requests are in flight');
+    pending[1](tabResponse('USERS'));
+    await second;
+    pending[0](tabResponse('SYNC'));
+    await first;
 
-  pending[1](tabResponse('USERS'));
-  await second;
-  pending[0](tabResponse('SYNC'));
-  await first;
-
-  assert.strictEqual(body.innerHTML, 'USERS',
-    'the tab the user navigated away from must not overwrite the one they asked for');
+    assert.strictEqual(body.innerHTML, 'USERS',
+      'the tab the user navigated away from must not overwrite the one they asked for');
+  } finally {
+    restore();
+  }
 });
 
 run('a superseded response does not clear the loading state of the live one', async () => {
-  const { AdminPage, body, pending } = setupNavigableWindow('http://localhost/admin');
+  const { AdminPage, body, pending, restore } = setupNavigableWindow('http://localhost/admin');
+  try {
+    const first = AdminPage.navigate('/admin?tab=sync');
+    const second = AdminPage.navigate('/admin?tab=users');
 
-  const first = AdminPage.navigate('/admin?tab=sync');
-  const second = AdminPage.navigate('/admin?tab=users');
+    pending[0](tabResponse('SYNC'));   //< the abandoned tab answers first
+    await first;
 
-  pending[0](tabResponse('SYNC'));   //< the abandoned tab answers first
-  await first;
+    assert.ok(body.classList.contains('admin-tab-loading'),
+      'the newer request is still open, so the tab body must still read as loading');
 
-  assert.ok(body.classList.contains('admin-tab-loading'),
-    'the newer request is still open, so the tab body must still read as loading');
-
-  pending[1](tabResponse('USERS'));
-  await second;
-  assert.ok(!body.classList.contains('admin-tab-loading'), 'and is cleared once the live one lands');
+    pending[1](tabResponse('USERS'));
+    await second;
+    assert.ok(!body.classList.contains('admin-tab-loading'), 'and is cleared once the live one lands');
+  } finally {
+    restore();
+  }
 });
 
 run('init seeds its own state even when a foreign one is already present', () => {
@@ -186,6 +205,12 @@ run('init sets initial history state if null', () => {
 
   assert.notStrictEqual(win.history.state, null, 'history.state should not be null after init');
   assert.strictEqual(win.history.state.adminTab, 'http://localhost/admin?tab=overview');
+});
+
+//< runs last on purpose: it checks what the tests above left behind
+run('no navigate stub outlived its test', () => {
+  assert.strictEqual(global.fetch, BASELINE_FETCH, 'a fetch stub is still installed');
+  assert.strictEqual(global.DOMParser, BASELINE_PARSER, 'a DOMParser stub is still installed');
 });
 
 (async () => {
