@@ -25,6 +25,10 @@
   var SUBNAV_SEL      = '.profile-subnav';
   var LOADING_CLASS   = 'profile-tab-loading';
 
+  /* Bumped by every navigate(). A response whose sequence is no longer the
+     current one belongs to a tab the user has already left - see navigate(). */
+  var _navSeq = 0;
+
   /* ------------------------------------------------------------------ */
   /* Parsing helpers                                                     */
   /* ------------------------------------------------------------------ */
@@ -177,6 +181,7 @@
 
     /** Fetch `url` and swap in its tab body. Returns a Promise. */
     navigate: function (url) {
+      var seq = ++_navSeq;
       var card = document.querySelector('.login-card');
       if (card) card.classList.add(LOADING_CLASS);
 
@@ -186,6 +191,18 @@
           return resp.text();
         })
         .then(function (html) {
+          /* Two quick clicks leave two fetches in flight, and nothing cancels
+             the first - so when it answered last it swapped its body in and
+             re-synced the nav to the tab the user had already left, under the
+             newer tab's URL.
+
+             A sequence check rather than an AbortController: aborting REJECTS
+             the superseded promise, and init()'s catch below turns a rejection
+             into `location.href = href` - a hard navigation back to that same
+             abandoned tab, which is worse than the bug. Same fix, same reason,
+             as static/js/admin-page.js. */
+          if (seq !== _navSeq) return false;
+
           var doc = _parse(html);
           if (!doc) throw new Error('DOMParser unavailable');
 
@@ -198,6 +215,9 @@
           return true;
         })
         .finally(function () {
+          /* The class is shared, so a stale response clearing it would stop the
+             card looking busy while the request it waits on is still open. */
+          if (seq !== _navSeq) return;
           if (card) card.classList.remove(LOADING_CLASS);
         });
     },

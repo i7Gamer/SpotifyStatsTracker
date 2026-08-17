@@ -166,10 +166,12 @@ const ProfilePage = require('../static/js/profile-page.js');
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-function run(name, fn) {
-  try { fn(); console.log('ok - ' + name); }
-  catch (err) { console.error('FAIL - ' + name + '\n' + err.message); process.exitCode = 1; }
-}
+/* Collected, then awaited in sequence at the bottom. The navigate() tests below
+   are async - they hold two fetches open and resolve them out of order - and
+   calling them here would report a pass before their assertions ran. Failures
+   still don't stop the run: every test reports, and the exit code carries. */
+const results = [];
+function run(name, fn) { results.push({ name, fn }); }
 
 /* ------------------------------------------------------------------ */
 /* HTML extraction tests (no DOM required)                             */
@@ -337,6 +339,72 @@ run('_swapBody removes old siblings and inserts new ones', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Out-of-order tab responses                                          */
+/* ------------------------------------------------------------------ */
+
+/* A window whose fetches are held open, so a test decides the order the tab
+   responses land in. The parsed-document stub is the minimum _extractBody
+   walks: a subnav, one sibling carrying the response, and no logout row. */
+function installNavigableProfileDom() {
+  const dom = installProfileDom();
+  dom.nav.querySelectorAll = (sel) => (sel === 'a' ? [dom.linkAcct, dom.linkShare] : []);
+
+  const pending = [];
+  global.fetch = () => new Promise((resolve) => { pending.push(resolve); });
+  global.DOMParser = function () {
+    this.parseFromString = (html) => {
+      const carried = { outerHTML: html, nextElementSibling: null };
+      const parsedNav = { outerHTML: '<nav class="profile-subnav"></nav>', nextElementSibling: carried };
+      return { querySelector: (sel) => (sel === '.profile-subnav' ? parsedNav : null) };
+    };
+  };
+  return Object.assign(dom, { pending });
+}
+
+function tabResponse(html) {
+  return { ok: true, text: () => Promise.resolve(html) };
+}
+
+run('a superseded tab response never lands', async () => {
+  /* Two quick clicks. Nothing cancels the first fetch, so when it answered last
+     it swapped its body in and re-synced the nav to the tab the user had
+     already left - under the newer tab's URL. */
+  const { pending, linkAcct, linkShare } = installNavigableProfileDom();
+
+  const first = ProfilePage.navigate('/profile');
+  const second = ProfilePage.navigate('/profile/sharing');
+  assert.strictEqual(pending.length, 2, 'both requests are in flight');
+
+  pending[1](tabResponse('<section>SHARING</section>'));
+  await second;
+  pending[0](tabResponse('<section>ACCOUNT</section>'));
+  await first;
+
+  assert.ok(linkShare.classList.contains('active'),
+            'the tab the user asked for must stay current');
+  assert.ok(!linkAcct.classList.contains('active'),
+            'the abandoned tab must not take the highlight back');
+});
+
+run('a superseded response does not clear the loading state of the live one', async () => {
+  const { card, pending } = installNavigableProfileDom();
+
+  const first = ProfilePage.navigate('/profile');
+  const second = ProfilePage.navigate('/profile/sharing');
+
+  pending[0](tabResponse('<section>ACCOUNT</section>'));   //< the abandoned tab answers first
+  await first;
+
+  assert.ok(card.classList.contains('profile-tab-loading'),
+            'the newer request is still open, so the card must still read as loading');
+
+  pending[1](tabResponse('<section>SHARING</section>'));
+  await second;
+  assert.ok(!card.classList.contains('profile-tab-loading'),
+            'and is cleared once the live one lands');
+});
+
+/* ------------------------------------------------------------------ */
 /* Inline-script revival (CSP)                                         */
 /* ------------------------------------------------------------------ */
 
@@ -431,4 +499,10 @@ run('init wires the subnav exactly once (idempotent)', () => {
   assert.strictEqual(clickHandlers, 1, 'click handler registered exactly once');
 });
 
-console.log('\nAll profile-page tests done.');
+(async () => {
+  for (const { name, fn } of results) {
+    try { await fn(); console.log('ok - ' + name); }
+    catch (err) { console.error('FAIL - ' + name + '\n' + err.message); process.exitCode = 1; }
+  }
+  console.log('\nAll profile-page tests done.');
+})();
