@@ -9,6 +9,7 @@ from conftest import DatabaseTestCase
 import app as appModule
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from _concurrency import WaiterCountingLock
 import Database.utils as utilsModule
 from Database.Migrators.migrate1_12_0 import Migrator as Migrator_1_12_0
 
@@ -478,20 +479,35 @@ class TestWrappedRecalcLocking(DatabaseTestCase):
         db.repo.insertPlay(db.user, "t1", 1774000000, 30000, "listener")
         db.repo.deleteUserWrapped(db.user, 2026)
 
+    RECALC_THREADS = 5
+
     def test_concurrent_on_demand_recalculations_only_compute_once(self):
         """Simulates several near-simultaneous /wrapped requests on a cache
         miss (e.g. multiple browser tabs): only the first should actually run
         _calculateAndSaveWrapped - the rest must see the now-fresh cache after
-        waiting for the lock and skip redundant work."""
+        waiting for the lock and skip redundant work.
+
+        The first thread holds inside the calculation until all five have
+        provably reached the year's lock. It used to sleep 50ms there and
+        assume they had, which under load they may not have - and four threads
+        that arrive AFTER the first has finished never contend for anything,
+        so the run proves nothing and says so by passing (see
+        tests/_concurrency.py)."""
         db = self._makeDb({}, [])
         self._seedOnePlayIn2026(db)
 
+        recalcLock = WaiterCountingLock(db._getWrappedRecalcLock(2026))
         real = db._calculateAndSaveWrapped
         callCount = []
+        allArrived = []
 
-        def slowRealCalc(*args, **kwargs):
+        def heldUntilEveryoneArrives(*args, **kwargs):
             callCount.append(1)
-            time.sleep(0.05)   #< widen the race window
+            #< only the first caller ever gets here if the lock works; if it
+            #  does not, the later ones must not wait for arrivals that have
+            #  already happened
+            if len(callCount) == 1:
+                allArrived.append(recalcLock.waitFor(self.RECALC_THREADS))
             return real(*args, **kwargs)
 
         def recalcThenCloseConnection():
@@ -501,13 +517,19 @@ class TestWrappedRecalcLocking(DatabaseTestCase):
             db.recalculateWrappedForYear(2026)
             db.repo.connectionManager.close()
 
-        with patch.object(db, "_calculateAndSaveWrapped", side_effect=slowRealCalc):
-            threads = [threading.Thread(target=recalcThenCloseConnection) for _ in range(5)]
+        with patch.object(db, "_getWrappedRecalcLock", return_value=recalcLock), \
+             patch.object(db, "_calculateAndSaveWrapped", side_effect=heldUntilEveryoneArrives):
+            threads = [threading.Thread(target=recalcThenCloseConnection)
+                       for _ in range(self.RECALC_THREADS)]
             for t in threads:
                 t.start()
             for t in threads:
-                t.join(timeout=5)
+                t.join(timeout=30)
 
+        #< without this the count assertion is vacuous: one call is also what
+        #  five threads that never overlapped would produce
+        self.assertEqual(allArrived, [True],
+                         "the other recalculations never reached the year's lock")
         self.assertEqual(len(callCount), 1)
         cached = db.repo.getCachedWrapped(db.user, 2026)
         self.assertEqual(cached["total_plays"], 1)

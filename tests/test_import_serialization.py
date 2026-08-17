@@ -11,7 +11,6 @@ recorded at the end of the first run.
 import sys
 import os
 import threading
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -21,8 +20,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
 from conftest import DatabaseTestCase, normalizeTrackForTest
-
-_IMPORT_HOLD_SECONDS = 0.05   #< long enough that unserialized imports reliably overlap
+from _concurrency import WaiterCountingLock
 
 
 def _meta(trackId, playedAt):
@@ -47,8 +45,19 @@ def _importerFactory(metasByCall):
 
 class TestImportSerialization(DatabaseTestCase):
     def test_concurrent_batches_never_run_an_import_simultaneously(self):
+        """The first thread inside the import does not move until the second
+        has provably reached the lock.
+
+        It used to sleep 50ms there instead, on the reasoning that the second
+        thread would surely have arrived by then. Under load it may not have -
+        and then the two never overlap, nothing is proven, and the test passes
+        while reporting nothing. Waiting on the arrival itself is both exact
+        and faster: on an idle machine the second thread is there in
+        microseconds (see tests/_concurrency.py)."""
         db = self._makeDb({}, [])
-        state = {"active": 0, "peak": 0}
+        importLock = WaiterCountingLock(db._importLock)
+        db._importLock = importLock
+        state = {"active": 0, "peak": 0, "entered": 0, "bothArrived": None}
         stateLock = threading.Lock()
         originalImportHistory = db.importHistory
 
@@ -56,8 +65,17 @@ class TestImportSerialization(DatabaseTestCase):
             with stateLock:
                 state["active"] += 1
                 state["peak"] = max(state["peak"], state["active"])
+                isFirstIn = state["entered"] == 0
+                state["entered"] += 1
             try:
-                time.sleep(_IMPORT_HOLD_SECONDS)
+                if isFirstIn:
+                    # Only the first: hold here until BOTH batches are at the
+                    # lock - this one, and the other blocked behind it. If
+                    # serialization is broken the other is not blocked, it is
+                    # in here too, and `peak` says so. The second import must
+                    # NOT wait, or it would sit here until the timeout with
+                    # nothing left to arrive.
+                    state["bothArrived"] = importLock.waitFor(2)
                 return originalImportHistory(*args, **kwargs)
             finally:
                 with stateLock:
@@ -85,6 +103,10 @@ class TestImportSerialization(DatabaseTestCase):
             for t in threads:
                 t.join(timeout=10)
 
+        #< without this the peak assertion below is vacuous: it would also hold
+        #  for two batches that simply never met
+        self.assertTrue(state["bothArrived"],
+                        "the second batch never reached the import lock - nothing was contended")
         self.assertEqual(state["peak"], 1, "two imports for the same user ran concurrently")
         recordedIds = {e["id"] for e in db.getEntriesFromOld(fullPagination=False)}
         self.assertEqual(recordedIds, {"a1", "b1"})
