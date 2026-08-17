@@ -14,6 +14,7 @@ import threading
 from flask import render_template, redirect, request, url_for, abort, jsonify
 
 from routes._auth import makeRequiresUser
+from routes._xhr import declaresItselfXhr
 
 from config import (
     RECOMMENDATION_ARTIST_LIMIT, TRUTHY_ENV_VALUES,
@@ -593,7 +594,12 @@ def register(app, dashboard):
 
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
-            return redirect(url_for("login", next=url_for(detailRoute, **{idKwarg: entity_id})))
+            #< its own next (the detail page the button lives on, not /admin) is
+            #  why this keeps a hand-rolled guard - but it goes through
+            #  unauthenticatedResponse for the XHR branch below, which the bare
+            #  redirect it used to be had no way to reach
+            return dashboard.unauthenticatedResponse(
+                nextPath=url_for(detailRoute, **{idKwarg: entity_id}))
         if not dashboard.repo.isAdmin(username):
             abort(403)
 
@@ -611,7 +617,7 @@ def register(app, dashboard):
         # The detail pages submit this form via fetch (static/js/admin-refresh.js)
         # so a refresh doesn't navigate away and reset tab/sort/page state; the
         # redirect below stays as the no-JS fallback.
-        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        if declaresItselfXhr():
             return jsonify(kind=messageKind, message=message)
 
         redirectArgs = {idKwarg: entity_id, messageKind: message}
@@ -854,7 +860,7 @@ def register(app, dashboard):
         returns immediately, leaving the backup to finish in the background.
         Returns JSON when requested via AJAX, or redirects to /admin."""
 
-        is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        is_ajax = declaresItselfXhr()
 
         def respond(kind, message):
             if is_ajax:

@@ -25,6 +25,7 @@ from Database.backup import (
     DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
 )
 from routes._htmx import isHtmxSwap
+from routes._xhr import declaresItselfXhr as _declaresItselfXhr
 from services.deploy_state import deployMismatch, sourceFingerprint
 from services.email_worker import EMAIL_WORKER
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
@@ -420,6 +421,15 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         The client turns the 401 into a real navigation (see
         AjaxStatus.redirectIfUnauthorized). Everything else keeps the redirect.
 
+        "An ajax request" is either spelling, because the fetches in this app
+        use both and the choice belongs to the route, not to this guard: the
+        page loaders mark the URL with ?ajax=, while the admin console's
+        Create-backup and Refresh-Last.fm forms send X-Requested-With because
+        their ROUTES read that header to pick JSON over a redirect. Reading
+        only the query marker left those three answering a 302 that fetch
+        followed, so an expired session was reported as "Backup failed - try
+        again" instead of sending the admin to log in (see _declaresItselfXhr).
+
         An htmx request needs the same escape for the same reason - htmx follows
         a 302 as transparently as fetch() did, and would swap the login page's
         HTML into whatever region was being refreshed. It gets the equivalent it
@@ -444,7 +454,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         loginUrl = url_for("login", next=target)
         if isHtmxSwap():
             return Response(status=204, headers={"HX-Redirect": loginUrl})
-        if request.args.get("ajax"):
+        if request.args.get("ajax") or _declaresItselfXhr():
             return jsonify(error="Not logged in", loginUrl=loginUrl), 401
         return redirect(loginUrl)
 

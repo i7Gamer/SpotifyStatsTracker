@@ -34,6 +34,21 @@ from Database.queries.email_queries import (
 
 logger = logging.getLogger(__name__)
 
+# The paths a `next` may never name, checked in _safeNextUrl. Not a security
+# list - every one of them is same-origin, which is why the open-redirect guard
+# above it lets them through - but a usability one: /logout is POST-only and
+# answers 405, and the other three are the very forms the user just completed.
+# Lower-cased and slash-stripped before the comparison, so "/Logout/" is the
+# same entry.
+AUTH_ENDPOINT_PATHS = frozenset({"/login", "/logout", "/register", "/reset-password"})
+
+#< the one rejection all three cookie forms give, formatted with the email the
+#  cookies had to match - naming it is what makes the message actionable
+COOKIE_OWNERSHIP_ERROR = (
+    "Couldn't verify that these cookies belong to {email}. "
+    "Make sure you are logged into open.spotify.com with that account and copied all cookies."
+)
+
 # Which profile section a redirect's success/error message belongs to. The value
 # is both the `flash_for` query param and the section's element id, so one string
 # anchors the scroll and picks the block that renders the message (see
@@ -82,6 +97,28 @@ def register(app, dashboard):
             return "A display name can only contain letters, digits, spaces, - and _."
         return None
 
+    def _verifiedCookies(cookies, email):
+        """The parsed cookies, or None when they don't provably belong to
+        `email`.
+
+        This is the whole of how identity is proved in this app - /login,
+        /register and /reset-password all ask exactly this question - and each
+        of them used to carry its own copy of the four lines that ask it, right
+        down to a character-identical error string. Three copies of one rule is
+        how one of them drifts.
+
+        Verification runs against a THROWAWAY session file (see
+        _verifyCookiesMatchEmail), so nothing is persisted for an email until
+        the cookies are shown to be that account's. None rather than {} for the
+        rejection: every caller has already refused an empty submission, so the
+        two can't be confused."""
+        parsed = parseCookieString(cookies)
+        if (not dashboard.skipEmailVerification
+                and dashboard.repo.isEmailVerificationEnabled()
+                and not dashboard._verifyCookiesMatchEmail(parsed, email)):
+            return None
+        return parsed
+
     def _safeNextUrl(nextUrl):
         """Only allow same-origin relative redirects after login - a `next`
         value like `//evil.com`, `https://evil.com`, or `/\\evil.com`
@@ -94,12 +131,23 @@ def register(app, dashboard):
         reaches the browser as `//`, sliding an attacker's host past a guard
         that only ever inspects index 1. Werkzeug refuses CR/LF in a header
         value on its own, but a tab survives all the way into `Location`, so
-        the whole C0/DEL class is refused here instead of relying on that."""
+        the whole C0/DEL class is refused here instead of relying on that.
+
+        The auth endpoints are refused last, and for a different reason: they
+        ARE same-origin, so nothing above rejects them, and they are the one
+        set of paths a just-authenticated session has no business landing on.
+        /logout is POST-only, so it answers 405 - a blank browser error page
+        the moment the login succeeds - and the other three are the forms the
+        user has only just finished with, which reads as the login having
+        silently failed. Matched as whole paths rather than by prefix, or
+        /login-history would stop working the day someone adds it."""
         if not nextUrl or nextUrl[0] != "/":
             return None
         if any(char < " " or char == "\x7f" for char in nextUrl):
             return None
         if len(nextUrl) >= 2 and nextUrl[1] in ("/", "\\"):
+            return None
+        if nextUrl.split("?", 1)[0].rstrip("/").lower() in AUTH_ENDPOINT_PATHS:
             return None
         return nextUrl
 
@@ -172,14 +220,11 @@ def register(app, dashboard):
                 "login.html", email=email, next=nextUrl,
                 error="Email and cookies are both required.")
 
-        # Verification happens against a throwaway session file, so nothing
-        # is persisted for this email unless the cookies really are theirs.
-        parsedCookies = parseCookieString(cookies)
-        if not dashboard.skipEmailVerification and dashboard.repo.isEmailVerificationEnabled() and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
+        parsedCookies = _verifiedCookies(cookies, email)
+        if parsedCookies is None:
             return render_template(
                 "login.html", email=email, next=nextUrl,
-                error=f"Couldn't verify that these cookies belong to {email}. "
-                      "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+                error=COOKIE_OWNERSHIP_ERROR.format(email=email))
 
         session.clear()   #< a login is a user switch - see the password branch above
         session.permanent = True
@@ -229,14 +274,11 @@ def register(app, dashboard):
         if policyError:
             return render_template("register.html", email=email, error=policyError)
 
-        # Verification happens against a throwaway session file, so nothing
-        # is persisted for this email unless the cookies really are theirs.
-        parsedCookies = parseCookieString(cookies)
-        if not dashboard.skipEmailVerification and dashboard.repo.isEmailVerificationEnabled() and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
+        parsedCookies = _verifiedCookies(cookies, email)
+        if parsedCookies is None:
             return render_template(
                 "register.html", email=email,
-                error=f"Couldn't verify that these cookies belong to {email}. "
-                      "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+                error=COOKIE_OWNERSHIP_ERROR.format(email=email))
 
         existingUsername = dashboard.repo.getUsernameForEmail(email)
         if existingUsername and dashboard.repo.getUserPasswordHash(existingUsername):
@@ -298,12 +340,11 @@ def register(app, dashboard):
         # There's no old password to check against a forgotten one - proof
         # of identity is the same as everywhere else in this app: valid,
         # matching Spotify cookies for the account's email.
-        parsedCookies = parseCookieString(cookies)
-        if not dashboard.skipEmailVerification and dashboard.repo.isEmailVerificationEnabled() and not dashboard._verifyCookiesMatchEmail(parsedCookies, email):
+        parsedCookies = _verifiedCookies(cookies, email)
+        if parsedCookies is None:
             return render_template(
                 "reset_password.html", email=email,
-                error=f"Couldn't verify that these cookies belong to {email}. "
-                      "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
+                error=COOKIE_OWNERSHIP_ERROR.format(email=email))
 
         dashboard.repo.setUserCookies(username, parsedCookies)
         dashboard.repo.setUserPassword(username, generate_password_hash(password))

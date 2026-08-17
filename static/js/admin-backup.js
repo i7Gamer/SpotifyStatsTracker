@@ -62,12 +62,22 @@
         body: new FormData(form),
         headers: { 'X-Requested-With': 'XMLHttpRequest' }
       })
-        .then(function (resp) { return resp.json(); })
+        //< through AjaxStatus, not resp.json(): an expired session answers 401
+        //  here (see unauthenticatedResponse), and parsing that as a result made
+        //  a logged-out admin read "Backup failed — try again" for a session
+        //  problem, with a retry that fails identically until they log in
+        .then(function (resp) { return window.AjaxStatus.readJsonOrThrow(resp, 'backup'); })
         .then(function (data) {
           var payload = formatBackupStatusPayload(data);
           showMessage(payload.kind, payload.message);
         })
-        .catch(function () { showMessage('error', 'Backup failed — try again.'); })
+        .catch(function (err) {
+          //< already navigating to login; a card would blame the backup
+          if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) {
+            return;
+          }
+          showMessage('error', 'Backup failed — try again.');
+        })
         .finally(function () {
           if (button) {
             button.disabled = false;

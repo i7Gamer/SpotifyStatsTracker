@@ -40,9 +40,19 @@
       body: new FormData(form),
       headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
-      .then(function (resp) { return resp.json(); })
+      //< through AjaxStatus, not resp.json(): an expired session answers 401
+      //  here (see unauthenticatedResponse), and parsing that as a result made
+      //  a logged-out admin read "Refresh failed - try again" - an invitation
+      //  to retry something that will fail identically until they log in
+      .then(function (resp) { return window.AjaxStatus.readJsonOrThrow(resp, 'Last.fm refresh'); })
       .then(function (data) { showFlash(data.kind, data.message); })
-      .catch(function () { showFlash('error', 'Refresh failed - try again.'); })
+      .catch(function (err) {
+        //< already navigating to login; a banner would blame the refresh
+        if (window.AjaxStatus && window.AjaxStatus.isUnauthorizedError(err)) {
+          return;
+        }
+        showFlash('error', 'Refresh failed - try again.');
+      })
       .finally(function () {
         if (button) {
           button.disabled = false;

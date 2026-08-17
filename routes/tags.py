@@ -8,6 +8,7 @@ import re
 from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context, abort
 
 from config import PLAYLIST_EXPORT_FORMATS
+from routes._auth import makeRequiresUser
 from services.export import resolvePlaylistFormat
 
 logger = logging.getLogger(__name__)
@@ -46,11 +47,15 @@ def _requestFields(*names) -> list[str] | None:
 
 
 def register(app, dashboard):
+    # These routes predate routes/_auth.py and each hand-rolled the guard, in a
+    # different dialect: seven copies answering {"error": "unauthorized"} where
+    # the decorator answers {"error": "Not logged in"}, so a client checking the
+    # message had to know which half of the API it was calling. The pages here
+    # keep the redirect - the bare flavour - because neither is fetched.
+    requiresUser = makeRequiresUser(dashboard)
 
-    def addTagApi():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    @requiresUser(api=True)
+    def addTagApi(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -80,10 +85,8 @@ def register(app, dashboard):
 
     app.add_url_rule("/api/tags", "addTagApi", addTagApi, methods=["POST"])
 
-    def removeTagApi():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    @requiresUser(api=True)
+    def removeTagApi(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -106,10 +109,8 @@ def register(app, dashboard):
 
     app.add_url_rule("/api/tags", "removeTagApi", removeTagApi, methods=["DELETE"])
 
-    def listUserTagsApi():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    @requiresUser(api=True)
+    def listUserTagsApi(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -118,10 +119,8 @@ def register(app, dashboard):
 
     app.add_url_rule("/api/tags", "listUserTagsApi", listUserTagsApi, methods=["GET"])
 
-    def renameTagApi():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    @requiresUser(api=True)
+    def renameTagApi(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -143,10 +142,8 @@ def register(app, dashboard):
 
     app.add_url_rule("/api/tags/rename", "renameTagApi", renameTagApi, methods=["POST"])
 
-    def deleteTagApi(tag):
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    @requiresUser(api=True)
+    def deleteTagApi(username, db, tag):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -164,10 +161,8 @@ def register(app, dashboard):
     # before routing and no rule matched, so Delete silently 404'd.
     app.add_url_rule("/api/tags/<path:tag>", "deleteTagApi", deleteTagApi, methods=["DELETE"])
 
-    def playlistsPage():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=request.path))
+    @requiresUser
+    def playlistsPage(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -176,10 +171,8 @@ def register(app, dashboard):
 
     app.add_url_rule("/playlists", "playlistsPage", playlistsPage, methods=["GET"])
 
-    def playlistPreviewApi():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    @requiresUser(api=True)
+    def playlistPreviewApi(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
@@ -195,10 +188,8 @@ def register(app, dashboard):
 
     app.add_url_rule("/api/playlists/preview", "playlistPreviewApi", playlistPreviewApi, methods=["GET"])
 
-    def playlistExport():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return redirect(url_for("login", next=request.path))
+    @requiresUser
+    def playlistExport(username, db):
 
         fmt = request.args.get("format", "csv").lower()
         if fmt not in PLAYLIST_EXPORT_FORMATS:

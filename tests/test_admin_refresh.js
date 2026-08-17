@@ -33,7 +33,28 @@ function makeForm(button) {
 
 function loadAdminRefresh(options) {
   options = options || {};
-  const calls = { requests: [], created: [] };
+  const calls = { requests: [], created: [], redirected: [] };
+
+  // The real AjaxStatus (static/js/ajax-status.js) turns a 401 into a real
+  // navigation and throws UNAUTHORIZED_ERROR so the caller can tell "we are
+  // leaving the page" apart from a genuine failure. Stubbed to the same
+  // contract, so the assertions below are about which branch this file takes.
+  global.window = {
+    AjaxStatus: {
+      UNAUTHORIZED_ERROR: 'ajax-unauthorized',
+      readJsonOrThrow(resp) {
+        if (resp && resp.status === 401) {
+          calls.redirected.push(resp);
+          throw new Error('ajax-unauthorized');
+        }
+        if (resp && resp.ok === false) {
+          throw new Error('refresh fetch failed: ' + resp.status);
+        }
+        return resp.json();
+      },
+      isUnauthorizedError(err) { return !!err && err.message === 'ajax-unauthorized'; },
+    },
+  };
 
   global.FormData = function FormDataStub(form) { this.form = form; };
   global.document = {
@@ -56,7 +77,18 @@ function loadAdminRefresh(options) {
 }
 
 function jsonResponse(body) {
-  return () => Promise.resolve({ json: () => Promise.resolve(body) });
+  return () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+}
+
+//< what the guard now answers an expired session with (see
+//  unauthenticatedResponse); it used to be a 302 that fetch followed to the
+//  login page's HTML
+function unauthorizedResponse() {
+  return () => Promise.resolve({
+    ok: false,
+    status: 401,
+    json: () => Promise.resolve({ error: 'Not logged in', loginUrl: '/login?next=/artist/art1' }),
+  });
 }
 
 async function submitScenario(options) {
@@ -149,6 +181,38 @@ run('the previous message is cleared before the new one lands', async () => {
   const { flash } = await submitScenario({ respond: jsonResponse({ kind: 'success', message: 'ok' }) });
 
   assert.strictEqual(flash.innerHTML, '', 'two refreshes must not stack two messages');
+});
+
+// An expired session used to arrive here as a 302 the fetch followed, so
+// resp.json() choked on the login page and the admin was told the REFRESH had
+// failed. It hadn't - they were logged out, and the retry that message invites
+// fails identically forever. Both halves are pinned: the navigation happens,
+// and no banner blames the refresh on the way out.
+run('a logged-out session is sent to log in rather than told the refresh failed', async () => {
+  const { flash } = await submitScenario({ respond: unauthorizedResponse() });
+
+  assert.strictEqual(flash.children.length, 0,
+    'AjaxStatus is already navigating; a failure banner would blame the wrong thing');
+});
+
+run('the 401 reaches AjaxStatus, which is what performs the navigation', async () => {
+  const { calls } = await submitScenario({ respond: unauthorizedResponse() });
+
+  assert.strictEqual(calls.redirected.length, 1);
+});
+
+run('the button still comes back after a 401', async () => {
+  const { button } = await submitScenario({ respond: unauthorizedResponse() });
+
+  assert.strictEqual(button.disabled, false, 'the finally must run on every path');
+});
+
+run('a real server error still says the refresh failed', async () => {
+  const { flash } = await submitScenario({
+    respond: () => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) }),
+  });
+
+  assert.strictEqual(flash.children[0].textContent, 'Refresh failed - try again.');
 });
 
 run('a refresh with nowhere to report to does not throw', async () => {

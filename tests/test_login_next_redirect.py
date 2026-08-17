@@ -3,6 +3,7 @@ them to /login (?next=...) instead of always on the dashboard.
 """
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import sys
 import os
@@ -199,6 +200,126 @@ class TestLoginNextRedirect(AppTestCase):
         mock_verify.assert_called_once()
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Couldn&#39;t verify", resp.data)
+
+
+class TestCookieOwnershipCheckIsOneRule(AppTestCase):
+    """All three cookie forms prove identity the same way.
+
+    /login, /register and /reset-password each carried their own copy of the
+    check and its message - character-identical, three times over, which is how
+    the register copy could have drifted from the login one without anything
+    noticing. The rule is one thing: cookies must provably belong to the email
+    on the form, or nothing is persisted for it.
+    """
+
+    PASSWORDS = {"password": "Hunter22!", "confirm_password": "Hunter22!"}
+    FORMS = (
+        ("/login", {"email": "alice@example.com", "cookies": "sp_dc=abc"}),
+        ("/register", {"email": "alice@example.com", "cookies": "sp_dc=abc", **PASSWORDS}),
+        #< /reset-password checks the account exists before it ever looks at the
+        #  cookies, so getUsernameForEmail has to answer for the patched user
+        ("/reset-password", {"email": "alice@example.com", "cookies": "sp_dc=abc", **PASSWORDS}),
+    )
+
+    def _post(self, dash, path, data, **patches):
+        with patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash.repo, 'getUsernameForEmail', return_value='alice'), \
+             patch.object(dash.repo, 'getUserPasswordHash', return_value=None), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserPassword'), \
+             patch.object(dash.repo, 'setUserCookies') as setCookies:
+            stack = [patch.object(dash, name, **kwargs) if hasattr(dash, name)
+                     else patch.object(dash.repo, name, **kwargs)
+                     for name, kwargs in patches.items()]
+            started = [p.start() for p in stack]
+            try:
+                resp = dash.app.test_client().post(path, data=data)
+            finally:
+                for p in stack:
+                    p.stop()
+        return resp, setCookies, started
+
+    def test_every_cookie_form_rejects_cookies_that_are_not_the_emails(self):
+        dash = self._makeApp()
+        for path, data in self.FORMS:
+            with self.subTest(path=path):
+                resp, setCookies, _ = self._post(
+                    dash, path, data, _verifyCookiesMatchEmail={"return_value": False})
+
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn(b"Couldn&#39;t verify that these cookies belong to", resp.data)
+                setCookies.assert_not_called()
+
+    def test_every_cookie_form_names_the_email_in_the_rejection(self):
+        """The message is what tells the user WHICH account the cookies had to
+        match - the one thing that makes it actionable."""
+        dash = self._makeApp()
+        for path, data in self.FORMS:
+            with self.subTest(path=path):
+                resp, _, _ = self._post(
+                    dash, path, data, _verifyCookiesMatchEmail={"return_value": False})
+
+                self.assertIn(b"alice@example.com", resp.data)
+
+    def test_the_check_is_skipped_the_same_way_on_every_form(self):
+        """One admin toggle - and all three forms honour it, or turning
+        verification off would leave one form still demanding it."""
+        dash = self._makeApp()
+        for path, data in self.FORMS:
+            with self.subTest(path=path):
+                _, _, started = self._post(
+                    dash, path, data,
+                    isEmailVerificationEnabled={"return_value": False},
+                    _verifyCookiesMatchEmail={"return_value": False})
+
+                verify = started[-1]
+                verify.assert_not_called()
+
+
+class TestNextNeverPointsBackAtTheAuthFlow(AppTestCase):
+    """`next` is same-origin-checked, but same-origin is not the same as
+    useful: the auth endpoints themselves are the one set of paths that a
+    just-authenticated session must not be sent to.
+
+    /logout is POST-only, so landing there is a 405 - a blank browser error
+    page immediately after a successful login. /login and the other two are
+    forms the user has just finished with, so they read as the login having
+    silently failed. Neither is a security hole (nothing leaves this origin),
+    which is exactly why the origin check alone never caught them.
+    """
+
+    def _landingPath(self, dash, nextUrl):
+        """Where a successful login actually put the user."""
+        client = dash.app.test_client()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp = client.post("/login", data={"email": "alice@example.com",
+                                               "cookies": "sp_dc=abc", "next": nextUrl})
+        self.assertEqual(resp.status_code, 302)
+        #< the path only: the test client answers with an absolute Location
+        return urlsplit(resp.headers["Location"]).path
+
+    def test_an_auth_endpoint_as_next_lands_on_the_dashboard_instead(self):
+        dash = self._makeApp()
+        for nextUrl in ("/logout", "/login", "/register", "/reset-password"):
+            with self.subTest(nextUrl=nextUrl):
+                self.assertEqual(self._landingPath(dash, nextUrl), "/",
+                                 f"{nextUrl} must not be honoured as a landing page")
+
+    def test_a_trailing_slash_or_query_does_not_smuggle_one_past(self):
+        dash = self._makeApp()
+        for nextUrl in ("/logout/", "/login?x=1", "/logout/?x=1"):
+            with self.subTest(nextUrl=nextUrl):
+                self.assertEqual(self._landingPath(dash, nextUrl), "/")
+
+    def test_a_path_that_merely_starts_with_one_is_still_honoured(self):
+        """/login-history is not /login. The guard matches the endpoint, not a
+        prefix, or it would quietly break real pages added later."""
+        dash = self._makeApp()
+
+        self.assertEqual(self._landingPath(dash, "/login-history"), "/login-history")
 
 
 if __name__ == "__main__":

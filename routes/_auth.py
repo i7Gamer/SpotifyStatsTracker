@@ -44,11 +44,13 @@ def makeRequiresUser(dashboard):
     caller a login page to parse, so they always get the 401.
 
     `@requiresUser(admin=True)` additionally requires Repository.isAdmin, or
-    403. Its anonymous branch redirects with next=/admin - the admin
-    surface's own convention: whatever sub-endpoint was POSTed, land back on
-    the admin page after logging in. This flavour replaced 13 hand-rolled
-    copies of the same four lines in routes/admin.py, which was exactly the
-    forgettable-guard situation this file exists to close."""
+    403. Its anonymous branch answers with next=/admin - the admin surface's
+    own convention: whatever sub-endpoint was POSTed, land back on the admin
+    page after logging in. It routes that through unauthenticatedResponse
+    rather than redirecting itself, so an admin fetch gets the 401 it can act
+    on for the same reason a page's ?ajax= fetch does. This flavour replaced 13
+    hand-rolled copies of the same four lines in routes/admin.py, which was
+    exactly the forgettable-guard situation this file exists to close."""
     def requiresUser(view=None, *, api=False, admin=False):
         def decorate(view):
             @functools.wraps(view)
@@ -58,7 +60,12 @@ def makeRequiresUser(dashboard):
                     if api:
                         return jsonify({"error": "Not logged in"}), 401
                     if admin:
-                        return redirect(url_for("login", next=url_for("adminPage")))
+                        #< through unauthenticatedResponse, not a bare redirect:
+                        #  the admin console posts Create-backup by fetch, and a
+                        #  302 to the login page is not something resp.json() can
+                        #  read - it reported an expired session as a failed backup
+                        return dashboard.unauthenticatedResponse(
+                            nextPath=url_for("adminPage"))
                     return dashboard.unauthenticatedResponse()
                 if admin and not dashboard.repo.isAdmin(username):
                     abort(403)

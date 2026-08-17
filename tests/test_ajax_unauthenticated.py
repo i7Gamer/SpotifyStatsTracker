@@ -148,6 +148,108 @@ class TestHtmxRequestsGetHxRedirect(UnauthenticatedAjaxTestCase):
         self.assertNotEqual(resp.mimetype, "application/json")
 
 
+class TestXhrHeaderRequestsGet401(UnauthenticatedAjaxTestCase):
+    """The third client, and the one the ?ajax= branch was blind to.
+
+    The admin console's Create-backup and Refresh-Last.fm forms POST via fetch
+    and declare it in the header rather than the query string, because the
+    ROUTE reads the header to decide JSON-or-redirect. The guard in front of it
+    read only ?ajax=, so an expired session answered them with a 302, fetch
+    followed it, resp.json() choked on the login page, and the admin was told
+    "Backup failed - try again" for a session problem.
+
+    A caller that declared itself an XHR cannot parse a login page, whichever
+    way it declared it.
+    """
+
+    XHR_HEADERS = {"X-Requested-With": "XMLHttpRequest"}
+
+    def test_an_xhr_post_to_an_admin_route_answers_401_json(self):
+        resp = self.client.post("/admin/create_backup", headers=self.XHR_HEADERS)
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.mimetype, "application/json")
+
+    def test_the_admin_401_points_login_back_at_the_admin_page(self):
+        """The admin surface's convention, unchanged: whatever sub-endpoint was
+        POSTed, land back on /admin - not on the POST-only endpoint itself."""
+        resp = self.client.post("/admin/create_backup", headers=self.XHR_HEADERS)
+
+        self.assertIn("next=/admin", resp.get_json()["loginUrl"])
+
+    def test_an_xhr_post_to_the_lastfm_refresh_answers_401_json(self):
+        """Its own guard, because its login redirect targets the detail page
+        the button lives on - which must not cost it the XHR contract."""
+        resp = self.client.post("/admin/lastfm/refresh/artist/a1", headers=self.XHR_HEADERS)
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("a1", resp.get_json()["loginUrl"])
+
+    def test_a_plain_post_to_an_admin_route_still_redirects(self):
+        """The no-JS fallback: a form POSTed without fetch still gets the 302."""
+        resp = self.client.post("/admin/create_backup")
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login", resp.headers["Location"])
+
+    def test_a_wrong_xhr_header_value_is_not_treated_as_ajax(self):
+        """Matched exactly, the same way the routes match it - a browser that
+        sends some other value has not declared itself a JSON caller."""
+        resp = self.client.post("/admin/create_backup",
+                                headers={"X-Requested-With": "fetch"})
+
+        self.assertEqual(resp.status_code, 302)
+
+
+class TestJsonApisAnswerOneUnauthorizedShape(UnauthenticatedAjaxTestCase):
+    """One body for "you are not logged in", across every JSON endpoint.
+
+    @requiresUser(api=True) answers {"error": "Not logged in"}. Seven endpoints
+    predate it and hand-rolled the same guard with a different word -
+    {"error": "unauthorized"} - so a client checking the message had to know
+    which half of the API it was talking to. Worse than the inconsistency: a
+    hand-rolled guard is the forgettable kind routes/_auth.py exists to abolish,
+    and these are the last copies of it.
+    """
+
+    JSON_APIS = (
+        ("GET", "/import-progress"),
+        ("GET", "/api/tags"),
+        ("POST", "/api/tags"),
+        ("DELETE", "/api/tags"),
+        ("POST", "/api/tags/rename"),
+        ("DELETE", "/api/tags/rock"),
+        ("GET", "/api/playlists/preview"),
+    )
+
+    def test_every_json_api_answers_the_same_401_body(self):
+        for method, path in self.JSON_APIS:
+            with self.subTest(method=method, path=path):
+                resp = self.client.open(path, method=method)
+
+                self.assertEqual(resp.status_code, 401)
+                self.assertEqual(resp.get_json()["error"], "Not logged in")
+
+    def test_the_guard_runs_before_the_feature_toggle(self):
+        """The tag endpoints 404 when the tagging feature is off. An anonymous
+        caller must still be told it is a session problem, or turning the
+        feature off would silently change what "not logged in" looks like."""
+        with patch.object(self.dash.repo, "isTagsEnabled", return_value=False):
+            resp = self.client.get("/api/tags")
+
+        self.assertEqual(resp.status_code, 401)
+
+    def test_the_tag_pages_still_redirect_rather_than_answering_json(self):
+        """/playlists is a page and /playlist/export is a download - neither is
+        fetched, so both keep the login redirect."""
+        for path in ("/playlists", "/playlist/export"):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+
+                self.assertEqual(resp.status_code, 302)
+                self.assertIn("/login", resp.headers["Location"])
+
+
 class TestNormalRequestsStillRedirect(UnauthenticatedAjaxTestCase):
     def test_page_loads_keep_redirecting_to_login(self):
         for path in AJAX_PATHS:

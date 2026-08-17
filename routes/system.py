@@ -18,6 +18,7 @@ from flask import (
 from config import MAX_UPLOAD_MB, EXPORT_FORMATS
 from Database.Spotify.formatting import openSpotifyUrl
 from Database.utils import versionTuple, now
+from routes._auth import makeRequiresUser
 from services.export import generateJsonExport, generateCsvExport
 
 logger = logging.getLogger(__name__)
@@ -210,10 +211,10 @@ def register(app, dashboard):
         return response
     app.add_url_rule("/export-history", "exportHistory", exportHistory, methods=["GET"])
 
-    def importProgress():
-        email, username, db = dashboard.get_current_user_or_redirect()
-        if not email:
-            return jsonify({"error": "unauthorized"}), 401
+    #< the import page polls this while a file uploads, so it is JSON-only and
+    #  never carries an ?ajax= marker: the api flavour, not the page one
+    @makeRequiresUser(dashboard)(api=True)
+    def importProgress(username, db):
         return jsonify(db.readProgress())
     app.add_url_rule("/import-progress", "importProgress", importProgress, methods=["GET"])
 

@@ -68,4 +68,112 @@ run('exposes initAdminBackupForm for admin-page.js to re-run after a tab swap', 
     'admin-page.js looks it up on window, so window is where it must land');
 });
 
-console.log('All admin-backup JS tests passed.');
+// ---- The submit path -------------------------------------------------------
+//
+// An expired session used to arrive as a 302 that fetch followed to the login
+// page, so resp.json() threw and the admin was told "Backup failed - try
+// again". The backup had not failed; they were logged out, and every retry
+// that message invites fails the same way. The guard now answers 401 (see
+// unauthenticatedResponse) and this file has to act on it.
+const FORM_SELECTOR = 'form[action*="/admin/create_backup"]';
+
+function driveSubmit(respond) {
+  const button = { disabled: false, textContent: 'Create backup now' };
+  const handlers = {};
+  const container = { innerHTML: null, children: [], appendChild(node) { this.children.push(node); } };
+  const form = {
+    action: '/admin/create_backup',
+    addEventListener(type, fn) { handlers[type] = fn; },
+    querySelector(sel) { return sel === 'button[type="submit"]' ? button : null; },
+  };
+  const redirected = [];
+
+  global.window.AjaxStatus = {
+    readJsonOrThrow(resp) {
+      if (resp && resp.status === 401) {
+        redirected.push(resp);
+        throw new Error('ajax-unauthorized');
+      }
+      if (resp && resp.ok === false) {
+        throw new Error('backup fetch failed: ' + resp.status);
+      }
+      return resp.json();
+    },
+    isUnauthorizedError(err) { return !!err && err.message === 'ajax-unauthorized'; },
+  };
+  global.FormData = function FormDataStub(f) { this.form = f; };
+  global.document = {
+    querySelector(sel) { return sel === FORM_SELECTOR ? form : null; },
+    getElementById(id) { return id === 'backup-status-message' ? container : null; },
+    createElement(tag) { return { tag, style: {}, textContent: '', appendChild() {} }; },
+  };
+  global.fetch = function () { return respond(); };
+
+  global.window.initAdminBackupForm();
+  handlers.submit({ preventDefault() {} });
+
+  return { button, container, redirected };
+}
+
+async function settle() {
+  //< the chain is .then().then().catch().finally()
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+(async () => {
+  {
+    const { container } = driveSubmit(() => Promise.resolve({
+      ok: false, status: 401, json: () => Promise.resolve({ error: 'Not logged in' }),
+    }));
+    await settle();
+    run('a logged-out admin is sent to log in rather than told the backup failed', () => {
+      assert.strictEqual(container.children.length, 0,
+        'AjaxStatus is already navigating; a failure card would blame the wrong thing');
+    });
+  }
+
+  {
+    const { redirected } = driveSubmit(() => Promise.resolve({
+      ok: false, status: 401, json: () => Promise.resolve({}),
+    }));
+    await settle();
+    run('the 401 reaches AjaxStatus, which is what performs the navigation', () => {
+      assert.strictEqual(redirected.length, 1);
+    });
+  }
+
+  {
+    const { button } = driveSubmit(() => Promise.resolve({
+      ok: false, status: 401, json: () => Promise.resolve({}),
+    }));
+    await settle();
+    run('the button and its label come back after a 401', () => {
+      assert.strictEqual(button.disabled, false, 'the finally must run on every path');
+      assert.strictEqual(button.textContent, 'Create backup now');
+    });
+  }
+
+  {
+    const { container } = driveSubmit(() => Promise.resolve({
+      ok: false, status: 500, json: () => Promise.resolve({}),
+    }));
+    await settle();
+    run('a real server error still reports the backup as failed', () => {
+      assert.strictEqual(container.children.length, 1);
+    });
+  }
+
+  {
+    const { container } = driveSubmit(() => Promise.resolve({
+      ok: true, status: 200, json: () => Promise.resolve({ kind: 'success', message: 'Snapshot created' }),
+    }));
+    await settle();
+    run('a successful backup still renders its message', () => {
+      assert.strictEqual(container.children.length, 1);
+    });
+  }
+
+  console.log('All admin-backup JS tests passed.');
+})();
