@@ -21,6 +21,7 @@ from Database.utils import msToString
 CALENDAR_WEEKS = 53                 #< week columns shown (~1 year, GitHub-style)
 CALENDAR_INTENSITY_LEVELS = 4       #< non-zero heat buckets (1..4); 0 = no plays
 _DAYS_PER_WEEK = 7
+MILLIS_PER_MINUTE = 60_000          #< below this, _dayTimeText keeps the seconds
 
 
 def _intensityLevel(count: int, maxCount: int) -> int:
@@ -39,12 +40,19 @@ def _dayTimeText(ms: int) -> str:
     Seconds are hidden at every scale (0 reads as "above 0 hours", so the
     condition never holds) because a day is read at a glance and "42m 13s"
     spends the tooltip's width on precision nobody asked for. Under a minute
-    that suppression removes the only component there is, leaving an empty
-    string - so those fall back to the precise form rather than reporting a
-    day of real listening as no listening at all."""
+    that suppression removes the only component there is, so those days get the
+    precise form rather than being reported as no listening at all.
+
+    Branching on the INPUT, not on an empty string coming back: this used to
+    read `msToString(ms, hideSecondsAboveHours=0) or msToString(ms)`, which
+    silently depended on that call rendering a sub-minute duration as "" - a
+    detail of the formatter, and one that was itself a bug there (a 500ms play
+    printed as a blank cell everywhere else in the app)."""
     if not ms:
         return ""   #< the tooltip appends this; "0 plays - 0s" says it twice
-    return msToString(ms, hideSecondsAboveHours=0) or msToString(ms)
+    if ms < MILLIS_PER_MINUTE:
+        return msToString(ms)
+    return msToString(ms, hideSecondsAboveHours=0)
 
 
 def buildListeningCalendar(dayCounts: dict, today: datetime.date,

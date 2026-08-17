@@ -92,6 +92,20 @@ class TestMsToString(unittest.TestCase):
     def test_threshold_none_is_unchanged_behavior(self):
         self.assertEqual(msToString(3725000, hideSecondsAboveHours=None), "1h 2m 5s")
 
+    def test_sub_second_renders_as_0s_not_blank(self):
+        """Under a full second every label is skipped - no hours, no minutes,
+        and `seconds` is 0 - so the join produced "". The 0/None/negative guard
+        above never saw these: 500 is truthy and positive. It surfaced as an
+        empty cell wherever a very short play was rendered."""
+        self.assertEqual(msToString(500), "0s")
+        self.assertEqual(msToString(999), "0s")
+        self.assertEqual(msToString(1), "0s")
+
+    def test_sub_second_with_a_threshold_still_renders(self):
+        """The same hole with the seconds label suppressed as well - nothing at
+        all is left to join."""
+        self.assertEqual(msToString(500, hideSecondsAboveHours=0), "0s")
+
 
 if __name__ == "__main__":
     unittest.main()

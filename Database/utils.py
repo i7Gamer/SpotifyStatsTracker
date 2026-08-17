@@ -353,7 +353,10 @@ def msToString(ms: int | float, hideSecondsAboveHours: int | None = None) -> str
     showSeconds = hideSecondsAboveHours is None or hours < hideSecondsAboveHours
     if showSeconds and (seconds or minutes or hours):
         labeled.append(f"{seconds}s")
-    return " ".join(labeled)
+    # Under a full second every label above is skipped, so the join is "" - and
+    # the guard at the top never sees these, since 500 is both truthy and
+    # positive. Same answer as a literal zero rather than a blank cell.
+    return " ".join(labeled) or "0s"
 
 
 def formatDuration(durationMs: int) -> str:
