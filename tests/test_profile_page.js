@@ -350,6 +350,8 @@ function installNavigableProfileDom() {
   dom.nav.querySelectorAll = (sel) => (sel === 'a' ? [dom.linkAcct, dom.linkShare] : []);
 
   const pending = [];
+  const priorFetch = global.fetch;
+  const priorParser = global.DOMParser;
   global.fetch = () => new Promise((resolve) => { pending.push(resolve); });
   global.DOMParser = function () {
     this.parseFromString = (html) => {
@@ -358,7 +360,12 @@ function installNavigableProfileDom() {
       return { querySelector: (sel) => (sel === '.profile-subnav' ? parsedNav : null) };
     };
   };
-  return Object.assign(dom, { pending });
+  /* Restored even when an assertion throws: node has no DOMParser, and
+     '_parse returns a queryable document' above SKIPS itself on exactly that.
+     Leaving the stub installed would silently arm that test against a fake
+     parser the day someone reorders this file. */
+  const restore = () => { global.fetch = priorFetch; global.DOMParser = priorParser; };
+  return Object.assign(dom, { pending, restore });
 }
 
 function tabResponse(html) {
@@ -369,39 +376,45 @@ run('a superseded tab response never lands', async () => {
   /* Two quick clicks. Nothing cancels the first fetch, so when it answered last
      it swapped its body in and re-synced the nav to the tab the user had
      already left - under the newer tab's URL. */
-  const { pending, linkAcct, linkShare } = installNavigableProfileDom();
+  const { pending, linkAcct, linkShare, restore } = installNavigableProfileDom();
+  try {
+    const first = ProfilePage.navigate('/profile');
+    const second = ProfilePage.navigate('/profile/sharing');
+    assert.strictEqual(pending.length, 2, 'both requests are in flight');
 
-  const first = ProfilePage.navigate('/profile');
-  const second = ProfilePage.navigate('/profile/sharing');
-  assert.strictEqual(pending.length, 2, 'both requests are in flight');
+    pending[1](tabResponse('<section>SHARING</section>'));
+    await second;
+    pending[0](tabResponse('<section>ACCOUNT</section>'));
+    await first;
 
-  pending[1](tabResponse('<section>SHARING</section>'));
-  await second;
-  pending[0](tabResponse('<section>ACCOUNT</section>'));
-  await first;
-
-  assert.ok(linkShare.classList.contains('active'),
-            'the tab the user asked for must stay current');
-  assert.ok(!linkAcct.classList.contains('active'),
-            'the abandoned tab must not take the highlight back');
+    assert.ok(linkShare.classList.contains('active'),
+              'the tab the user asked for must stay current');
+    assert.ok(!linkAcct.classList.contains('active'),
+              'the abandoned tab must not take the highlight back');
+  } finally {
+    restore();
+  }
 });
 
 run('a superseded response does not clear the loading state of the live one', async () => {
-  const { card, pending } = installNavigableProfileDom();
+  const { card, pending, restore } = installNavigableProfileDom();
+  try {
+    const first = ProfilePage.navigate('/profile');
+    const second = ProfilePage.navigate('/profile/sharing');
 
-  const first = ProfilePage.navigate('/profile');
-  const second = ProfilePage.navigate('/profile/sharing');
+    pending[0](tabResponse('<section>ACCOUNT</section>'));   //< the abandoned tab answers first
+    await first;
 
-  pending[0](tabResponse('<section>ACCOUNT</section>'));   //< the abandoned tab answers first
-  await first;
+    assert.ok(card.classList.contains('profile-tab-loading'),
+              'the newer request is still open, so the card must still read as loading');
 
-  assert.ok(card.classList.contains('profile-tab-loading'),
-            'the newer request is still open, so the card must still read as loading');
-
-  pending[1](tabResponse('<section>SHARING</section>'));
-  await second;
-  assert.ok(!card.classList.contains('profile-tab-loading'),
-            'and is cleared once the live one lands');
+    pending[1](tabResponse('<section>SHARING</section>'));
+    await second;
+    assert.ok(!card.classList.contains('profile-tab-loading'),
+              'and is cleared once the live one lands');
+  } finally {
+    restore();
+  }
 });
 
 /* ------------------------------------------------------------------ */
