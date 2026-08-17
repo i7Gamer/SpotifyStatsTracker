@@ -108,6 +108,14 @@ class SlotRateLimiter:
                 timeout: float | None = None) -> bool:
         deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
+            # Tested here, not only in the wait below: an already-signalled stop
+            # must not be overtaken by a free slot, or a worker shutting down
+            # while the limiter happens to be idle fires one last request - and
+            # burns a slot doing it, pacing whatever runs next behind a request
+            # nobody wanted. Inside the loop rather than ahead of it because the
+            # event can also be set while this thread is blocked on _lock.
+            if stop_event is not None and stop_event.is_set():
+                return False
             with self._lock:
                 now = time.monotonic()
                 readyAt = max(self._nextSlotAt, self._backoffUntil)

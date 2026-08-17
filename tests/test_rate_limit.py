@@ -70,6 +70,23 @@ class SlotRateLimiterTestCase(unittest.TestCase):
         stopEvent.set()
         self.assertFalse(limiter.acquire(stop_event=stopEvent))
 
+    def test_a_stop_already_set_is_honoured_even_when_a_slot_is_free(self):
+        """The wait is not the only place a stop matters. The test above
+        deliberately consumes the slot first so the call has to WAIT, which is
+        the only path that ever consulted the event: a worker shutting down
+        while the limiter happened to be idle was granted the slot anyway and
+        fired one last request on the way out - and burned a slot doing it, so
+        whatever ran next was paced against a request nobody wanted."""
+        limiter, clock = self._limiterWithClock(4)
+        stopEvent = threading.Event()
+        stopEvent.set()
+
+        self.assertFalse(limiter.acquire(stop_event=stopEvent))
+        #< and the refused call left the budget untouched: the next caller is
+        #  still granted immediately rather than being spaced behind a ghost
+        self.assertTrue(limiter.acquire())
+        self.assertEqual(clock.now, 0.0)
+
     def test_timeout_gives_up_without_a_slot(self):
         limiter, clock = self._limiterWithClock(4)
         limiter.applyBackoff(60)
