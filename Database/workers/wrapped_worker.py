@@ -19,6 +19,10 @@ import threading
 # made the cycle break whichever module was imported first (see Database/dbmodule.py).
 from Database.dbmodule import dbmod as _dbmod
 
+# The Wrapped page's "top 100" lists, and the discovery lists rendered beside
+# them: one cap spelled once rather than six literals free to drift apart.
+WRAPPED_LIST_LIMIT = 100
+
 
 class WrappedWorkerMixin:
     """The periodic Wrapped recalculation worker and its per-year cache invalidation."""
@@ -166,9 +170,9 @@ class WrappedWorkerMixin:
         timeSeriesMonth = self.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="month")
 
         # 6. Top 100 lists
-        topSongs = self.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=100)
-        topArtists = self.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=100)
-        topAlbums = self.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=100)
+        topSongs = self.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
+        topArtists = self.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
+        topAlbums = self.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
 
         # 7. Discoveries lists (unbounded query filtered by firstListenedAt)
         songsStats = self.getSongsStats(sortBy="plays")
@@ -182,21 +186,21 @@ class WrappedWorkerMixin:
             if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
         ]
         discoveredSongsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
-        discoveredSongsList = discoveredSongsList[:100]
+        discoveredSongsList = discoveredSongsList[:WRAPPED_LIST_LIMIT]
 
         discoveredArtistsList = [
             item for item in artistsStats
             if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
         ]
         discoveredArtistsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
-        discoveredArtistsList = discoveredArtistsList[:100]
+        discoveredArtistsList = discoveredArtistsList[:WRAPPED_LIST_LIMIT]
 
         discoveredAlbumsList = [
             item for item in albumsStats
             if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
         ]
         discoveredAlbumsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
-        discoveredAlbumsList = discoveredAlbumsList[:100]
+        discoveredAlbumsList = discoveredAlbumsList[:WRAPPED_LIST_LIMIT]
 
         data = {
             "calculated_at": _dbmod.time.time(),

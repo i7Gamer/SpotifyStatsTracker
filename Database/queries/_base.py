@@ -36,13 +36,13 @@ from pathlib import Path
 try:
     import Database.db as db
     from Database.db import (ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
-                             BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH)
+                             BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH, UNKNOWN_ALBUM_NAME)
     from Database.secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
                                        keyFingerprint)
 except ModuleNotFoundError:
     import db
     from db import (ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
-                    BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH)
+                    BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH, UNKNOWN_ALBUM_NAME)
     from secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
                               keyFingerprint)
 

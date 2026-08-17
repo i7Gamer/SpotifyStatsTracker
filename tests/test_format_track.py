@@ -36,6 +36,23 @@ def _rawTrack():
     }
 
 
+class TestFormatAlbumFallbackName(unittest.TestCase):
+    """An album that arrives with no name at all gets the app-wide placeholder.
+
+    It used to default to a literal "Unknown album" - a second spelling of a
+    constant Database/db.py already publishes, that migrate1_43_0 repairs rows
+    TO, and that nothing comparing against UNKNOWN_ALBUM_NAME would recognise.
+    The fabricated album id is derived from the name (_fallbackId), so the two
+    spellings also hashed the same nameless record to two different albums."""
+
+    def test_a_nameless_album_uses_the_shared_placeholder(self):
+        from Database.db import UNKNOWN_ALBUM_NAME
+        self.assertEqual(Client._formatAlbum({})["name"], UNKNOWN_ALBUM_NAME)
+
+    def test_a_named_album_is_left_alone(self):
+        self.assertEqual(Client._formatAlbum({"name": "Real Album"})["name"], "Real Album")
+
+
 class TestFormatTrackContext(unittest.TestCase):
     """A play reported with a context that has no usable uri must still be recorded
     as a track (with playedFrom=None). Returning None here used to crash the

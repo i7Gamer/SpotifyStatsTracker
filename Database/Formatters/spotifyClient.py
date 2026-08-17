@@ -4,7 +4,7 @@
 import hashlib
 
 from Database.utils import convertToDatetime, timeToInt
-from Database.db import UNKNOWN_TRACK_NAME
+from Database.db import UNKNOWN_TRACK_NAME, UNKNOWN_ALBUM_NAME
 
 # Prefix for ids fabricated when a response carries none, matching the
 # importer's synthetic-track convention (see StreamingHistoryImporter).
@@ -54,7 +54,10 @@ def _formatArtists(entityRaw) -> list:
 
 
 def _formatAlbum(albumRaw) -> dict:
-    name = albumRaw.get("name", "Unknown album")
+    # The shared constant, not a second spelling of it: migrate1_43_0 repairs
+    # rows TO this exact string, and the fabricated id below is derived from the
+    # name - so two spellings meant two synthetic albums for one nameless record.
+    name = albumRaw.get("name", UNKNOWN_ALBUM_NAME)
     realId = albumRaw.get("id")
     albumId = realId or _fallbackId("album", name)
     return {

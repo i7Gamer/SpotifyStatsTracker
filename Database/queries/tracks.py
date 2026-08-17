@@ -134,7 +134,7 @@ class TrackQueries:
             album_id = track.get("albumId") or f"album_{track['id']}"
             album = {
                 "id": album_id,
-                "name": track.get("name", "Unknown Album"),
+                "name": track.get("name", UNKNOWN_ALBUM_NAME),
                 "url": "",
                 "totalTracks": 1,
                 "releaseDate": 0.0,
