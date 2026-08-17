@@ -318,5 +318,148 @@ class TestGetPlayTimesInRange(unittest.TestCase):
         self.assertEqual(self._lookup(self.base + 2 * self.HOUR, self.base + 3 * self.HOUR), [])
 
 
+class TestPlayTimesInRangeAliases(unittest.TestCase):
+    """The same recording can reach us under two different Spotify track ids -
+    the connect player_state and the Web API's recently-played endpoint pick
+    different releases of it. The caller's dedup is keyed by track id, so the
+    listener recording a play under one id left the backfill's copy of the SAME
+    listen unmatched, and it was inserted a second time (measured on the live
+    instance 2026-08-17: 4 of the last 307 plays, every pair one track-length
+    apart with identical duration_ms and, where known, identical ISRC).
+
+    So a recorded play answers for every id that denotes its recording, not
+    only the id it was stored under. The three ways two ids can be known to be
+    the same recording, tightest first - over-matching here SUPPRESSES a
+    genuinely missing play, which is unrecoverable (the item is dropped before
+    it reaches the insert guard, and every later poll collides identically)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        self.addCleanup(self.repo.connectionManager.close)
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.commit()
+        self.base = 1_700_000_000.0
+
+    DURATION_MS = 267534
+
+    def _upsert(self, trackId, *, name="Same Song", durationMs=DURATION_MS, isrc="",
+                artistIds=("a1",), albumId="al1"):
+        track = _track(trackId, list(artistIds), albumId)
+        track["name"] = name
+        track["duration"] = durationMs
+        track["isrc"] = isrc
+        self.repo.upsertTrack(track)
+        self.repo.commit()
+
+    def _idsFor(self, playedTrackId):
+        """Which track ids the recorded play of `playedTrackId` now answers for."""
+        self.repo.insertPlay("alice", playedTrackId, self.base, 60000)
+        self.repo.commit()
+        return {trackId for trackId, playedAt, _createdAt
+                in self.repo.getTrackPlayTimesInRange("alice", self.base - 10, self.base + 10)
+                if playedAt == self.base}
+
+    def test_a_merged_sibling_is_the_same_recording(self):
+        """A merge is a decided fact - the strongest signal there is. This is
+        the shape 3 of the 4 live duplicates had by the time they were found:
+        the ISRC matcher had already merged the phantom id."""
+        self._upsert("canon")
+        self._upsert("variant", name="Same Song (Radio Edit)")
+        self.repo.mergeTrackManually("variant", "canon", "tester")
+        self.repo.commit()
+
+        self.assertEqual(self._idsFor("canon"), {"canon", "variant"})
+
+    def test_a_shared_isrc_is_the_same_recording(self):
+        """One master, two releases - exactly what the automatic merge tier
+        merges on, so the dedup may lean on it before that tier has run."""
+        self._upsert("album_release", name="Album Title", isrc="DEU601606324")
+        self._upsert("single_release", name="Single Title", isrc="DEU601606324")
+
+        self.assertEqual(self._idsFor("album_release"), {"album_release", "single_release"})
+
+    def test_the_same_title_duration_and_artist_is_the_same_recording(self):
+        """The live 2026-08-17 case, and the one that matters most: the id the
+        listener invented is brand new, so its ISRC has not been fetched yet
+        (tracks.isrc = '') and no merge tier can have seen it. Identical title,
+        identical primary artist and a duration equal to the millisecond is
+        what is left, and it is what the merge review queue itself asks a
+        person about."""
+        self._upsert("listener_id", isrc="")
+        self._upsert("web_api_id", isrc="DEU601606324")
+
+        self.assertEqual(self._idsFor("listener_id"), {"listener_id", "web_api_id"})
+
+    def test_an_empty_isrc_matches_nothing(self):
+        """Most rows have isrc = '' (it is only filled in when the catalog
+        lookup lands). Treating that as a shared ISRC would alias the entire
+        library to itself and suppress every backfill."""
+        self._upsert("one", name="One", durationMs=111_000, isrc="")
+        self._upsert("two", name="Two", durationMs=222_000, isrc="")
+
+        self.assertEqual(self._idsFor("one"), {"one"})
+
+    def test_a_different_duration_is_a_different_recording(self):
+        """Durations agree to the millisecond or not at all. A re-recording or
+        a remaster is a genuinely different play to log, and the merge review
+        queue - which tolerates a few seconds - exists to ask a person about
+        those rather than have this layer guess."""
+        self._upsert("original")
+        self._upsert("remaster", durationMs=self.DURATION_MS + 1)
+
+        self.assertEqual(self._idsFor("original"), {"original"})
+
+    def test_a_different_title_is_a_different_recording(self):
+        self._upsert("original")
+        self._upsert("other", name="Different Song")
+
+        self.assertEqual(self._idsFor("original"), {"original"})
+
+    def test_a_different_primary_artist_is_a_different_recording(self):
+        """A cover keeping the original's exact length is unlikely, but a play
+        wrongly suppressed here is gone for good - so the credited artist has
+        to agree too."""
+        self._upsert("original", artistIds=("a1",))
+        self._upsert("cover", artistIds=("a2",))
+
+        self.assertEqual(self._idsFor("original"), {"original"})
+
+    def test_an_untitled_artistless_track_matches_only_itself(self):
+        """A fallback row can carry no artists at all; two of them agreeing on
+        "no primary artist" is not evidence of anything."""
+        self._upsert("fallback_one", artistIds=())
+        self._upsert("fallback_two", artistIds=())
+
+        self.assertEqual(self._idsFor("fallback_one"), {"fallback_one"})
+
+    def test_an_alias_carries_the_recorded_rows_end_anchor(self):
+        """The end-time arm compares against a listener row's created_at. An
+        alias that dropped it would leave the pause-stretched case (the arm's
+        whole reason for existing) broken for exactly the cross-id plays this
+        aliasing is here to catch."""
+        self._upsert("listener_id")
+        self._upsert("web_api_id", isrc="DEU601606324")
+        with patch("Database.queries.plays.time") as mockTime:
+            mockTime.time.return_value = self.base + 700
+            self.repo.insertPlay("alice", "listener_id", self.base, 60000,
+                                 created_reason="listener_play (user: alice)")
+        self.repo.commit()
+
+        self.assertIn(("web_api_id", self.base, self.base + 700),
+                      self.repo.getTrackPlayTimesInRange("alice", self.base - 10, self.base + 10))
+
+    def test_a_recorded_play_is_reported_once_under_its_own_id(self):
+        """Aliasing adds ids; it must not duplicate the row it started from."""
+        self._upsert("listener_id")
+        self._upsert("web_api_id", isrc="DEU601606324")
+        self.repo.insertPlay("alice", "listener_id", self.base, 60000)
+        self.repo.commit()
+
+        rows = self.repo.getTrackPlayTimesInRange("alice", self.base - 10, self.base + 10)
+        self.assertEqual(len(rows), len(set(rows)))
+        self.assertEqual(len([row for row in rows if row[0] == "listener_id"]), 1)
+
 if __name__ == "__main__":
     unittest.main()

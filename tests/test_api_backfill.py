@@ -35,6 +35,39 @@ def _isoFromTimestamp(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _runBackfillPoll(getRecordedPlayTimes, items):
+    """One _checkWebApiBackfill poll against `items`, with the dedup's database
+    lookup wired to `getRecordedPlayTimes`. Returns the announce callback, so a
+    test can assert what (if anything) was declared missing."""
+    getCredentials = MagicMock(return_value={
+        "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+    })
+    with patch("Database.Listeners.spotifyListener.Spotify") as mockSpotifyCls:
+        mockSp = MagicMock()
+        mockSp.current_user_recently_played.return_value = []
+        mockSpotifyCls.return_value = mockSp
+        listener = Listener("dummy_cookie", email="alice@example.com",
+                            get_credentials=getCredentials,
+                            get_recorded_play_times=getRecordedPlayTimes)
+    listener._lastWebApiPollTime = 0
+    callback = MagicMock()
+    with patch("Database.Listeners.spotifyListener._get_current_user_from_web_api",
+               return_value={"id": "alice", "display_name": "Alice", "email": "alice@example.com"}):
+        with patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
+                   return_value=items):
+            with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                       return_value="token123"):
+                with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+                    listener._checkWebApiBackfill(callback)
+    return callback
+
+
+def _backfilledTrackIds(callback):
+    if not callback.call_args_list:
+        return []
+    return [item["track"]["id"] for item in callback.call_args[0][0]]
+
+
 def makeTrack(trackId="track1"):
     return {
         "id": trackId,
@@ -804,32 +837,11 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
         ]
 
     def _runBackfill(self, getRecordedPlayTimes, items=None):
-        getCredentials = MagicMock(return_value={
-            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
-        })
-        with patch("Database.Listeners.spotifyListener.Spotify") as mockSpotifyCls:
-            mockSp = MagicMock()
-            mockSp.current_user_recently_played.return_value = []
-            mockSpotifyCls.return_value = mockSp
-            listener = Listener("dummy_cookie", email="alice@example.com",
-                                get_credentials=getCredentials,
-                                get_recorded_play_times=getRecordedPlayTimes)
-        listener._lastWebApiPollTime = 0
-        callback = MagicMock()
-        with patch("Database.Listeners.spotifyListener._get_current_user_from_web_api",
-                   return_value={"id": "alice", "display_name": "Alice", "email": "alice@example.com"}):
-            with patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
-                       return_value=self._items() if items is None else items):
-                with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
-                           return_value="token123"):
-                    with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
-                        listener._checkWebApiBackfill(callback)
-        return callback
+        return _runBackfillPoll(getRecordedPlayTimes,
+                                self._items() if items is None else items)
 
     def _backfilledTrackIds(self, callback):
-        if not callback.call_args_list:
-            return []
-        return [item["track"]["id"] for item in callback.call_args[0][0]]
+        return _backfilledTrackIds(callback)
 
     def test_plays_already_in_the_database_are_not_backfilled(self):
         recorded = [("track2", timeToInt(self.FIRST_PLAYED_AT), None),
@@ -1011,6 +1023,85 @@ class BackfillDatabaseDedupTestCase(unittest.TestCase):
         callback = self._runBackfill(None)
 
         self.assertEqual(sorted(self._backfilledTrackIds(callback)), ["track1", "track2"])
+
+
+class BackfillCrossReleaseDedupTestCase(unittest.TestCase):
+    """The live 2026-08-17 duplicate, end to end against a real repository.
+
+    Spotify handed the connect player_state and the recently-played endpoint
+    two different release ids for one recording, so the listener stored the
+    play under an id the Web API never mentions, this dedup found no row under
+    the id it was asking about, and the same listen was recorded twice (4 of
+    that user's last 307 plays).
+
+    The listener still keys its dedup by track id and still knows nothing about
+    the database - getTrackPlayTimesInRange is what reports a recorded play
+    under every id denoting the same recording."""
+
+    LISTENER_ID = "listener_release"     #< what the connect state called it
+    WEB_API_ID = "web_api_release"       #< what recently-played calls the same recording
+    DURATION_MS = 180000                 #< makeTrack's duration, in the Web API's spelling
+    FIRST_PLAYED_AT = "2026-07-26T14:20:00Z"
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        self.addCleanup(self.repo.connectionManager.close)
+        self.repo.upsertUser("alice", "alice@example.com")
+        #< the phantom id is minted seconds before the play, so its ISRC has
+        #  not been fetched yet - the state the live rows were found in
+        listenerTrack = makeTrack(self.LISTENER_ID)
+        listenerTrack["isrc"] = ""
+        self.repo.upsertTrack(listenerTrack)
+        self.repo.upsertTrack(makeTrack(self.WEB_API_ID))
+        self.repo.commit()
+
+    def _recordListenerPlay(self, playedAt):
+        self.repo.insertPlay("alice", self.LISTENER_ID, playedAt, self.DURATION_MS,
+                             created_reason="listener_play (user: alice)")
+        self.repo.commit()
+
+    def _runAgainstRepo(self, items):
+        return _runBackfillPoll(
+            lambda startTs, endTs: self.repo.getTrackPlayTimesInRange("alice", startTs, endTs),
+            items)
+
+    def test_the_web_apis_copy_of_a_listen_recorded_under_a_sibling_id_is_dropped(self):
+        playedAt = timeToInt(self.FIRST_PLAYED_AT)
+        self._recordListenerPlay(playedAt)
+        items = [{"track": {"id": self.WEB_API_ID, "duration_ms": self.DURATION_MS},
+                  "played_at": self.FIRST_PLAYED_AT}]
+
+        callback = self._runAgainstRepo(items)
+
+        callback.assert_not_called()
+
+    def test_the_end_time_reading_of_the_same_listen_is_dropped_too(self):
+        """The Web API's played_at may be the end of the play, putting it one
+        track-length after the listener's row - the arm that reading needs must
+        see the aliased row as well."""
+        playedAt = timeToInt(self.FIRST_PLAYED_AT)
+        self._recordListenerPlay(playedAt)
+        items = [{"track": {"id": self.WEB_API_ID, "duration_ms": self.DURATION_MS},
+                  "played_at": _isoFromTimestamp(playedAt + self.DURATION_MS // 1000)}]
+
+        callback = self._runAgainstRepo(items)
+
+        callback.assert_not_called()
+
+    def test_a_genuinely_missing_play_of_the_sibling_id_still_comes_through(self):
+        """Aliasing must not turn one recorded listen into a blanket amnesty for
+        the recording: a second, later listen is a real gap. Suppressing it
+        would be unrecoverable."""
+        playedAt = timeToInt(self.FIRST_PLAYED_AT)
+        self._recordListenerPlay(playedAt)
+        items = [{"track": {"id": self.WEB_API_ID, "duration_ms": self.DURATION_MS},
+                  "played_at": _isoFromTimestamp(playedAt + 2 * self.DURATION_MS)}]
+
+        callback = self._runAgainstRepo(items)
+
+        self.assertEqual(_backfilledTrackIds(callback), [self.WEB_API_ID])
 
 
 class ListenerLogIdentityTestCase(unittest.TestCase):

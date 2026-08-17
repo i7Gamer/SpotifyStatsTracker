@@ -189,6 +189,12 @@ class PlayQueries:
         same false positive. One range query per poll, rather than the
         page-sized set of point lookups the insert guard answers one by one.
 
+        A play is reported under its own track id AND under every other id
+        denoting the same recording (see _sameRecordingTrackIds), because one
+        listen reaches us under two ids whenever the connect player_state and
+        the Web API disagree about which release is playing - the caller keys
+        its dedup by id, so without this it recorded that listen twice.
+
         The track id travels WITH the timestamp because the caller's dedup is
         only sound per track: this window spans the whole API page (hours,
         typically hundreds of rows, skip bursts seconds apart), and comparing
@@ -222,7 +228,108 @@ class PlayQueries:
             "OR (created_reason LIKE 'listener_play%' AND is_skip=0 AND created_at BETWEEN ? AND ?))",
             (username, startTs, endTs, startTs, endTs),
         ).fetchall()
-        return [(row["track_id"], row["played_at"], row["listener_created_at"]) for row in rows]
+        recorded = [(row["track_id"], row["played_at"], row["listener_created_at"]) for row in rows]
+        aliases = self._sameRecordingTrackIds({row["track_id"] for row in rows})
+        return recorded + [(aliasId, playedAt, listenerCreatedAt)
+                           for trackId, playedAt, listenerCreatedAt in recorded
+                           for aliasId in aliases.get(trackId, ())]
+
+    def _sameRecordingTrackIds(self, trackIds: set[str]) -> dict[str, set[str]]:
+        """{track id -> the OTHER ids denoting the same recording}, for the
+        caller above: one listen can reach us under two Spotify track ids,
+        because the connect player_state and the Web API's recently-played
+        endpoint pick different releases of it. Keyed by track id, the backfill
+        dedup then saw the listener's row and the Web API's copy of the same
+        listen as two different plays and recorded it twice (live, 2026-08-17:
+        4 of the last 307 plays, each pair one track-length apart with
+        identical duration_ms).
+
+        Three signals, and only three - a play wrongly suppressed here is lost
+        for good (the item never reaches the insert guard, and every later poll
+        collides identically), so each has to mean "same master", not "probably
+        related":
+          - the same merge group: a decided fact, in either tier;
+          - the same non-empty ISRC: one master, two releases - what the
+            automatic merge tier itself merges on, available here before that
+            (daily) tier has run;
+          - the same title, primary artist and duration TO THE MILLISECOND: all
+            that is left for an id minted minutes ago, whose ISRC has not been
+            fetched yet and which no merge tier can have seen. Deliberately
+            stricter than the merge review queue's seconds-wide tolerance,
+            which exists to ask a person precisely because that width also
+            catches re-recordings.
+
+        One scan of tracks per backfill poll (every 15 minutes per user);
+        tracks carries no index on name/isrc/canonical_id, and adding three to
+        serve this would cost every write for it."""
+        if not trackIds:
+            return {}
+        conn = self._conn()
+        seeds = conn.execute(
+            f"""
+            SELECT t.id, t.name, t.duration_ms, t.isrc,
+                   COALESCE(t.canonical_id, t.id) AS group_id, ta.artist_id AS primary_artist
+            FROM tracks t
+            LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            WHERE t.id IN ({",".join("?" for _ in trackIds)})
+            """,
+            list(trackIds),
+        ).fetchall()
+        if not seeds:
+            return {}
+
+        def recordingKey(row):
+            """None whenever any part is unknown - two rows agreeing on "we
+            don't know" is not evidence that they are the same recording."""
+            if not row["name"] or not row["duration_ms"] or not row["primary_artist"]:
+                return None
+            return (row["name"], row["duration_ms"], row["primary_artist"])
+
+        groupIds = {row["group_id"] for row in seeds}
+        isrcs = {row["isrc"] for row in seeds if row["isrc"]}
+        names = {row["name"] for row in seeds if recordingKey(row)}
+        clauses = [f"COALESCE(t.canonical_id, t.id) IN ({','.join('?' for _ in groupIds)})"]
+        params = list(groupIds)
+        if isrcs:
+            clauses.append(f"(t.isrc <> '' AND t.isrc IN ({','.join('?' for _ in isrcs)}))")
+            params += list(isrcs)
+        if names:
+            clauses.append(f"t.name IN ({','.join('?' for _ in names)})")
+            params += list(names)
+        candidates = conn.execute(
+            f"""
+            SELECT t.id, t.name, t.duration_ms, t.isrc,
+                   COALESCE(t.canonical_id, t.id) AS group_id, ta.artist_id AS primary_artist
+            FROM tracks t
+            LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+            WHERE {" OR ".join(clauses)}
+            """,
+            params,
+        ).fetchall()
+
+        byGroup: dict = {}
+        byIsrc: dict = {}
+        byRecording: dict = {}
+        for row in candidates:
+            byGroup.setdefault(row["group_id"], set()).add(row["id"])
+            if row["isrc"]:
+                byIsrc.setdefault(row["isrc"], set()).add(row["id"])
+            key = recordingKey(row)
+            if key:
+                byRecording.setdefault(key, set()).add(row["id"])
+
+        result = {}
+        for row in seeds:
+            same = set(byGroup.get(row["group_id"], ()))
+            if row["isrc"]:
+                same |= byIsrc.get(row["isrc"], set())
+            key = recordingKey(row)
+            if key:
+                same |= byRecording.get(key, set())
+            same.discard(row["id"])
+            if same:
+                result[row["id"]] = same
+        return result
 
     def getPlaysNearTime(self, username: str, trackId: str, playedAt: float, toleranceSeconds: float) -> list[dict]:
         """Return all plays for this exact track already existing for this user
