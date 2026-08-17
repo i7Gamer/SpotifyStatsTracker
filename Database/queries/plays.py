@@ -569,6 +569,12 @@ class PlayQueries:
         since real exports contain genuine same-track plays seconds apart
         (skip, then restart).
 
+        canonicalId/isrc carry the track's IDENTITY, because the release id
+        alone is not one: Spotify names the same recording differently in
+        connect state and in the Web API, so the listener and the backfill
+        record one listen under two ids. The reconciler groups on these rather
+        than on track_id (see Database._groupPlaysByIdentity).
+
         createdAt carries the row's created_at for LISTENER rows only - their
         insert happens at the track-change moment, so it is the observed end
         of the play, pauses included; the reconciler's end-time pairing needs
@@ -607,11 +613,19 @@ class PlayQueries:
         unnatural one: the listener writes its skip at the track-change moment
         while the backfill only sees a play after it has ended."""
         conn = self._conn()
+        #< the join is enrichment, not a filter: every WHERE clause still reads
+        #  a plays column, so this stays the same narrow indexed range scan and
+        #  does not become the all-history scan a joined-table filter costs
+        #  (see _trackSetClause's callers). LEFT, so a play whose track row is
+        #  somehow missing still comes through with a null identity rather than
+        #  vanishing from a pass that DELETES what it does see.
         rows = conn.execute(
-            "SELECT track_id, played_at, time_played, created_reason, "
-            "CASE WHEN created_reason LIKE 'listener_play%' THEN created_at ELSE NULL END AS listener_created_at "
-            "FROM plays WHERE username=? AND is_skip=0 AND (played_at BETWEEN ? AND ? "
-            "OR (created_reason LIKE 'listener_play%' AND created_at BETWEEN ? AND ?))",
+            "SELECT p.track_id, p.played_at, p.time_played, p.created_reason, "
+            "t.canonical_id, t.isrc, "
+            "CASE WHEN p.created_reason LIKE 'listener_play%' THEN p.created_at ELSE NULL END AS listener_created_at "
+            "FROM plays p LEFT JOIN tracks t ON t.id = p.track_id "
+            "WHERE p.username=? AND p.is_skip=0 AND (p.played_at BETWEEN ? AND ? "
+            "OR (p.created_reason LIKE 'listener_play%' AND p.created_at BETWEEN ? AND ?))",
             (username, startTs, endTs, startTs, endTs),
         ).fetchall()
         return [
@@ -621,6 +635,10 @@ class PlayQueries:
                 "timePlayed": r["time_played"],
                 "createdReason": r["created_reason"],
                 "createdAt": r["listener_created_at"],
+                #< the recording this release is a copy of, for the reconciler's
+                #  identity grouping (Database._groupPlaysByIdentity)
+                "canonicalId": r["canonical_id"],
+                "isrc": r["isrc"],
             }
             for r in rows
         ]

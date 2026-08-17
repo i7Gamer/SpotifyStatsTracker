@@ -53,16 +53,20 @@ TOLERANCE = Database.DUPLICATE_RECORDING_TOLERANCE_SECONDS
 END_TOLERANCE = Database.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS
 
 
-def _backfillRow(trackId, playedAt):
+def _backfillRow(trackId, playedAt, canonicalId=None, isrc=None):
+    #< canonicalId/isrc: the track's identity, which is what decides whether two
+    #  DIFFERENT release ids describe the same recording (see _identityKeyOf)
     return {"id": trackId, "playedAt": playedAt, "createdAt": None,
+            "canonicalId": canonicalId, "isrc": isrc,
             "createdReason": "web_api_backfill_play (user: alice)"}
 
 
-def _listenerRow(trackId, playedAt, createdAt=None):
+def _listenerRow(trackId, playedAt, createdAt=None, canonicalId=None, isrc=None):
     #< createdAt: the row's insert-time stamp - for listener rows this is the
     #  observed END of the play (the listener inserts at the track-change
     #  moment). getPlaysWithSourceInRange returns it for listener rows only.
     return {"id": trackId, "playedAt": playedAt, "createdAt": createdAt,
+            "canonicalId": canonicalId, "isrc": isrc,
             "createdReason": "listener_play (user: alice)"}
 
 
@@ -385,6 +389,103 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
         db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.deletePlay.assert_not_called()
+
+
+class TestReconcileAcrossReleases(unittest.TestCase):
+    """Grouping by the RECORDING, not the release id.
+
+    Spotify names the same recording differently in connect state and in the
+    Web API - the live listener records one id, the backfill records another,
+    and a pass that grouped by exact track_id saw two unrelated tracks and kept
+    both. It was 9.6% of the backfill rows the 2026-08-17 sweep removed, and
+    sweeping did nothing about the code that keeps producing them.
+
+    Only IDENTITY proofs are honoured here (a merge group, or a shared ISRC),
+    never the sweep's name+duration+artist fallback: that one is a heuristic,
+    and this path DELETES from live history with nothing to recover from. A
+    heuristic belongs where a human reads the dry run first.
+    """
+
+    def test_cross_release_backfill_copy_is_deleted_via_the_merge_group(self):
+        """Both ids sit in one merge group, so they are one recording."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t_live", API_TS, canonicalId="t_live"),
+            _backfillRow("t_api", API_TS + 1, canonicalId="t_live"),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t_api"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t_api", API_TS + 1)
+
+    def test_cross_release_backfill_copy_is_deleted_via_a_shared_isrc(self):
+        """No merge has been made yet, but the ISRC names the same recording."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t_live", API_TS, isrc="GBAYE0601498"),
+            _backfillRow("t_api", API_TS + 1, isrc="GBAYE0601498"),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t_api"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t_api", API_TS + 1)
+
+    def test_an_isrc_bridges_two_separate_merge_groups(self):
+        """Identity is transitive: t_a and t_live are merged, t_live and t_api
+        share an ISRC, so a copy recorded as t_api pairs with a play of t_a."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t_a", API_TS, canonicalId="t_live"),
+            _listenerRow("t_live", API_TS + 900, isrc="GBAYE0601498"),
+            _backfillRow("t_api", API_TS + 1, isrc="GBAYE0601498"),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t_api"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t_api", API_TS + 1)
+
+    def test_an_empty_isrc_groups_nothing(self):
+        """The classic version of this bug: "" is not a shared identity, and
+        treating it as one would fold every unstamped track in the window into
+        a single group and delete across genuinely different songs."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t1", API_TS, isrc=""),
+            _backfillRow("t2", API_TS + 1, isrc=""),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t2"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
+
+    def test_unrelated_tracks_still_never_pair(self):
+        """The safety guarantee this widening must not cost: two different
+        recordings played back to back share no identity and stay untouched."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            _listenerRow("t1", API_TS, canonicalId="t1", isrc="AAAAA0000001"),
+            _backfillRow("t2", API_TS + 1, canonicalId="t2", isrc="BBBBB0000002"),
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t2"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_not_called()
+
+    def test_rows_without_identity_columns_fall_back_to_their_own_id(self):
+        """A row shape with no canonicalId/isrc at all (the pre-existing
+        callers, and any row whose track went missing from the join) must
+        behave exactly as it did before - grouped by its own track id."""
+        db = _bareDatabase()
+        db.repo.getPlaysWithSourceInRange.return_value = [
+            {"id": "t1", "playedAt": API_TS, "createdAt": None,
+             "createdReason": "listener_play (user: alice)"},
+            {"id": "t1", "playedAt": API_TS + 1, "createdAt": None,
+             "createdReason": "web_api_backfill_play (user: alice)"},
+        ]
+
+        db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        db.repo.deletePlay.assert_called_once_with("alice", "t1", API_TS + 1)
 
 
 if __name__ == "__main__":

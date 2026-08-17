@@ -277,8 +277,14 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
             # primitive, and the flag keeps md5 callable on FIPS-mode hosts
             # (where the default constructor raises) without altering the
             # digest - the ids below are already persisted in user databases.
+            #
+            # Stripped for the same reason _resolveExportArtist strips: padding
+            # is not an identity, and hashing it verbatim fabricated a second
+            # track for the same song. The "::" separator still does its own
+            # job (see _knownNameKey) - stripping the ends cannot merge
+            # ("Al", "Green") into ("A", "lGreen").
             track_id = hashlib.md5(
-                f"{name}::{artist}".encode("utf-8"), usedforsecurity=False).hexdigest()
+                f"{name.strip()}::{artist.strip()}".encode("utf-8"), usedforsecurity=False).hexdigest()
 
         album_id = f"album_{track_id}"
 
@@ -346,15 +352,23 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
 
     def _resolveExportArtist(self, artist: str) -> dict:
         """Prefer the real catalog artist with this name (keeps stats grouped and
-        the real Spotify link); fabricate a deterministic name-keyed entry otherwise."""
-        catalogArtist = getattr(self, "_catalogArtistsByName", {}).get(artist.strip().lower())
+        the real Spotify link); fabricate a deterministic name-keyed entry otherwise.
+
+        Stripped BEFORE hashing, not just before the lookup. The two disagreed:
+        the catalog was searched for "queen" while the fallback id hashed
+        "Queen " verbatim, so a padded spelling both missed the real artist and
+        fabricated a second row - one artist's plays split across two ids that
+        no page adds back together. The name is stored stripped for the same
+        reason it is hashed stripped: it is the label every artist page shows."""
+        normalized = artist.strip()
+        catalogArtist = getattr(self, "_catalogArtistsByName", {}).get(normalized.lower())
         if catalogArtist:
             return dict(catalogArtist)
         # usedforsecurity=False for the same reason as _createSyntheticTrack's
         # id: a deterministic surrogate key, not a security primitive.
-        artist_id = f"artist_{hashlib.md5(artist.encode('utf-8'), usedforsecurity=False).hexdigest()}"
+        artist_id = f"artist_{hashlib.md5(normalized.encode('utf-8'), usedforsecurity=False).hexdigest()}"
         return {
-            "name": artist,
+            "name": normalized,
             "url": "",
             "imageUrl": "",
             "imageId": artist_id,

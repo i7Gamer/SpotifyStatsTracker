@@ -408,6 +408,61 @@ class ListenerMixin:
                 return True
         return False
 
+    @staticmethod
+    def _groupPlaysByIdentity(plays: list[dict]) -> dict[str, list[dict]]:
+        """The window's plays bucketed by RECORDING, not by release id.
+
+        Grouping on track_id alone was blind to the commonest duplicate this
+        pass exists to remove: Spotify names the same recording differently in
+        connect state and in the Web API, so the listener writes one id and the
+        backfill writes another, and two rows for one listen looked like two
+        unrelated tracks. The 2026-08-17 sweep measured it at 9.6% of the
+        backfill rows it deleted - and a sweep only clears what has already
+        accumulated, so the live pass has to see it too or they come back.
+
+        Two IDENTITY proofs, both transitive, so they are unioned rather than
+        tested pairwise: a shared merge group (canonical_id), and a shared
+        ISRC. sweep_backfill_duplicates.py carries a third, name + duration +
+        primary artist - deliberately NOT honoured here. That one is a
+        heuristic, and this path deletes from live history unattended; the
+        sweep prints a dry run for a person to read first, which is where a
+        heuristic belongs.
+
+        A row with neither column (an older caller's row shape, or a play whose
+        track row has gone missing) groups under its own id, exactly as before.
+        An EMPTY isrc is not a shared identity - folding every unstamped track
+        in the window into one bucket would delete across different songs."""
+        parent: dict[str, str] = {}
+
+        def find(key: str) -> str:
+            #< no path compression: a window is one Web API page, so these
+            #  chains are a handful of links long and the loop is cheaper than
+            #  the bookkeeping that would shorten it
+            while parent.setdefault(key, key) != key:
+                key = parent[key]
+            return key
+
+        def union(left: str, right: str) -> None:
+            rootLeft, rootRight = find(left), find(right)
+            if rootLeft != rootRight:
+                parent[rootRight] = rootLeft
+
+        def mergeGroupOf(play: dict) -> str:
+            return play.get("canonicalId") or play["id"]
+
+        firstGroupForIsrc: dict[str, str] = {}
+        for play in plays:
+            group = mergeGroupOf(play)
+            find(group)   #< seed it, so a track with no sibling still gets a bucket
+            isrc = (play.get("isrc") or "").strip()
+            if isrc:
+                union(firstGroupForIsrc.setdefault(isrc, group), group)
+
+        grouped: dict[str, list[dict]] = {}
+        for play in plays:
+            grouped.setdefault(find(mergeGroupOf(play)), []).append(play)
+        return grouped
+
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
         """Remove PROVABLE duplicate local plays: Web API backfill copies of a
         play another source already recorded. Both the live listener and the
@@ -419,11 +474,12 @@ class ListenerMixin:
         mid-track pause stretched the play, minutes apart.
 
         Deletion requires BOTH proofs:
-        - same listen: a same-track sibling row within
+        - same listen: a sibling row for the SAME RECORDING within
           DUPLICATE_RECORDING_TOLERANCE_SECONDS, or a listener row whose
           created_at (observed play end) sits within
           BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS of the backfill row's
-          played_at (see _isSameListen), AND
+          played_at (see _isSameListen). Same recording, not same release id -
+          the two sources name it differently (see _groupPlaysByIdentity), AND
         - mixed sources: the cluster holds a backfill row plus at least one
           row from another source (listener / import / legacy-NULL).
         Only the backfill copies are deleted - backfill is the only secondary
@@ -436,7 +492,7 @@ class ListenerMixin:
         Web API response: Spotify's recently-played endpoint isn't a complete
         log (limited item count, its own internal play-duration threshold,
         track relinking can return a different ID for the same song), so a
-        lone play with no same-track sibling is always left alone - only a
+        lone play with no sibling for its recording is always left alone - only a
         genuine nearby cross-source duplicate counts as proof.
 
         Only runs for users with working Spotify Developer API credentials
@@ -471,16 +527,14 @@ class ListenerMixin:
         if not localPlays:
             return
 
-        playsByTrack: dict[str, list[dict]] = {}
-        for play in localPlays:
-            playsByTrack.setdefault(play["id"], []).append(play)
+        playsByRecording = self._groupPlaysByIdentity(localPlays)
 
         toDelete: list[dict] = []
-        for trackId, group in playsByTrack.items():
+        for _identity, group in playsByRecording.items():
             if len(group) < 2:
-                continue  # no sibling for this track - nothing proves duplication, never delete
+                continue  # no sibling for this recording - nothing proves duplication, never delete
 
-            # Cluster same-track plays that are within tolerance of a shared
+            # Cluster same-recording plays that are within tolerance of a shared
             # anchor - each cluster of 2+ might be the same real listen
             # recorded more than once. Sorted chronologically first (the DB
             # query has no ORDER BY) so the anchor - and therefore which

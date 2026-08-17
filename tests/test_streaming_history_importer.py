@@ -1382,6 +1382,52 @@ class TestSyntheticIdStability(unittest.TestCase):
         self.assertEqual(first, second)
 
 
+class TestSyntheticIdWhitespaceNormalization(unittest.TestCase):
+    """Surrounding whitespace is not an identity.
+
+    _resolveExportArtist LOOKS UP the catalog on `artist.strip().lower()` but
+    used to hash the raw string, so "Queen " missed the catalog under one
+    spelling and then fabricated a different id than "Queen" - one artist's
+    listening split across two rows that no page ever adds back together. The
+    track digest pairs "name::artist" and had the same gap.
+    """
+
+    def test_padded_artist_hashes_to_the_same_id_as_the_clean_name(self):
+        importer = Importer()
+
+        padded = importer._resolveExportArtist("  Queen \t")
+        clean = importer._resolveExportArtist("Queen")
+
+        self.assertEqual(padded["id"], clean["id"])
+        self.assertEqual(padded["imageId"], clean["imageId"])
+
+    def test_the_stored_artist_name_is_the_stripped_one(self):
+        """The name rides along into the artists row, so leaving it padded
+        would show the whitespace on every page the artist appears on."""
+        importer = Importer()
+
+        self.assertEqual(importer._resolveExportArtist(" Queen ")["name"], "Queen")
+
+    def test_padded_names_hash_to_the_same_synthetic_track(self):
+        importer = Importer()
+
+        padded = importer._createSyntheticTrack(" Bohemian Rhapsody ", " Queen ", None, 10)
+        clean = importer._createSyntheticTrack("Bohemian Rhapsody", "Queen", None, 10)
+
+        self.assertEqual(padded["id"], clean["id"])
+        self.assertEqual(padded["album"]["id"], clean["album"]["id"])
+
+    def test_the_separator_still_keeps_shifted_pairs_apart(self):
+        """Stripping must not undo _knownNameKey's separator fix: ("Al",
+        "Green") and ("A", "lGreen") stay different tracks."""
+        importer = Importer()
+
+        first = importer._createSyntheticTrack("Al", "Green", None, 10)["id"]
+        second = importer._createSyntheticTrack("A", "lGreen", None, 10)["id"]
+
+        self.assertNotEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
 
