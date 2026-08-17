@@ -17,13 +17,40 @@
 
   var RUNNING_POLL_MS = 1200;   //< while an import is actually progressing
   var IDLE_POLL_MS = 5000;      //< queued/unknown: slower, it may not have started yet
+  var UNAUTHORIZED_STATUS = 401;          //< the only non-2xx /import-progress answers by design
+  var MAX_CONSECUTIVE_POLL_ERRORS = 5;    //< then say so, rather than poll a dead endpoint forever
+
+  var consecutivePollErrors = 0;
+
+  // Any failed request used to end the poll for the life of the page: one 502
+  // from a proxy, or a few seconds offline, and the bar froze mid-import while
+  // the import itself carried on - only a reload showed where it had got to.
+  //
+  // Retrying is not unconditional either. A poll that can never succeed must not
+  // run until the tab closes, and stopping silently would leave exactly the
+  // frozen bar this is here to fix, so it gives up out loud.
+  function retryOrGiveUp() {
+    consecutivePollErrors += 1;
+    if (consecutivePollErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+      progressMessage.textContent = 'Lost contact with the import - reload the page to see where it got to.';
+      return;
+    }
+    setTimeout(fetchProgress, IDLE_POLL_MS);
+  }
 
   async function fetchProgress() {
     try {
       var response = await fetch(window.IMPORT_PROGRESS_URL);
-      if (!response.ok) {
+      if (response.status === UNAUTHORIZED_STATUS) {
+        //< the session is gone, so every retry is a guaranteed 401 - the same
+        //  rule the other polls follow (see static/js/visibility-poll.js)
         return;
       }
+      if (!response.ok) {
+        retryOrGiveUp();
+        return;
+      }
+      consecutivePollErrors = 0;   //< the cap counts CONSECUTIVE failures
       var progress = await response.json();
       progressBar.value = progress.percentage || 0;
       if (progress.status === 'running') {
@@ -38,6 +65,7 @@
       }
     } catch (error) {
       console.error('Failed to load import progress', error);
+      retryOrGiveUp();
     }
   }
 

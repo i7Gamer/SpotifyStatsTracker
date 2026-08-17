@@ -53,8 +53,16 @@ function loadImportPage(options) {
   return calls;
 }
 
-function progressResponse(body, ok) {
-  return () => Promise.resolve({ ok: ok === undefined ? true : ok, json: () => Promise.resolve(body) });
+function progressResponse(body, ok, status) {
+  const failed = ok === false;
+  return () => Promise.resolve({
+    ok: !failed,
+    //< the poller tells an expired session (401 - the only non-2xx
+    //  /import-progress deliberately answers, see routes/system.py) apart from
+    //  a transient failure, so the stub has to carry a status
+    status: status === undefined ? (failed ? 500 : 200) : status,
+    json: () => Promise.resolve(body),
+  });
 }
 
 const results = [];
@@ -124,15 +132,28 @@ run('a single file says so without the count', () => {
 
 // ------------------------------------------------------------- the poller
 
-function pollScenario(body, ok) {
+function pollScenario(body, ok, status) {
   const bar = makeElement();
   const message = makeElement();
   const calls = loadImportPage({
     running: true,
-    respond: progressResponse(body, ok),
+    respond: progressResponse(body, ok, status),
     elements: { 'progress-bar': bar, 'progress-message': message },
   });
   return { calls, bar, message };
+}
+
+// setTimeout is stubbed into a list rather than run, so a retry only happens if
+// this drives it. Bounded by `guard` so a poller that never gives up fails the
+// test instead of hanging the suite.
+async function drainRetries(calls, guard) {
+  let fired = 0;
+  while (calls.timeouts.length && fired < (guard || 10)) {
+    calls.timeouts.shift().fn();
+    fired += 1;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  return fired;
 }
 
 run('a page with no import running asks for no progress at all', () => {
@@ -185,7 +206,10 @@ run('a progress request that errors is logged, not left to reject unhandled', as
   await new Promise(resolve => setImmediate(resolve));
 
   assert.strictEqual(calls.errors.length, 1);
-  assert.deepStrictEqual(calls.timeouts, []);
+  //< it used to assert no retry here. A dropped connection mid-import froze the
+  //  bar for the rest of the page's life, and the import it was reporting on
+  //  carried on regardless - the poll has to come back.
+  assert.deepStrictEqual(calls.timeouts.map(t => t.ms), [5000]);
 });
 
 run('a non-OK progress response is dropped rather than rendered as zero', async () => {
@@ -193,7 +217,55 @@ run('a non-OK progress response is dropped rather than rendered as zero', async 
   await new Promise(resolve => setImmediate(resolve));
 
   assert.strictEqual(bar.value, null, 'a 500 must not repaint the bar');
-  assert.deepStrictEqual(calls.timeouts, []);
+  //< same deliberate change as above: dropping the BODY is right, dropping the
+  //  poll with it is not - the import is still running
+  assert.deepStrictEqual(calls.timeouts.map(t => t.ms), [5000]);
+});
+
+run('an expired session ends the poll instead of retrying', async () => {
+  const { calls } = pollScenario({}, false, 401);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepStrictEqual(calls.timeouts, [],
+    'the session is gone, so every retry is a guaranteed 401 - stop, as the other polls do');
+});
+
+run('a failure that never clears gives up rather than polling forever', async () => {
+  const { calls, message } = pollScenario({}, false, 500);
+  await new Promise(resolve => setImmediate(resolve));
+  await drainRetries(calls);
+
+  assert.deepStrictEqual(calls.timeouts, [], 'a dead endpoint must not be polled for the life of the tab');
+  assert.ok(message.textContent.includes('Lost contact'),
+    'and the user is told, rather than left reading a frozen bar: ' + message.textContent);
+});
+
+run('a recovered poll forgets the earlier failures', async () => {
+  const bar = makeElement();
+  const message = makeElement();
+  // Three failures, a success, three more: the cap counts CONSECUTIVE failures,
+  // so a flaky connection over a long import must not accumulate toward it.
+  // Against a cumulative counter this gives up on the sixth attempt.
+  const outcomes = [false, false, false, true, false, false, false];
+  let attempt = 0;
+  const calls = loadImportPage({
+    running: true,
+    respond: () => {
+      const ok = outcomes[attempt] === undefined ? true : outcomes[attempt];
+      attempt += 1;
+      return ok
+        ? Promise.resolve({ ok: true, status: 200,
+                            json: () => Promise.resolve({ status: 'running', percentage: 7, message: 'Parsing' }) })
+        : Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+    },
+    elements: { 'progress-bar': bar, 'progress-message': message },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await drainRetries(calls, 12);
+
+  assert.strictEqual(bar.value, 7, 'the poll recovered and kept reporting');
+  assert.ok(!message.textContent.includes('Lost contact'),
+    'it must not give up on an import it is still successfully following: ' + message.textContent);
 });
 
 (async () => {
