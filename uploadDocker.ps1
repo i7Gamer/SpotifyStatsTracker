@@ -16,8 +16,22 @@ if ($LASTEXITCODE -ne 0) {
 docker tag spotify-tracker:latest i7gamer/spotify-tracker:latest
 
 Write-Host "Testing if container starts successfully..."
+# Reclaim the name first: a run interrupted between `docker run` and the
+# `docker rm` at the bottom leaves the container behind, and the nightly script
+# uses this same fixed name.
+docker rm -f test-tracker 2>$null | Out-Null
+
 # Run detached (-d) so the script can continue
 docker run -d --name test-tracker spotify-tracker:latest
+
+# `docker run` fails outright if the name is still taken, and nothing checked -
+# so the inspect below reported on the LEFTOVER container instead of this build.
+# A stale one that happened to be running read as "Container is stable", and an
+# image that was never started got pushed.
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Test container did not start (exit $LASTEXITCODE). Aborting before push."
+    exit 1
+}
 
 # Wait 5 seconds to give the Flask app time to crash if there is a fatal error
 Start-Sleep -Seconds 5

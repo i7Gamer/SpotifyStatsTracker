@@ -24,6 +24,9 @@ _TAG_MARKER = "docker tag"
 _ABORT_MARKER = "Aborting push"
 
 _EXIT_NONZERO = re.compile(r"\bexit\s+[1-9]\d*\b")
+# The `docker run` COMMAND, not a mention of it: the comments around it name the
+# command too, and a substring search finds the prose first.
+_DOCKER_RUN_LINE = re.compile(r"^docker run\b", re.MULTILINE)
 _LASTEXITCODE = re.compile(r"\$LASTEXITCODE")
 # A non-zero exit that only fires under a condition. An UNconditional one at
 # the end of the file would fail the successful run too.
@@ -81,6 +84,35 @@ class TestUploadScriptsFailLoudly(unittest.TestCase):
                                      f"{name} never checks whether the build succeeded")
                 self.assertIsNotNone(_EXIT_NONZERO.search(between),
                                      f"{name} checks the build but does not abort on failure")
+
+    def test_the_test_container_start_is_verified(self):
+        """`docker run --name test-tracker` FAILS when that name is already
+        taken, and the exit code was never checked - so `docker inspect
+        test-tracker` then reported on the LEFTOVER container instead. A run
+        interrupted between `docker run` and `docker rm` leaves one behind (and
+        both scripts share the single fixed name, so they collide with each
+        other too): if that stale container happened to be running, the script
+        announced "Container is stable" and pushed an image it never started."""
+        for name in _SCRIPTS:
+            with self.subTest(script=name):
+                source = _read(name)
+                between = source[_DOCKER_RUN_LINE.search(source).start():source.index("docker inspect")]
+
+                self.assertIsNotNone(_LASTEXITCODE.search(between),
+                                     f"{name} never checks whether the test container started")
+                self.assertIsNotNone(_EXIT_NONZERO.search(between),
+                                     f"{name} checks the container start but does not abort on failure")
+
+    def test_a_leftover_test_container_is_cleared_first(self):
+        """The other half: aborting on a name clash would turn every interrupted
+        run into a manual cleanup chore, so the name is reclaimed up front."""
+        for name in _SCRIPTS:
+            with self.subTest(script=name):
+                source = _read(name)
+                beforeRun = source[:_DOCKER_RUN_LINE.search(source).start()]
+
+                self.assertIn("docker rm -f", beforeRun,
+                              f"{name} does not clear a leftover test container before starting one")
 
     def test_the_startup_check_still_runs_before_any_push(self):
         """Guard on the guard: the container smoke test has to keep happening
