@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from werkzeug.security import generate_password_hash
 
 from app import SpotifyDashboardApp
+from config import SPOTIFY_OAUTH_STATE_SESSION_KEY
 from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -109,6 +110,65 @@ class TestLoginPassword(AppTestCase):
 
         self.assertEqual(resp.status_code, 302)
         self.assertTrue(resp.headers["Location"].endswith("/"))
+
+
+class TestLoginStartsACleanSession(AppTestCase):
+    """A login is a user switch, so nothing from the previous session may cross
+    into the new one.
+
+    Both /login branches only ever ASSIGNED email/username over whatever was
+    already in the cookie. On a shared browser that carried the previous
+    account's leftovers forward - most concretely an abandoned one-shot Spotify
+    OAuth state (see SPOTIFY_OAUTH_STATE_SESSION_KEY in config.py), which is
+    the CSRF guard for binding a refresh token to an account, plus any flash
+    queued for someone else.
+
+    The ordering is the trap this pins: `permanent` is itself stored in the
+    session (under _permanent), so a clear() placed after it silently downgrades
+    the cookie to a browser-session one."""
+
+    def _seedStaleSession(self, client):
+        with client.session_transaction() as sess:
+            sess[SPOTIFY_OAUTH_STATE_SESSION_KEY] = "abandoned-by-the-previous-user"
+            sess["email"] = "bob@example.com"
+            sess["username"] = "bob"
+
+    def _assertCleanSessionFor(self, client, email, username):
+        with client.session_transaction() as sess:
+            self.assertNotIn(SPOTIFY_OAUTH_STATE_SESSION_KEY, sess)
+            self.assertEqual(sess["email"], email)
+            self.assertEqual(sess["username"], username)
+            self.assertTrue(sess.permanent, "clear() must not wipe _permanent")
+
+    def test_password_login_drops_the_previous_users_leftovers(self):
+        dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
+        dash.repo.setUserCookies("alice", {"sp_dc": "abc"})
+        dash.repo.setUserPassword("alice", generate_password_hash("Correct-Horse1"))
+        client = dash.app.test_client()
+        self._seedStaleSession(client)
+
+        with patch.object(dash, 'get_user_db'):
+            resp = client.post("/login", data={"email": "alice@example.com",
+                                               "password": "Correct-Horse1"})
+
+        self.assertEqual(resp.status_code, 302)
+        self._assertCleanSessionFor(client, "alice@example.com", "alice")
+
+    def test_cookie_login_drops_the_previous_users_leftovers(self):
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        self._seedStaleSession(client)
+
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_or_create_user', return_value='alice'), \
+             patch.object(dash, 'get_user_db'), \
+             patch.object(dash.repo, 'setUserCookies'):
+            resp = client.post("/login", data={"email": "alice@example.com",
+                                               "cookies": "sp_dc=abc"})
+
+        self.assertEqual(resp.status_code, 302)
+        self._assertCleanSessionFor(client, "alice@example.com", "alice")
 
 
 if __name__ == "__main__":

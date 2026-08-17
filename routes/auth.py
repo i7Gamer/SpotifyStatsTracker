@@ -147,6 +147,18 @@ def register(app, dashboard):
                     error="Your saved Spotify session has expired. Reset your password with "
                           "fresh cookies, or log in with cookies instead.")
 
+            # A login is a user switch, so the previous session's leftovers must
+            # not cross into this one: on a shared browser that meant an
+            # abandoned one-shot OAuth state (SPOTIFY_OAUTH_STATE_SESSION_KEY -
+            # the CSRF guard for binding a refresh token to an account) and any
+            # flash queued for someone else. Both branches here only ever
+            # ASSIGNED over whatever was in the cookie.
+            # Before `permanent`, never after: permanent IS a session key
+            # (_permanent), so clearing afterwards silently downgrades the cookie
+            # to a browser-session one. Flask-WTF has already validated this
+            # request's CSRF token by now, and the page we redirect to mints a
+            # fresh one, so dropping it here costs nothing.
+            session.clear()
             session.permanent = True
             dashboard.get_user_db(username, email)
             session["email"] = email
@@ -169,6 +181,7 @@ def register(app, dashboard):
                 error=f"Couldn't verify that these cookies belong to {email}. "
                       "Make sure you are logged into open.spotify.com with that account and copied all cookies.")
 
+        session.clear()   #< a login is a user switch - see the password branch above
         session.permanent = True
         # get_or_create_user/get_user_db manage their own locking and can
         # start a listener (a live network call) - kept outside the session
@@ -236,6 +249,7 @@ def register(app, dashboard):
         # (pre-password) account instead of erroring, so registering with
         # an email that's already logged in via cookies just adds a
         # password to that account rather than being rejected as a dupe.
+        session.clear()   #< registering logs this account in - see /login's password branch
         session.permanent = True
         username = dashboard.get_or_create_user(email)
         dashboard.repo.setUserCookies(username, parsedCookies)
@@ -298,6 +312,7 @@ def register(app, dashboard):
         else:
             dashboard.get_user_db(username, email)
 
+        session.clear()   #< a reset logs this account in - see /login's password branch
         session.permanent = True
         session["email"] = email
         session["username"] = username

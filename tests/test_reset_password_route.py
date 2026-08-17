@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app import SpotifyDashboardApp
+from config import SPOTIFY_OAUTH_STATE_SESSION_KEY
 from _app_factory import AppTestCase
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
@@ -43,6 +44,29 @@ class TestResetPasswordRoute(AppTestCase):
         storedHash = dash.repo.getUserPasswordHash("alice")
         self.assertTrue(check_password_hash(storedHash, NEW_PASSWORD))
         self.assertEqual(dash.repo.getUserCookies("alice"), {"sp_dc": "fresh"})
+
+    def test_reset_drops_the_previous_users_leftovers(self):
+        """A reset logs the user in, so it is a user switch like any other -
+        see TestLoginStartsACleanSession in tests/test_login_password.py for
+        what crosses over and why the clear() has to precede `permanent`."""
+        dash = self._makeApp()
+        dash.repo.upsertUser("alice", "alice@example.com")
+        dash.repo.setUserPassword("alice", generate_password_hash("Old-Password1"))
+        client = dash.app.test_client()
+        with client.session_transaction() as sess:
+            sess[SPOTIFY_OAUTH_STATE_SESSION_KEY] = "abandoned-by-the-previous-user"
+
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_user_db'):
+            resp = client.post("/reset-password", data={
+                "email": "alice@example.com", "password": NEW_PASSWORD,
+                "confirm_password": NEW_PASSWORD, "cookies": "sp_dc=fresh"})
+
+        self.assertEqual(resp.status_code, 302)
+        with client.session_transaction() as sess:
+            self.assertNotIn(SPOTIFY_OAUTH_STATE_SESSION_KEY, sess)
+            self.assertEqual(sess["email"], "alice@example.com")
+            self.assertTrue(sess.permanent, "clear() must not wipe _permanent")
 
     def test_unknown_email_is_rejected(self):
         dash = self._makeApp()
