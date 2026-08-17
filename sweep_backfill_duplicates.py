@@ -30,6 +30,19 @@ when the user skipped away rather than an end the feed still owes us:
     stays tight - at 95s+ a genuine replay the listener missed is the likelier
     reading, and deleting one is unrecoverable).
 
+A third pairing covers what BOTH of those miss for the same structural reason:
+they join on l.track_id = b.track_id. Spotify hands the connect player_state
+and the recently-played endpoint different release ids for one recording, so
+the listener's row and the Web API's copy of that same listen share no track
+id at all (live 2026-08-17: 45 rows, 9.6% of every backfill-sourced play):
+
+    delete a web_api_backfill play when a same-user listener play of the same
+    RECORDING - a different track id in the same merge group, or sharing a
+    non-empty ISRC, or agreeing on title, primary artist and duration to the
+    millisecond - has a created_at within the end-time tolerance of the
+    backfill row's played_at. Same three signals the live dedup uses (see
+    PlayQueries._sameRecordingTrackIds), and tight for the same reason.
+
 Dry-run by default: prints what it would delete and exits. Pass --apply to
 actually delete (one transaction, committed at the end).
 
@@ -57,6 +70,13 @@ DELETE_CHUNK_SIZE = 500
 
 #< plays.time_played is milliseconds; the skip report prints seconds
 MS_PER_SECOND = 1000
+
+#< the announce dedup's two played_at arms (spotifyListener's
+#  WEB_API_BACKFILL_DEDUP_TOLERANCE_SECONDS): a Web API played_at read as the
+#  play's start, or as its end exactly one duration later. Restated here rather
+#  than imported so a sweep over a SQLite file does not have to load the
+#  listener - and with it spotapi - to run.
+PLAYED_AT_MATCH_TOLERANCE_SECONDS = 2
 
 #< matches the reconciler's pairing rule exactly (see workers/listener.py
 #  _isSameListen): backfill played_at (Spotify's end-time reading) against the
@@ -122,6 +142,70 @@ ORDER BY username, played_at
 """
 
 
+#< the same end-time pairing across two DIFFERENT release ids of one recording.
+#  Spotify hands the connect player_state and the recently-played endpoint
+#  different ids for the same master, so the listener's row and the Web API's
+#  copy of that listen share no track id and neither pairing above can reach
+#  them (both join on l.track_id = b.track_id). Live 2026-08-17: 45 rows, 9.6%
+#  of every backfill-sourced play on the instance.
+#
+#  Sameness is the three signals PlayQueries._sameRecordingTrackIds uses, and
+#  for the reason given there - a wrongly deleted play is unrecoverable, so
+#  each has to mean "same master" rather than "probably related". The primary
+#  artist is compared through a subselect that yields NULL for a track with no
+#  credited artist, and NULL = NULL is not true: two rows agreeing on "unknown"
+#  pair nothing.
+#
+#  All THREE of the announce dedup's time arms, not just the end-time one the
+#  pairings above use: the Web API's played_at is the play's start, or its end
+#  one duration later, or its wall-clock end (which a pause moves, hence the
+#  listener's created_at). Live play 123777 needed the middle one - a ~60s
+#  pause put created_at 59s away while played_at was start + duration to the
+#  second - so an end-time-only pairing under-reports.
+#
+#  Still only listener rows with a created_at: the pairing anchors on a row
+#  that MEANS a play end, and a legacy row without one cannot vouch for
+#  anything. Conservative on purpose - a deleted play is unrecoverable.
+_FIND_CROSS_RELEASE_SQL = """
+SELECT play_id, username, track_id, played_at,
+       listener_track_id, listener_played_at, listener_created_at
+FROM (
+    SELECT b.id AS play_id, b.username, b.track_id, b.played_at,
+           l.track_id AS listener_track_id,
+           l.played_at AS listener_played_at,
+           l.created_at AS listener_created_at,
+           ROW_NUMBER() OVER (PARTITION BY b.id
+                              ORDER BY ABS(b.played_at - l.created_at), l.id) AS pairRank
+    FROM plays b
+    JOIN plays l
+      ON l.username = b.username AND l.track_id <> b.track_id
+    JOIN tracks bt ON bt.id = b.track_id
+    JOIN tracks lt ON lt.id = l.track_id
+    WHERE b.created_reason LIKE 'web_api_backfill_play%'
+      AND l.created_reason LIKE 'listener_play%'
+      AND b.is_skip = 0 AND l.is_skip = 0
+      AND l.created_at IS NOT NULL
+      AND (
+            ABS(b.played_at - l.created_at) <= ?
+         OR ABS(b.played_at - l.played_at) <= ?
+         OR ABS(b.played_at - (bt.duration_ms / 1000) - l.played_at) <= ?
+      )
+      AND (
+            COALESCE(bt.canonical_id, bt.id) = COALESCE(lt.canonical_id, lt.id)
+         OR (bt.isrc IS NOT NULL AND bt.isrc <> '' AND bt.isrc = lt.isrc)
+         OR (bt.name = lt.name
+             AND bt.duration_ms = lt.duration_ms AND bt.duration_ms > 0
+             AND (SELECT ta.artist_id FROM track_artists ta
+                   WHERE ta.track_id = bt.id AND ta.position = 0)
+               = (SELECT ta.artist_id FROM track_artists ta
+                   WHERE ta.track_id = lt.id AND ta.position = 0))
+      )
+)
+WHERE pairRank = 1
+ORDER BY username, played_at
+"""
+
+
 def findBackfillEndTimeDuplicates(conn: sqlite3.Connection, toleranceSeconds: float) -> list[sqlite3.Row]:
     """All web_api_backfill plays provably double-recording a listener play,
     one row per duplicate (a copy pairing with several listener rows is still
@@ -135,6 +219,19 @@ def findBackfillSkipDuplicates(conn: sqlite3.Connection, toleranceSeconds: float
     that number is what tells the operator this was a 3-second sample rather
     than a listen the feed had reason to report."""
     return conn.execute(_FIND_SKIP_SQL, (toleranceSeconds,)).fetchall()
+
+
+def findBackfillCrossReleaseDuplicates(conn: sqlite3.Connection, toleranceSeconds: float,
+                                       playedAtToleranceSeconds: float = PLAYED_AT_MATCH_TOLERANCE_SECONDS
+                                       ) -> list[sqlite3.Row]:
+    """All web_api_backfill plays double-recording a listener play stored under
+    a DIFFERENT release id of the same recording, one row per duplicate.
+    Reports the listener row's track id beside the backfill row's: those two
+    ids differing is the whole finding, and the operator reads them to confirm
+    the pair is one recording before --apply."""
+    return conn.execute(_FIND_CROSS_RELEASE_SQL,
+                        (toleranceSeconds, playedAtToleranceSeconds,
+                         playedAtToleranceSeconds)).fetchall()
 
 
 def deleteBackfillDuplicates(conn: sqlite3.Connection, playIds: list[int]) -> int:
@@ -176,10 +273,17 @@ def main(argv=None) -> int:
     try:
         endDuplicates = findBackfillEndTimeDuplicates(conn, args.tolerance)
         skipDuplicates = findBackfillSkipDuplicates(conn, args.skip_tolerance)
+        crossReleaseDuplicates = findBackfillCrossReleaseDuplicates(conn, args.tolerance)
 
         for row in endDuplicates:
             print(f"{row['username']}: track={row['track_id']} "
                   f"backfill played_at={_iso(row['played_at'])} "
+                  f"listener start={_iso(row['listener_played_at'])} "
+                  f"listener end={_iso(row['listener_created_at'])}")
+        for row in crossReleaseDuplicates:
+            print(f"{row['username']}: track={row['track_id']} "
+                  f"backfill played_at={_iso(row['played_at'])} "
+                  f"listener track={row['listener_track_id']} "
                   f"listener start={_iso(row['listener_played_at'])} "
                   f"listener end={_iso(row['listener_created_at'])}")
         for row in skipDuplicates:
@@ -196,7 +300,7 @@ def main(argv=None) -> int:
         playIds: list[int] = []
         seen: set[int] = set()
         byUser: dict[str, int] = {}
-        for row in (*endDuplicates, *skipDuplicates):
+        for row in (*endDuplicates, *skipDuplicates, *crossReleaseDuplicates):
             if row["play_id"] in seen:
                 continue
             seen.add(row["play_id"])

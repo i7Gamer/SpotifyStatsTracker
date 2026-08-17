@@ -330,5 +330,193 @@ class TestSweepSkipDuplicates(SweepTestCase):
         self.assertEqual(self._playedAts(), [START, START + 3])
 
 
+class TestSweepCrossReleaseDuplicates(SweepTestCase):
+    """The third pairing: the two copies do not even share a track id.
+
+    Spotify hands the connect player_state and the recently-played endpoint
+    different release ids for one recording, so the listener stores the play
+    under an id the Web API never mentions and the first two pairings - both of
+    which join on l.track_id = b.track_id - reach none of it. Found live
+    2026-08-17: 45 rows, 9.6% of every backfill-sourced play on the instance.
+
+    Sameness is the same three signals the live dedup uses
+    (PlayQueries._sameRecordingTrackIds), each meaning "same master" rather
+    than "probably related" - deleting a play is unrecoverable."""
+
+    LISTENER_ID = "listener_release"
+    WEB_API_ID = "web_api_release"
+    DURATION_MS = 287000
+    ISRC = "DEU601606324"
+
+    def _variant(self, trackId, *, name="Same Song", durationMs=DURATION_MS, isrc="", artistId="a1"):
+        track = _track(trackId)
+        track["name"] = name
+        track["duration"] = durationMs
+        track["isrc"] = isrc
+        track["artists"] = [{"id": artistId, "name": f"Artist {artistId}",
+                             "url": f"http://example.com/artist/{artistId}",
+                             "imageUrl": "", "imageId": artistId}]
+        self.repo.upsertTrack(track)
+        self.repo.commit()
+
+    def _findCrossRelease(self, tolerance=10):
+        return sweep.findBackfillCrossReleaseDuplicates(self._sweepConn(), tolerance)
+
+    def _recordBothCopies(self):
+        """The live shape: the listener's row under one release id, the Web
+        API's copy of the same listen under the other, its played_at landing on
+        the listener row's observed end."""
+        self._insertPlay(self.LISTENER_ID, START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay(self.WEB_API_ID, END + 1, created_reason=BACKFILL_REASON)
+
+    def test_a_copy_under_a_release_sharing_the_isrc_is_found(self):
+        self._variant(self.LISTENER_ID, isrc=self.ISRC, name="Album Version")
+        self._variant(self.WEB_API_ID, isrc=self.ISRC, name="Single Version")
+        self._recordBothCopies()
+
+        found = self._findCrossRelease()
+
+        self.assertEqual([(r["track_id"], r["listener_track_id"], r["played_at"]) for r in found],
+                         [(self.WEB_API_ID, self.LISTENER_ID, END + 1)])
+
+    def test_a_copy_under_a_merged_sibling_is_found(self):
+        """By the time a sweep runs, the daily ISRC matcher has usually already
+        merged the phantom id - the shape most of the live rows were found in."""
+        self._variant(self.LISTENER_ID, name="Same Song (Radio Edit)")
+        self._variant(self.WEB_API_ID)
+        self.repo.mergeTrackManually(self.LISTENER_ID, self.WEB_API_ID, "tester")
+        self.repo.commit()
+        self._recordBothCopies()
+
+        self.assertEqual(len(self._findCrossRelease()), 1)
+
+    def test_a_copy_under_the_same_title_duration_and_artist_is_found(self):
+        """No ISRC and no merge: an id minted minutes ago, which is what the
+        listener keeps inventing."""
+        self._variant(self.LISTENER_ID, isrc="")
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        self._recordBothCopies()
+
+        self.assertEqual(len(self._findCrossRelease()), 1)
+
+    def test_a_different_duration_pairs_nothing(self):
+        self._variant(self.LISTENER_ID)
+        self._variant(self.WEB_API_ID, durationMs=self.DURATION_MS + 1)
+        self._recordBothCopies()
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_a_different_primary_artist_pairs_nothing(self):
+        self._variant(self.LISTENER_ID, artistId="a1")
+        self._variant(self.WEB_API_ID, artistId="a2")
+        self._recordBothCopies()
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_a_different_title_pairs_nothing(self):
+        self._variant(self.LISTENER_ID, name="One Song")
+        self._variant(self.WEB_API_ID, name="Another Song")
+        self._recordBothCopies()
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_an_empty_isrc_pairs_nothing_on_its_own(self):
+        """Most rows carry isrc = '' until the catalog lookup lands. Reading
+        that as a shared master would pair the whole library with itself."""
+        self._variant(self.LISTENER_ID, name="One Song", isrc="")
+        self._variant(self.WEB_API_ID, name="Another Song", isrc="")
+        self._recordBothCopies()
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_a_listener_end_outside_every_tolerance_pairs_nothing(self):
+        """Same recording, but a play that ended minutes away is a DIFFERENT
+        listen - the tolerances carry the same meaning they do on the
+        same-track pairing."""
+        self._variant(self.LISTENER_ID, isrc=self.ISRC)
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        self._insertPlay(self.LISTENER_ID, START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay(self.WEB_API_ID, END + 11, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_a_copy_at_the_unpaused_end_of_a_paused_listen_is_found(self):
+        """Live play 123777 (7kevinegger, 2026-08-16). The listener saw a ~60s
+        pause, so its created_at sits 59s after the Web API's played_at - well
+        outside the end-time tolerance - while that played_at is start +
+        duration to the second. Spotify reported the play's end as though
+        nothing had been paused, which is exactly the reading the announce
+        dedup's second arm carries and which this pairing therefore needs too:
+        without it the sweep silently under-reports."""
+        self._variant(self.LISTENER_ID, isrc=self.ISRC)
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        pauseSeconds = 60
+        durationSeconds = self.DURATION_MS // 1000
+        self._insertPlay(self.LISTENER_ID, START,
+                         createdAt=START + durationSeconds + pauseSeconds,
+                         created_reason=LISTENER_REASON)
+        self._insertPlay(self.WEB_API_ID, START + durationSeconds, created_reason=BACKFILL_REASON)
+
+        found = self._findCrossRelease()
+
+        self.assertEqual([r["play_id"] is not None for r in found], [True])
+        self.assertEqual(len(found), 1)
+
+    def test_a_copy_sharing_the_listener_start_is_found(self):
+        """The Web API's played_at read as the START of the play - the announce
+        dedup's first arm."""
+        self._variant(self.LISTENER_ID, isrc=self.ISRC)
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        self._insertPlay(self.LISTENER_ID, START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay(self.WEB_API_ID, START + 1, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(len(self._findCrossRelease()), 1)
+
+    def test_a_copy_a_whole_track_away_from_an_unpaused_listen_pairs_nothing(self):
+        """The unpaused-end arm must not reach a NEXT listen: gapless playback
+        puts a genuinely missing play's start exactly one track-length after
+        its predecessor, which is the false positive the same-track pairing was
+        already burned by."""
+        self._variant(self.LISTENER_ID, isrc=self.ISRC)
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        durationSeconds = self.DURATION_MS // 1000
+        self._insertPlay(self.LISTENER_ID, START, createdAt=START + durationSeconds,
+                         created_reason=LISTENER_REASON)
+        #< two track-lengths on: neither a start, nor an unpaused end, nor the
+        #  recorded end of THIS listen
+        self._insertPlay(self.WEB_API_ID, START + 3 * durationSeconds,
+                         created_reason=BACKFILL_REASON)
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_pairing_never_crosses_users(self):
+        self._variant(self.LISTENER_ID, isrc=self.ISRC)
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        self._insertPlay(self.LISTENER_ID, START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay(self.WEB_API_ID, END + 1, created_reason=BACKFILL_REASON, username="bob")
+
+        self.assertEqual(self._findCrossRelease(), [])
+
+    def test_a_same_track_copy_belongs_to_the_end_time_pairing_alone(self):
+        """The three pairings partition rather than overlap, so the report's
+        per-user counts stay readable."""
+        self._insertPlay("t1", START, createdAt=END, created_reason=LISTENER_REASON)
+        self._insertPlay("t1", END + 1, created_reason=BACKFILL_REASON)
+
+        self.assertEqual(self._findCrossRelease(), [])
+        self.assertEqual(len(self._find()), 1)
+
+    def test_apply_deletes_the_cross_release_copy(self):
+        self._variant(self.LISTENER_ID, isrc=self.ISRC)
+        self._variant(self.WEB_API_ID, isrc=self.ISRC)
+        self._recordBothCopies()
+        self._insertPlay("t1", START, created_reason=BACKFILL_REASON)  #< genuine, no sibling
+
+        exitCode = sweep.main(["--db", str(self.dbPath), "--apply"])
+
+        self.assertEqual(exitCode, 0)
+        self.assertEqual(self._playedAts(), [START, START])  #< the listener row + the genuine backfill
+
+
 if __name__ == "__main__":
     unittest.main()
