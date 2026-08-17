@@ -518,5 +518,63 @@ class TestSweepCrossReleaseDuplicates(SweepTestCase):
         self.assertEqual(self._playedAts(), [START, START])  #< the listener row + the genuine backfill
 
 
+class TestSweepAgainstAPre149Database(unittest.TestCase):
+    """tracks.canonical_id arrived in 1.49, and the cross-release query reads
+    it. This tool is pointed at BACKUPS - that is most of what it is for - and
+    an older one answered with a bare "no such column" traceback, which reads
+    like the tool is broken rather than like the file predates the query.
+
+    Built by hand rather than by dropping the column from a current schema:
+    SQLite's DROP COLUMN re-parses the stored schema text and refuses this one,
+    which is itself a good reason not to pretend a migration is available here.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.dbPath = Path(self._tmpdir.name) / "legacy.db"
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            with conn:
+                conn.execute("CREATE TABLE tracks (id TEXT PRIMARY KEY, name TEXT, "
+                             "duration_ms INTEGER, isrc TEXT)")   #< no canonical_id
+                conn.execute("CREATE TABLE track_artists (track_id TEXT, artist_id TEXT, position INTEGER)")
+                conn.execute("CREATE TABLE plays (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                             "username TEXT, track_id TEXT, played_at REAL, ms_played INTEGER, "
+                             "time_played INTEGER, is_skip INTEGER DEFAULT 0, created_at REAL, "
+                             "created_reason TEXT)")
+                conn.execute("INSERT INTO tracks VALUES ('t1', 'Song', 287000, 'ISRC1')")
+                conn.execute("INSERT INTO track_artists VALUES ('t1', 'a1', 0)")
+                #< the end-time pairing the sweep was actually written for
+                conn.execute("INSERT INTO plays (username, track_id, played_at, time_played, "
+                             "created_at, created_reason) VALUES ('alice','t1',?,60000,?,?)",
+                             (START, START + 200, LISTENER_REASON))
+                conn.execute("INSERT INTO plays (username, track_id, played_at, time_played, "
+                             "created_reason) VALUES ('alice','t1',?,60000,?)",
+                             (START + 200, BACKFILL_REASON))
+        finally:
+            conn.close()
+
+    def _playedAts(self):
+        conn = sqlite3.connect(self.dbPath)
+        try:
+            return [r[0] for r in conn.execute("SELECT played_at FROM plays ORDER BY played_at")]
+        finally:
+            conn.close()
+
+    def test_the_run_completes_instead_of_raising_no_such_column(self):
+        exitCode = sweep.main(["--db", str(self.dbPath)])
+
+        self.assertEqual(exitCode, 0)
+
+    def test_the_other_pairings_still_do_their_work(self):
+        """Skipping the whole run would be worse than the crash it replaces: a
+        pre-1.49 database is exactly where the end-time duplicates are."""
+        exitCode = sweep.main(["--db", str(self.dbPath), "--apply"])
+
+        self.assertEqual(exitCode, 0)
+        self.assertEqual(self._playedAts(), [START])
+
+
 if __name__ == "__main__":
     unittest.main()

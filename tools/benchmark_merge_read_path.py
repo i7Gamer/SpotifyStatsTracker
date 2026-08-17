@@ -17,6 +17,7 @@ this repo has measured and rejected three plausible indexes on this table.
 """
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -25,8 +26,51 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from measure_track_merge_candidates import groupsBy, titleKey, load  # noqa: E402
 
-DB = sys.argv[1]
 REPEATS = 3
+#< what the verdict column prints when the baseline timed at exactly zero. Not
+#  reachable on a real clock, but it is the last line of the run and a
+#  ZeroDivisionError there would throw away every measurement above it.
+SPEEDUP_UNAVAILABLE = "n/a"
+#< the synthetic rows the write-cost section inserts, kept far past any real
+#  played_at so the cleanup DELETE can name them exactly
+SYNTHETIC_PLAYED_AT_BASE = 2e9
+SYNTHETIC_PLAY_COUNT = 2000
+
+
+def speedup(baselineMs, variantMs):
+    """"2.4x" - or SPEEDUP_UNAVAILABLE rather than a ZeroDivisionError."""
+    if not baselineMs:
+        return SPEEDUP_UNAVAILABLE
+    return f"{variantMs / baselineMs:.1f}x"
+
+
+def workingCopy(dbPath, intoDir):
+    """A throwaway FILE copy of the database, which is the only thing the rest
+    of this script is allowed to touch.
+
+    simulateMerge below nulls every canonical_id and rewrites the column from a
+    title rule, adds a column to `plays`, and inserts SYNTHETIC_PLAY_COUNT
+    rows. Against the path someone actually types that is not a measurement, it
+    is an unrequested merge on real listening history - and in this repo the
+    dev checkout's Database/Data IS the live data. A Ctrl+C used to leave the
+    synthetic plays behind too.
+
+    A file rather than :memory:. The whole point of this benchmark is which
+    query plan reads a disk-backed database faster; an in-memory copy has no
+    page cache to miss and would measure something else entirely. backup()
+    rather than a file copy: it takes a consistent snapshot including anything
+    still sitting in the WAL."""
+    source = sqlite3.connect(f"file:{Path(dbPath).resolve().as_posix()}?mode=ro", uri=True)
+    try:
+        copyPath = Path(intoDir) / "benchmark-copy.db"
+        destination = sqlite3.connect(copyPath)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+    finally:
+        source.close()
+    return copyPath
 
 
 def simulateMerge(dbPath):
@@ -80,14 +124,34 @@ def timed(dbPath, sql, params):
     return best
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        print(f"usage: {Path(__file__).name} path/to/spotify_stats.db", file=sys.stderr)
+        return 2
+    try:
+        #< every mutation below lands here, never on what the operator named
+        with tempfile.TemporaryDirectory(prefix="merge-benchmark-") as workDir:
+            return _run(workingCopy(argv[0], workDir))
+    except sqlite3.OperationalError as e:
+        print(f"could not open {argv[0]}: {e}", file=sys.stderr)
+        return 1
+
+
+def _run(DB):
     merged = simulateMerge(DB)
     conn = sqlite3.connect(DB)
-    user = conn.execute("SELECT username FROM plays GROUP BY username "
-                        "ORDER BY COUNT(*) DESC LIMIT 1").fetchone()[0]
-    plays = conn.execute("SELECT COUNT(*) FROM plays WHERE username=?", (user,)).fetchone()[0]
+    try:
+        busiest = conn.execute("SELECT username FROM plays GROUP BY username "
+                               "ORDER BY COUNT(*) DESC LIMIT 1").fetchone()
+        if busiest is None:
+            print("no plays in this database - nothing to measure", file=sys.stderr)
+            return 1
+        user = busiest[0]
+        plays = conn.execute("SELECT COUNT(*) FROM plays WHERE username=?", (user,)).fetchone()[0]
+    finally:
+        conn.close()
     yearAgo = time.time() - 365 * 24 * 3600
-    conn.close()
     print(f"  {plays} plays for {user}; {merged} tracks merged into a canonical\n")
 
     cases = {
@@ -132,14 +196,18 @@ def main():
         forward = [timed(DB, sql, params) for sql in (a, b, c)]
         backward = list(reversed([timed(DB, sql, params) for sql in (c, b, a)]))
         ta, tb, tc = (min(f, b_) for f, b_ in zip(forward, backward))
-        verdict = f"join {tb / ta:.1f}x, denorm {tc / ta:.1f}x"
+        verdict = f"join {speedup(ta, tb)}, denorm {speedup(ta, tc)}"
         print(f"  {label:34} {ta:9.1f}ms {tb:9.1f}ms {tc:9.1f}ms   {verdict}")
 
     # C's write cost is the per-play INSERT, not a recomputeSkipFlags-shaped
     # rewrite. The first version of this measured the latter - and measured
     # nothing, because `UPDATE plays SET is_skip = is_skip` touches neither the
     # new column nor its index, so SQLite maintains neither.
-    trackId = sqlite3.connect(DB).execute("SELECT track_id FROM plays LIMIT 1").fetchone()[0]
+    conn = sqlite3.connect(DB)
+    try:
+        trackId = conn.execute("SELECT track_id FROM plays LIMIT 1").fetchone()[0]
+    finally:
+        conn.close()   #< the ad-hoc connection here used to be left open
     print()
     for label, withColumn in (("without C's column + index", False), ("with C's column + index", True)):
         conn = sqlite3.connect(DB)
@@ -155,15 +223,24 @@ def main():
             columns += ", canonical_track_id"
             values += ", ?"
         start = time.perf_counter()
-        with conn:
-            for offset in range(2000):
-                row = (user, trackId, 2e9 + offset) + ((trackId,) if withColumn else ())
-                conn.execute(f"INSERT OR IGNORE INTO plays ({columns}) VALUES ({values})", row)
-        print(f"  2000 inserts {label:30} {(time.perf_counter() - start) * 1000:7.0f}ms")
-        with conn:
-            conn.execute("DELETE FROM plays WHERE played_at >= 2e9 AND played_at < 2e9 + 2000")
-        conn.close()
+        try:
+            with conn:
+                for offset in range(SYNTHETIC_PLAY_COUNT):
+                    row = (user, trackId, SYNTHETIC_PLAYED_AT_BASE + offset) + ((trackId,) if withColumn else ())
+                    conn.execute(f"INSERT OR IGNORE INTO plays ({columns}) VALUES ({values})", row)
+            print(f"  {SYNTHETIC_PLAY_COUNT} inserts {label:30} "
+                  f"{(time.perf_counter() - start) * 1000:7.0f}ms")
+        finally:
+            #< in a finally so a Ctrl+C mid-run doesn't leave them behind. The
+            #  copy is thrown away either way now, but this section is the one
+            #  a future reader is most likely to lift out of here.
+            with conn:
+                conn.execute("DELETE FROM plays WHERE played_at >= ? AND played_at < ?",
+                             (SYNTHETIC_PLAYED_AT_BASE,
+                              SYNTHETIC_PLAYED_AT_BASE + SYNTHETIC_PLAY_COUNT))
+            conn.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

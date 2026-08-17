@@ -228,10 +228,25 @@ def findBackfillCrossReleaseDuplicates(conn: sqlite3.Connection, toleranceSecond
     a DIFFERENT release id of the same recording, one row per duplicate.
     Reports the listener row's track id beside the backfill row's: those two
     ids differing is the whole finding, and the operator reads them to confirm
-    the pair is one recording before --apply."""
+    the pair is one recording before --apply.
+
+    Answers nothing on a database older than the canonical_id column (1.49)
+    rather than raising. This tool is pointed at BACKUPS - that is most of what
+    it is for - and "no such column: lt.canonical_id" as a bare traceback reads
+    like the tool is broken rather than like the file predates the query. The
+    other two pairings are unaffected and still run, which matters: a pre-1.49
+    database is exactly where the end-time duplicates are."""
+    if not _hasColumn(conn, "tracks", "canonical_id"):
+        print("note: this database predates tracks.canonical_id (1.49) - "
+              "skipping the cross-release pairing", file=sys.stderr)
+        return []
     return conn.execute(_FIND_CROSS_RELEASE_SQL,
                         (toleranceSeconds, playedAtToleranceSeconds,
                          playedAtToleranceSeconds)).fetchall()
+
+
+def _hasColumn(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
 def deleteBackfillDuplicates(conn: sqlite3.Connection, playIds: list[int]) -> int:

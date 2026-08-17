@@ -30,6 +30,7 @@ import collections
 import re
 import sqlite3
 import sys
+from pathlib import Path
 
 #< the pair must agree within this to be the same recording at all. Same value
 #  the earlier measurements used, so the numbers stay comparable.
@@ -64,8 +65,19 @@ def titleKey(name: str) -> str:
     return name.lower()
 
 
+def openReadOnly(dbPath):
+    """A connection that CANNOT write to, or create, the file it names.
+
+    This tool documents itself as read-only and was not: a plain connect()
+    creates a missing file, so a mistyped path left an empty database behind
+    and the run then reported a confident zero of everything about it. mode=ro
+    makes both failures loud - a missing file raises rather than appearing, and
+    a stray write raises rather than landing on real listening history."""
+    return sqlite3.connect(f"file:{Path(dbPath).resolve().as_posix()}?mode=ro", uri=True)
+
+
 def load(dbPath):
-    conn = sqlite3.connect(dbPath)
+    conn = openReadOnly(dbPath)
     conn.row_factory = sqlite3.Row
     tracks = conn.execute("""
         SELECT t.id, t.name, t.duration_ms, t.isrc,
@@ -91,7 +103,17 @@ def groupsBy(keyOf, tracks, requireDuration=True):
         if len(items) < 2:
             continue
         if requireDuration:
-            durations = [t["duration_ms"] or 0 for t in items]
+            # `or 0` used to fold a NULL into a zero-length track, so one
+            # unstamped release dragged the spread past the tolerance and the
+            # WHOLE group went - every valid member with it. An unknown
+            # duration is not a disagreement; it is an absence of evidence, so
+            # it abstains. But a group of NOTHING but unknowns proves nothing
+            # either, and this tool exists to measure the rule rather than to
+            # be generous about it - so those are still dropped.
+            durations = [t["duration_ms"] for t in items
+                         if t["duration_ms"] is not None and t["duration_ms"] > 0]
+            if len(durations) < 2:
+                continue
             if max(durations) - min(durations) > DURATION_TOLERANCE_MS:
                 continue
         grouped[key] = items
