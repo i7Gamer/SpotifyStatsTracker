@@ -171,6 +171,53 @@ class TestRunBackup(BackupWorkerTestCase):
         leftovers = sorted(p.name for p in (self.root / "Backups").iterdir())
         self.assertEqual(leftovers, [])
 
+    def test_a_cleanup_that_itself_fails_does_not_hide_why_the_copy_failed(self):
+        """The whole point of the cleanup is a disk-full copy, and on Windows a
+        scanner holding the freshly-written .partial for a moment is exactly
+        when the unlink loses. Letting that PermissionError replace the
+        OperationalError would answer "why did my backup fail?" with the
+        janitor's problem instead of the disk's."""
+        worker = self._makeWorker()
+        realConnect = sqlite3.connect
+        copyFailure = sqlite3.OperationalError("database or disk is full")
+
+        class _SourceWhoseCopyFails:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            def backup(self, *args, **kwargs):
+                raise copyFailure
+
+        def connectFailingSource(path, *args, **kwargs):
+            conn = realConnect(path, *args, **kwargs)
+            return _SourceWhoseCopyFails(conn) if Path(path) == self.dbPath else conn
+
+        realUnlink = Path.unlink
+
+        def unlinkThatLoses(self, missing_ok=False):
+            # Only THIS file: patch.object on Path.unlink is process-wide, and
+            # the suite runs worker threads from other tests in the same
+            # process. Everything else gets the real one.
+            if self.suffix == ".partial":
+                raise PermissionError("[WinError 32] used by another process")
+            return realUnlink(self, missing_ok=missing_ok)
+
+        with patch.object(backupModule.sqlite3, "connect", side_effect=connectFailingSource):
+            with patch.object(Path, "unlink", unlinkThatLoses):
+                with self.assertRaises(sqlite3.OperationalError) as raised:
+                    worker.runBackup()
+
+        self.assertIs(raised.exception, copyFailure)
+        # And the file is simply left for the next run's sweep - no retry, no
+        # rename. (That the cleanup is ATTEMPTED at all is the sibling test
+        # above; this one is about what happens when it loses.)
+        leftovers = sorted(p.name for p in (self.root / "Backups").iterdir())
+        self.assertEqual(len(leftovers), 1)
+        self.assertTrue(leftovers[0].endswith(".partial"))
+
     def test_no_partial_files_left_behind(self):
         worker = self._makeWorker()
 

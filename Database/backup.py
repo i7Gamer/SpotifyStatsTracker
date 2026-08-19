@@ -86,6 +86,24 @@ def _envInt(name: str, default: int) -> int:
         return default
 
 
+def _discardPartial(partialPath: Path) -> None:
+    """Remove a .partial the caller is about to raise about.
+
+    Swallowing the removal's own failure is the point: both callers run this
+    from an `except` block, and an exception raised there REPLACES the one
+    being handled. The failure this cleans up after is a disk-full copy, and on
+    Windows the moment a full-size file is written is exactly when a scanner
+    may still hold it - answering "why did my backup fail?" with the janitor's
+    PermissionError instead of the disk's error would send the operator after
+    the wrong problem. The leftover is logged and collected by the sweep at the
+    top of the next run."""
+    try:
+        partialPath.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("Could not remove the incomplete backup %s (it will be swept on the next run): %s",
+                       partialPath, parseError(e))
+
+
 class BackupWorker(WorkerTelemetryMixin):
     """One per process (the database is shared across every user).
 
@@ -207,7 +225,7 @@ class BackupWorker(WorkerTelemetryMixin):
                 # and a full-size copy of the database left behind is exactly
                 # what must not happen when the copy failed for want of space.
                 destination.close()
-                partialPath.unlink(missing_ok=True)
+                _discardPartial(partialPath)
                 raise
             finally:
                 destination.close()
@@ -217,7 +235,7 @@ class BackupWorker(WorkerTelemetryMixin):
         try:
             os.replace(partialPath, finalPath)
         except Exception:
-            partialPath.unlink(missing_ok=True)
+            _discardPartial(partialPath)
             raise
         logger.info("Database backed up to %s", finalPath)
         self._rotate()
