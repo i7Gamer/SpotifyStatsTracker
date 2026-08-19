@@ -26,6 +26,7 @@ guarantee.
 """
 import sys
 import os
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -508,6 +509,146 @@ class TestReconcileAcrossReleases(unittest.TestCase):
         db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.deletePlay.assert_called_once_with("alice", "t1", API_TS + 1)
+
+
+class TestIdentityGroupingHoldsAsAPartition(unittest.TestCase):
+    """_groupPlaysByIdentity as a structure, not as a scenario.
+
+    Every test around it drives the reconciler and checks which rows were
+    deleted, which is the right way to pin the BEHAVIOUR - but it exercises the
+    union-find underneath only along the paths those examples happen to take.
+    The two identity proofs are transitive and unioned, so the bugs available
+    here are structural (a play in two buckets, a chain that fails to close,
+    a bucket that swallows a play no proof reaches) and they show up on shapes
+    nobody would think to write down.
+
+    This decides what may be DELETED from live history, so it is worth checking
+    as an invariant over many shapes rather than a handful of them.
+
+    A FIXED seed: a failure has to be reproducible from the failure alone, and
+    a random one would make the next run a different test."""
+
+    RANDOM_SEED = 20260819
+    TRIALS = 3000
+    #< a deliberately tiny alphabet - collisions are the whole point, and with
+    #  realistic ids most random rows would share nothing and prove nothing
+    TRACK_IDS = ("t1", "t2", "t3", "t4")
+    CANONICAL_IDS = (None, "t1", "t3")
+    ISRCS = (None, "", "  ", "AAA", "BBB")
+    MAX_PLAYS = 6
+
+    @staticmethod
+    def _mergeGroup(play):
+        return play.get("canonicalId") or play["id"]
+
+    @staticmethod
+    def _identityIsrc(play):
+        return (play.get("isrc") or "").strip()
+
+    @staticmethod
+    def _bucketOf(grouped, play):
+        for key, plays in grouped.items():
+            if any(other is play for other in plays):
+                return key
+        return None
+
+    def _randomPlays(self, rng):
+        return [{"id": rng.choice(self.TRACK_IDS),
+                 "canonicalId": rng.choice(self.CANONICAL_IDS),
+                 "isrc": rng.choice(self.ISRCS),
+                 "playedAt": index}
+                for index in range(rng.randint(1, self.MAX_PLAYS))]
+
+    def _sharesAProof(self, left, right):
+        if self._mergeGroup(left) == self._mergeGroup(right):
+            return True
+        isrc = self._identityIsrc(left)
+        return bool(isrc) and isrc == self._identityIsrc(right)
+
+    def _expectedPartition(self, plays):
+        """The answer worked out a DIFFERENT way: connected components over the
+        proof edges, walked breadth-first.
+
+        An oracle, not a paraphrase. Checking the implementation against a list
+        of properties is what let the first version of this test pass while
+        grouping every unstamped track together - a property that says "joined
+        pairs share a proof" is silent about pairs that were joined for no
+        reason at all. Recomputing the whole partition catches both directions:
+        anything wrongly split, and anything wrongly merged."""
+        neighbours = {index: set() for index in range(len(plays))}
+        for leftIndex, left in enumerate(plays):
+            for rightIndex, right in enumerate(plays):
+                if leftIndex < rightIndex and self._sharesAProof(left, right):
+                    neighbours[leftIndex].add(rightIndex)
+                    neighbours[rightIndex].add(leftIndex)
+
+        seen: set = set()
+        components = set()
+        for start in range(len(plays)):
+            if start in seen:
+                continue
+            component: set = set()
+            pending = [start]
+            while pending:
+                node = pending.pop()
+                if node in component:
+                    continue
+                component.add(node)
+                seen.add(node)
+                pending.extend(neighbours[node] - component)
+            components.add(frozenset(component))
+        return components
+
+    def test_the_grouping_is_exactly_the_partition_the_two_proofs_imply(self):
+        rng = random.Random(self.RANDOM_SEED)
+
+        for trial in range(self.TRIALS):
+            plays = self._randomPlays(rng)
+            indexOf = {id(play): index for index, play in enumerate(plays)}
+
+            grouped = Database._groupPlaysByIdentity(plays)
+
+            with self.subTest(trial=trial, plays=plays):
+                actual = {frozenset(indexOf[id(play)] for play in bucket)
+                          for bucket in grouped.values()}
+                # A partition first: a play in two buckets could be deleted
+                # twice, one in none is a row the pass silently stops seeing.
+                # Compared by COUNT as well as by set, since two buckets
+                # holding the same play collapse into one frozenset.
+                placed = [play for bucket in grouped.values() for play in bucket]
+                self.assertEqual(len(placed), len(plays))
+                self.assertEqual(actual, self._expectedPartition(plays))
+
+    def test_the_two_proofs_chain_through_each_other(self):
+        """The transitivity the union is for, stated on purpose: a shared ISRC
+        joins A to B, a shared merge group joins B to C, and C is then the same
+        recording as A without ever having been compared with it. This is what
+        makes the pass see a cross-release duplicate that reaches it in two
+        hops - and it is also the property that makes an over-broad proof
+        expensive, which is why name+duration is left to the offline sweep."""
+        plays = [
+            {"id": "release_a", "canonicalId": None, "isrc": "GBAYE0601498"},
+            {"id": "release_b", "canonicalId": None, "isrc": "GBAYE0601498"},
+            {"id": "release_c", "canonicalId": "release_b", "isrc": None},
+        ]
+
+        grouped = Database._groupPlaysByIdentity(plays)
+
+        self.assertEqual(len(grouped), 1, "the chain did not close")
+
+    def test_an_unstamped_track_is_not_the_same_recording_as_another(self):
+        """An empty or whitespace ISRC is an absence, not a shared identity.
+        Folding every unstamped track in the window into one bucket is how this
+        would delete across different songs."""
+        plays = [
+            {"id": "t1", "canonicalId": None, "isrc": ""},
+            {"id": "t2", "canonicalId": None, "isrc": "   "},
+            {"id": "t3", "canonicalId": None, "isrc": None},
+        ]
+
+        grouped = Database._groupPlaysByIdentity(plays)
+
+        self.assertEqual(len(grouped), 3)
 
 
 class TestReconcileWindowBoundary(unittest.TestCase):
