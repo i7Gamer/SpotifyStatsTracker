@@ -545,13 +545,6 @@ class TestIdentityGroupingHoldsAsAPartition(unittest.TestCase):
     def _identityIsrc(play):
         return (play.get("isrc") or "").strip()
 
-    @staticmethod
-    def _bucketOf(grouped, play):
-        for key, plays in grouped.items():
-            if any(other is play for other in plays):
-                return key
-        return None
-
     def _randomPlays(self, rng):
         return [{"id": rng.choice(self.TRACK_IDS),
                  "canonicalId": rng.choice(self.CANONICAL_IDS),
