@@ -2769,8 +2769,13 @@ class TestUsersAndCookies(RepositoryTestCase):
 
     def test_an_unknown_user_has_no_session_version(self):
         """None, not 0: "no such account" and "this account has never bumped"
-        are different answers, and the guard must not treat a deleted user's
-        cookie as matching version 0."""
+        are different answers, and this layer is where they stay apart.
+
+        What the app then does with None is its own decision, and NOT the
+        obvious one: SpotifyDashboardApp.sessionIsCurrent reads it as 0 on
+        purpose, because it resolved the username from this same table a line
+        earlier - see its docstring before "hardening" that away. Nothing here
+        promises otherwise."""
         self.assertIsNone(self.repo.getUserSessionVersion("nobody"))
 
     def test_bumping_an_unknown_user_is_a_no_op(self):
