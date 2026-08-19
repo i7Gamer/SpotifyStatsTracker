@@ -61,6 +61,7 @@ PROFILE_FLASH_SHARING = "data-sharing"
 PROFILE_FLASH_SPOTIFY = "spotify"
 PROFILE_FLASH_LASTFM = "lastfm"
 PROFILE_FLASH_NOTIFICATIONS = "notifications"
+PROFILE_FLASH_SESSIONS = "sessions"
 
 HTTP_BAD_REQUEST = 400
 # Rate-limited actions render this status instead of redirecting - a 302 would
@@ -211,6 +212,7 @@ def register(app, dashboard):
             dashboard.get_user_db(username, email)
             session["email"] = email
             session["username"] = username
+            dashboard.stampSessionVersion(username)
             return redirect(nextUrl or url_for("dashboard"))
 
         cookies = request.form.get("cookies", "")
@@ -242,6 +244,7 @@ def register(app, dashboard):
             dashboard.get_user_db(username, email)
         session["email"] = email
         session["username"] = username
+        dashboard.stampSessionVersion(username)
 
         return redirect(nextUrl or url_for("dashboard"))
     app.add_url_rule("/login", "login", login, methods=["GET", "POST"])
@@ -302,6 +305,7 @@ def register(app, dashboard):
             dashboard.get_user_db(username, email)
         session["email"] = email
         session["username"] = username
+        dashboard.stampSessionVersion(username)
 
         return redirect(url_for("dashboard"))
     app.add_url_rule("/register", "register", register_, methods=["GET", "POST"])
@@ -353,10 +357,19 @@ def register(app, dashboard):
         else:
             dashboard.get_user_db(username, email)
 
+        # The point of a reset that isn't just a new password: every session
+        # this account has anywhere ends here, including ones on devices this
+        # browser has no reach over. Sessions are signed cookies with no
+        # server-side store, so the bump IS the logout - see
+        # SESSION_VERSION_KEY.
+        dashboard.repo.bumpUserSessionVersion(username)
+
         session.clear()   #< a reset logs this account in - see /login's password branch
         session.permanent = True
         session["email"] = email
         session["username"] = username
+        #< after the bump, or the reset signs out the device performing it
+        dashboard.stampSessionVersion(username)
 
         return redirect(url_for("dashboard"))
     app.add_url_rule("/reset-password", "resetPassword", resetPassword, methods=["GET", "POST"])
@@ -714,6 +727,31 @@ def register(app, dashboard):
         ), responseStatus
     app.add_url_rule("/profile/notifications", "profileNotificationsPage", profileNotificationsPage,
                      methods=["GET", "POST"])
+
+    def profileSignOutEverywhere():
+        """End every session this account has, on every device.
+
+        There is nothing to delete: sessions are signed cookies with no
+        server-side store, so what actually happens is that the account's
+        session_version moves and every cookie carrying the old number stops
+        being accepted (see SESSION_VERSION_KEY). That includes the cookie
+        making THIS request, which is why the session is re-stamped straight
+        afterwards - otherwise the button signs the user out of the browser
+        they pressed it in, which reads as a broken feature rather than a
+        thorough one."""
+        email, username, db = dashboard.get_current_user_or_redirect()
+        if not email:
+            return redirect(url_for("login"))
+
+        dashboard.repo.bumpUserSessionVersion(username)
+        dashboard.stampSessionVersion(username)
+        return _profileRedirect("profilePage", PROFILE_FLASH_SESSIONS,
+                                success="Signed out on every other device.")
+    # POST-only + CSRF-protected: it changes state, so it must not be reachable
+    # through a cross-site GET link - the same rule /logout and
+    # /profile/disconnect follow.
+    app.add_url_rule("/profile/sign-out-everywhere", "profileSignOutEverywhere",
+                     profileSignOutEverywhere, methods=["POST"])
 
     def profileDisconnect():
         if not os.environ.get("SPOTIFY_CALLBACK_URL"):

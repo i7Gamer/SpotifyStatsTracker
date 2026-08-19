@@ -318,7 +318,14 @@ CREATE TABLE IF NOT EXISTS users (
     spotify_needs_reauth  INTEGER NOT NULL DEFAULT 0,
     milestones_baseline_at REAL,
     hide_tags_panel       INTEGER NOT NULL DEFAULT 0,
-    hide_now_playing      INTEGER NOT NULL DEFAULT 0
+    hide_now_playing      INTEGER NOT NULL DEFAULT 0,
+    -- Bumped to end every session this account has anywhere: a password reset,
+    -- or "Sign out everywhere". Sessions are signed COOKIES with no server-side
+    -- store, so there is nothing to delete - each cookie carries a copy of this
+    -- number and stops matching the moment it moves. DEFAULT 0 is load-bearing:
+    -- a cookie minted before the column existed carries no version at all, and
+    -- the guard reads a missing one as 0, so an upgrade logs nobody out.
+    session_version       INTEGER NOT NULL DEFAULT 0
 );
 
 -- Per-user play history. This is the only high-cardinality, per-user table -

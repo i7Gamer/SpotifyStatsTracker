@@ -178,6 +178,19 @@ DISPLAY_NAME_ALLOWED_PATTERN = r"^[A-Za-z0-9 _-]+$"
 # refresh token (and, via backfill, their listening history) on the victim's
 # account.
 SPOTIFY_OAUTH_STATE_SESSION_KEY = "spotify_oauth_state"
+
+# The session cookie's copy of users.session_version. Sessions here are signed
+# COOKIES with no server-side store, so there is nothing to delete when someone
+# wants their other devices signed out - instead every cookie carries this
+# number and stops matching the moment the account's copy moves (a password
+# reset, or "Sign out everywhere").
+#
+# A MISSING key reads as 0, which is what makes the upgrade free: every cookie
+# minted before the column existed carries no version at all, and the column
+# starts at 0 for everyone, so nobody is logged out by the upgrade itself. The
+# first bump ends those cookies too - by which point their owner has asked for
+# exactly that.
+SESSION_VERSION_KEY = "sv"
 SPOTIFY_OAUTH_STATE_NUM_BYTES = 32   #< entropy fed to secrets.token_urlsafe
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes

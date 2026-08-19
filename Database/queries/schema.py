@@ -99,6 +99,18 @@ class SchemaQueries:
             with conn:
                 conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
 
+    def addUserSessionVersionColumnIfMissing(self) -> None:
+        """SCHEMA's CREATE TABLE IF NOT EXISTS only shapes brand-new databases -
+        a users table that already existed before session_version was added
+        needs an explicit ALTER (migrate1_50_0). Guarded so re-running the
+        migration against an already-migrated database doesn't fail, and so a
+        retry never resets a counter someone has already bumped."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "session_version" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0")
+
     def addSpotifyApiColumnsToUsersIfMissing(self) -> None:
         """Add Spotify API columns to users table if missing."""
         conn = self._conn()

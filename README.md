@@ -24,6 +24,7 @@ A self-hosted web application for recording and exploring your Spotify listening
 - **Overview Page**: See total database statistics, your listening breakdown, API backfill configuration, and genre-backfill progress
 - **Auto-Import**: Automatically import files from the 'auto-import' folder with optional keyword filtering
 - **Cross-Linking**: Click on artist names to explore artist pages from any song, and album links to see album details
+- **Sign Out Everywhere**: Staying signed in is per browser, so logging out only ends the session in front of you. "Sign Out Everywhere Else" under Profile > Account ends every other one at once - a phone you no longer have, a shared computer, a browser you can't get back to - and you stay signed in where you pressed it. A password reset does the same automatically
 
 ## Installation
 

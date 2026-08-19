@@ -43,6 +43,12 @@ def register(app, dashboard):
         email = session.get("email")
         if not email or not dashboard.is_user_logged_in(email):
             return None
+        # These routes authorize straight off the session instead of going
+        # through @requiresUser, so the session-version check has to be
+        # repeated here or a device that was signed out everywhere keeps
+        # pulling album art with a cookie nothing else accepts.
+        if not dashboard.sessionIsCurrent():
+            return None
         return dashboard.get_username_for_email(email)
 
     def serveTrackImage(username, filename):

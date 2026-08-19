@@ -476,6 +476,13 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         if not email or not self.is_user_logged_in(email):
             return None, None, None
 
+        if not self.sessionIsCurrent():
+            # Cleared, not merely refused: this cookie can never be accepted
+            # again, and leaving it in place means the browser re-sends it on
+            # every request and the next page renders half-logged-in.
+            session.clear()
+            return None, None, None
+
         # Ensure the username matches the correct email mapping to prevent session pollution from legacy user "Tzur"
         correct_username = self.get_username_for_email(email)
         if not correct_username:
@@ -488,6 +495,43 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         db = self.get_user_db(username, email)
         g.db = db
         return email, username, db
+
+    def sessionIsCurrent(self) -> bool:
+        """Whether THIS request's session cookie still counts as signed in.
+
+        Sessions are signed cookies with no server-side store, so a "log out"
+        could only ever clear the cookie in front of it - every other device
+        kept a valid session for the rest of its 30 days, including after a
+        password reset. users.session_version closes that: each cookie carries
+        a copy, and bumping the stored value invalidates every cookie for the
+        account at once (see SESSION_VERSION_KEY).
+
+        A missing key reads as 0 on BOTH sides, which is what makes the upgrade
+        free - every cookie already in the wild carries no version, and the
+        column starts at 0. An account with no row at all reads as 0 too rather
+        than as a rejection: that case cannot arise from a real request (every
+        caller has already been through is_user_logged_in, which resolves the
+        username from that same table), so refusing it would only ever fire
+        where the layer above has been stubbed, and never for a session this is
+        meant to end.
+
+        Deliberately NOT folded into is_user_logged_in: that one is also called
+        from the background login loop, where there is no request and no
+        session to read."""
+        email = session.get("email")
+        username = self.get_username_for_email(email) if email else None
+        if not username:
+            return False
+        return session.get(SESSION_VERSION_KEY, 0) == (self.repo.getUserSessionVersion(username) or 0)
+
+    def stampSessionVersion(self, username) -> None:
+        """Mark this session as belonging to the account's CURRENT generation.
+
+        Every door into a session has to call this - a login that skips it is
+        signed out again by its own next request, and the browser that bumps
+        the version has to re-stamp itself or it signs out the device the user
+        is holding."""
+        session[SESSION_VERSION_KEY] = self.repo.getUserSessionVersion(username) or 0
 
     def _detectMilestonesSafely(self, db, username):
         """Run one user's milestone-detection pass from the periodic background

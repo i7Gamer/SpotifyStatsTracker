@@ -2742,6 +2742,49 @@ class TestUsersAndCookies(RepositoryTestCase):
         self.repo.addUserPasswordHashColumnIfMissing()
         self.assertIsNone(self.repo.getUserPasswordHash("alice"))
 
+    def test_session_version_starts_at_zero(self):
+        """Zero, not NULL: a session cookie minted before this column existed
+        carries no version at all, and the check reads a missing one as 0 - so
+        the two have to agree or the upgrade logs everyone out."""
+        self.repo.upsertUser("alice", "alice@example.com")
+
+        self.assertEqual(self.repo.getUserSessionVersion("alice"), 0)
+
+    def test_bumping_the_session_version_advances_it(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+
+        self.assertEqual(self.repo.bumpUserSessionVersion("alice"), 1)
+        self.assertEqual(self.repo.bumpUserSessionVersion("alice"), 2)
+        self.assertEqual(self.repo.getUserSessionVersion("alice"), 2)
+
+    def test_bumping_one_user_leaves_another_alone(self):
+        """The counter ends THIS account's sessions. A shared bump would log
+        the whole instance out of every device on one password reset."""
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+
+        self.repo.bumpUserSessionVersion("alice")
+
+        self.assertEqual(self.repo.getUserSessionVersion("bob"), 0)
+
+    def test_an_unknown_user_has_no_session_version(self):
+        """None, not 0: "no such account" and "this account has never bumped"
+        are different answers, and the guard must not treat a deleted user's
+        cookie as matching version 0."""
+        self.assertIsNone(self.repo.getUserSessionVersion("nobody"))
+
+    def test_bumping_an_unknown_user_is_a_no_op(self):
+        self.assertIsNone(self.repo.bumpUserSessionVersion("nobody"))
+
+    def test_add_session_version_column_if_missing_is_a_noop_when_present(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.bumpUserSessionVersion("alice")
+
+        self.repo.addUserSessionVersionColumnIfMissing()
+
+        #< idempotent, and it does not reset what is already there
+        self.assertEqual(self.repo.getUserSessionVersion("alice"), 1)
+
 
 class TestImportProgress(RepositoryTestCase):
     def setUp(self):

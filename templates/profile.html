@@ -11,7 +11,7 @@
 {% block profileTitle %}Account{% endblock %}
 {% block profileBody %}
 
-{{ profileMacros.flashFallback(['display-name', 'preferences']) }}
+{{ profileMacros.flashFallback(['display-name', 'preferences', 'sessions']) }}
 
 <section class="profile-section">
   <h2 id="display-name">Display Name</h2>
@@ -147,6 +147,20 @@
     {% endif %}
 
     <button type="submit" class="primary-button profile-wide-button">Save Preferences</button>
+  </form>
+</section>
+
+<section class="profile-section">
+  <h2 id="sessions">Signed-in Devices</h2>
+  {{ profileMacros.flash('sessions') }}
+  <p class="profile-hint">
+    Staying signed in is per browser, and logging out only ends the session in front of you.
+    This ends every other one at once - a phone you no longer have, a shared computer, a
+    browser you cannot get back to. You stay signed in here.
+  </p>
+  <form method="post" action="{{ url_for('profileSignOutEverywhere') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    <button type="submit" class="primary-button is-danger profile-wide-button">Sign Out Everywhere Else</button>
   </form>
 </section>
 {% endblock %}

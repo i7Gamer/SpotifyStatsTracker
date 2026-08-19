@@ -170,6 +170,35 @@ class UserQueries:
         row = conn.execute("SELECT password_hash FROM users WHERE username=?", (username,)).fetchone()
         return row["password_hash"] if row else None
 
+    def getUserSessionVersion(self, username: str) -> int | None:
+        """The counter every one of this account's session cookies carries a
+        copy of, or None when there is no such account.
+
+        None rather than 0 for an unknown user, because the two are different
+        answers: a cookie naming an account that no longer exists must not be
+        accepted just because 0 happens to be where everybody starts."""
+        conn = self._conn()
+        row = conn.execute("SELECT session_version FROM users WHERE username=?", (username,)).fetchone()
+        return row["session_version"] if row else None
+
+    def bumpUserSessionVersion(self, username: str) -> int | None:
+        """End every session this account has anywhere. Returns the new value,
+        or None when there is no such account.
+
+        The whole feature: sessions are signed cookies with no server-side
+        store, so there is nothing to delete - the cookies stop matching. The
+        caller that IS the current browser has to re-stamp its own session
+        afterwards, or it logs itself out along with the rest."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                "UPDATE users SET session_version = session_version + 1 WHERE username=?",
+                (username,),
+            )
+            if not cur.rowcount:
+                return None
+        return self.getUserSessionVersion(username)
+
     def getUserSpotifyCredentials(self, username: str) -> dict | None:
         conn = self._conn()
         row = conn.execute(
