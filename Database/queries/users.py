@@ -174,9 +174,11 @@ class UserQueries:
         """The counter every one of this account's session cookies carries a
         copy of, or None when there is no such account.
 
-        None rather than 0 for an unknown user, because the two are different
-        answers: a cookie naming an account that no longer exists must not be
-        accepted just because 0 happens to be where everybody starts."""
+        None rather than 0 for an unknown user so the caller can tell "never
+        bumped" from "no such row" - what it then DOES with that is its own
+        decision, and SpotifyDashboardApp.sessionIsCurrent (the only reader)
+        deliberately treats the second as 0, having already resolved the
+        username from this same table."""
         conn = self._conn()
         row = conn.execute("SELECT session_version FROM users WHERE username=?", (username,)).fetchone()
         return row["session_version"] if row else None

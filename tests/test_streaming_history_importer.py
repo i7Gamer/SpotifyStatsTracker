@@ -912,6 +912,31 @@ class TestVideoExportRows(unittest.TestCase):
         self.assertEqual(importer._fetchTrackMeta.call_count, 1)
         self.assertEqual({meta["name"] for meta in metas}, {"Gone Song"})
 
+    def test_a_nameless_row_is_still_dropped_rather_than_given_a_synthetic(self):
+        """_processPlay refuses to invent a track for a row with no name - it
+        counts droppedNoTrack and moves on - and the prefetch's own synthetic
+        has to honour the same precondition.
+
+        tracks.name is NOT NULL, so a nameless synthetic does not fail quietly:
+        upsertTrack raises inside _applyImportData's transaction, which rolls
+        back and fails the whole file. A counted drop would have become a failed
+        import."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer._fetchTrackMeta = MagicMock(side_effect=Exception("404 not found"))
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+            "master_metadata_track_name": None,          #< a podcast row, or an edited file
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",   #< ...but carrying a track uri
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedNoTrack"), 1)
+
     def test_a_transient_prefetch_failure_is_still_retried_per_play(self):
         """The exception NOT to freeze into the catalog. A rate limit or an
         outage says nothing about whether the track exists, so it must stay out

@@ -152,6 +152,80 @@ class TestTheGuard(SessionVersionTestCase):
         self.assertEqual(404, client.get("/img/alice/tracks/abc.jpeg").status_code)
 
 
+class TestEverySurfaceThatReadsTheSession(SessionVersionTestCase):
+    """The guard cannot live only where @requiresUser looks.
+
+    /overview is PUBLIC - it renders instance-wide stats for anybody - and
+    decides on its own whether to add the viewer's account block, straight off
+    session["email"]. So do the context processors behind the topbar. A device
+    signed out everywhere must read as anonymous to all of them, not just to
+    the pages that redirect."""
+
+    def test_a_public_page_shows_a_signed_out_device_no_account_block(self):
+        dash = self._liveApp()
+        username, _ = self._account(dash)
+        self.enterContext(patch.object(dash, "get_username_for_email", return_value="alice"))
+        client = self._clientWithSession(dash, version=0)
+
+        #< the control: while the version matches, the block IS rendered
+        self.assertIn("Your Sync Status", client.get("/overview").data.decode())
+
+        dash.repo.bumpUserSessionVersion(username)
+        dash.repo.commit()
+
+        self.assertNotIn("Your Sync Status", client.get("/overview").data.decode())
+
+    def test_a_signed_out_device_is_not_still_an_admin_in_the_topbar(self):
+        """The context processors read session["username"] directly, and they
+        run on public pages too - where nothing else has had a chance to reject
+        the cookie."""
+        dash = self._liveApp()
+        username, _ = self._account(dash)
+        dash.repo.setUserAdmin(username, True)
+        dash.repo.commit()
+        self.enterContext(patch.object(dash, "get_username_for_email", return_value="alice"))
+        client = self._clientWithSession(dash, version=0)
+
+        #< the <a>, not the string: overview.html carries "/admin" inside an
+        #  HTML COMMENT, which matches a substring assertion and proves nothing
+        self.assertIsNotNone(self._adminLink(client), "control failed: no admin link to lose")
+
+        dash.repo.bumpUserSessionVersion(username)
+        dash.repo.commit()
+
+        self.assertIsNone(self._adminLink(client))
+
+    @staticmethod
+    def _adminLink(client):
+        soup = BeautifulSoup(client.get("/overview").data.decode(), "html.parser")
+        return soup.find("a", href="/admin")
+
+    def test_a_static_asset_is_not_gated_on_a_session_at_all(self):
+        """Static files carry no account data and are requested dozens at a
+        time - checking a session version for each would be pure cost, and a
+        signed-out device still needs the stylesheet for the login page."""
+        dash = self._liveApp()
+        username, _ = self._account(dash)
+        client = self._clientWithSession(dash, version=0)
+        dash.repo.bumpUserSessionVersion(username)
+        dash.repo.commit()
+
+        with patch.object(dash.repo, "getUserSessionVersion") as version:
+            response = client.get("/static/css/style.css")
+
+        self.assertEqual(200, response.status_code)
+        version.assert_not_called()
+
+    def test_an_anonymous_request_asks_the_database_nothing(self):
+        dash = self._liveApp()
+        self._account(dash)
+
+        with patch.object(dash.repo, "getUserSessionVersion") as version:
+            dash.app.test_client().get("/login")
+
+        version.assert_not_called()
+
+
 class TestStamping(SessionVersionTestCase):
     """Every door into a session has to stamp the current version, or the user
     is logged out again by the very next request."""
@@ -267,6 +341,21 @@ class TestSignOutEverywhere(SessionVersionTestCase):
         response = client.post("/profile/sign-out-everywhere")
 
         self.assertIn("success=", response.headers["Location"])
+
+    def test_the_confirmation_is_actually_rendered_on_the_page(self):
+        """Following the redirect, not just reading it: the flash is attached
+        to a named SECTION, and one naming a section the landing page has no
+        slot for lands in the fallback or nowhere. A confirmation the user
+        never sees is the same as none."""
+        dash = self._liveApp()
+        self._account(dash)
+        self.enterContext(patch.object(dash, "get_username_for_email", return_value="alice"))
+        client = self._clientWithSession(dash, version=0)
+
+        response = client.post("/profile/sign-out-everywhere", follow_redirects=True)
+
+        self.assertEqual(200, response.status_code)
+        self.assertIn("Signed out on every other device.", response.data.decode())
 
     def test_it_is_post_only(self):
         """State-changing, so it must not be reachable by a cross-site GET

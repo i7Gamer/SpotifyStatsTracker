@@ -476,13 +476,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         if not email or not self.is_user_logged_in(email):
             return None, None, None
 
-        if not self.sessionIsCurrent():
-            # Cleared, not merely refused: this cookie can never be accepted
-            # again, and leaving it in place means the browser re-sends it on
-            # every request and the next page renders half-logged-in.
-            session.clear()
-            return None, None, None
-
+        #< no session-version check here: _endSessionsTheAccountHasInvalidated
+        #  has already cleared an out-of-date cookie for this request, so the
+        #  email read above is absent for one and this returns None on its own
         # Ensure the username matches the correct email mapping to prevent session pollution from legacy user "Tzur"
         correct_username = self.get_username_for_email(email)
         if not correct_username:
@@ -496,8 +492,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         g.db = db
         return email, username, db
 
-    def sessionIsCurrent(self) -> bool:
-        """Whether THIS request's session cookie still counts as signed in.
+    def sessionIsCurrent(self, username) -> bool:
+        """Whether THIS request's session cookie still belongs to `username`'s
+        current generation.
 
         Sessions are signed cookies with no server-side store, so a "log out"
         could only ever clear the cookie in front of it - every other device
@@ -508,20 +505,17 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
         A missing key reads as 0 on BOTH sides, which is what makes the upgrade
         free - every cookie already in the wild carries no version, and the
-        column starts at 0. An account with no row at all reads as 0 too rather
-        than as a rejection: that case cannot arise from a real request (every
-        caller has already been through is_user_logged_in, which resolves the
-        username from that same table), so refusing it would only ever fire
-        where the layer above has been stubbed, and never for a session this is
+        column starts at 0.
+
+        A row with no version reads as 0 too, rather than as a rejection: the
+        only caller resolved this username FROM that row a line earlier, so the
+        case is unreachable, and treating it as a rejection would only ever
+        fire where a test has stubbed the lookup - never for a session this is
         meant to end.
 
         Deliberately NOT folded into is_user_logged_in: that one is also called
         from the background login loop, where there is no request and no
         session to read."""
-        email = session.get("email")
-        username = self.get_username_for_email(email) if email else None
-        if not username:
-            return False
         return session.get(SESSION_VERSION_KEY, 0) == (self.repo.getUserSessionVersion(username) or 0)
 
     def stampSessionVersion(self, username) -> None:
@@ -794,6 +788,40 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             stamp = self._staticVersionStamp(values["filename"])
             if stamp:
                 values[STATIC_VERSION_PARAM] = stamp
+
+        @self.app.before_request
+        def _endSessionsTheAccountHasInvalidated():
+            """Drop a cookie whose session_version the account has moved past,
+            once, before anything else looks at it.
+
+            A hook rather than a check per route, because "reads the session"
+            is a much bigger set than "is decorated with @requiresUser": the
+            public /overview page decides on its own whether to add the
+            viewer's account block, the image routes authorize straight off
+            session["email"], and the context processors behind the topbar read
+            session["username"] on every render including anonymous pages. A
+            guard repeated at each of those is one someone forgets - the same
+            reasoning routes/_auth.py's decorator exists for. Clearing here
+            makes every one of them see an ordinary anonymous request.
+
+            Static assets are skipped: they carry no account data, are
+            requested dozens at a time, and a signed-out browser still needs
+            the stylesheet for the login page it is about to be shown.
+
+            Registered after CSRFProtect's own before_request (constructed in
+            __init__), so a POST is still validated against the session that
+            signed its token - the caller gets the ordinary logged-out redirect
+            rather than a CSRF error."""
+            email = session.get("email")
+            if request.endpoint == STATIC_ENDPOINT or not email:
+                return
+            username = self.get_username_for_email(email)
+            #< an email with no account behind it is NOT a session somebody
+            #  signed out - clearing it here would take over a case the routes
+            #  have always had their own answer for (get_or_create_user), for a
+            #  cookie this feature has nothing to say about
+            if username and not self.sessionIsCurrent(username):
+                session.clear()
 
         @self.app.after_request
         def _setSecurityHeaders(response):

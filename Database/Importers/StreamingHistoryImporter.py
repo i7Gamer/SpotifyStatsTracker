@@ -304,7 +304,8 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                             known[key] = formatted
                         if len(formatted["artists"]) > 0:
                             known[_knownNameKey(formatted["name"], formatted["artists"][0]["name"])] = formatted
-                    elif error is not None and not self._isTransientLookupError(error):
+                    elif (name and artist and error is not None
+                          and not self._isTransientLookupError(error)):
                         # Spotify does not have this track, and asking again in a
                         # second will not change that - so answer it HERE, the
                         # way _processPlay would have. Without this the failure
@@ -318,6 +319,13 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                         # raises a synthetic record's duration to the longest
                         # play it sees, which is the same value it would have
                         # started from.
+                        #
+                        # `name and artist` is _processPlay's own precondition
+                        # for inventing a record, and it has to hold here too: a
+                        # row with a uri but no name (a podcast row, an edited
+                        # file) belongs in droppedNoTrack, and a synthetic built
+                        # for it carries name=None into a NOT NULL column - one
+                        # counted drop turning into a failed import.
                         synthetic = self._createSyntheticTrack(name, artist, trackUri, 0,
                                                                albumName=albumName)
                         known[synthetic["id"]] = synthetic
