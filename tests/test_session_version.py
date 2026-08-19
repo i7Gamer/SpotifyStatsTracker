@@ -200,6 +200,22 @@ class TestEverySurfaceThatReadsTheSession(SessionVersionTestCase):
         soup = BeautifulSoup(client.get("/overview").data.decode(), "html.parser")
         return soup.find("a", href="/admin")
 
+    def test_the_hook_runs_after_csrf_validation_not_before(self):
+        """Order, pinned rather than assumed. CSRF validates a POST against the
+        session that signed its token, so clearing an out-of-date session first
+        would turn every such POST into a 400 CSRF error instead of the
+        ordinary logged-out redirect. It holds today because CSRFProtect is
+        constructed in __init__ and this hook is registered by registerRoutes -
+        which is exactly the kind of thing a later reshuffle breaks silently."""
+        dash = self._liveApp()
+
+        registered = [f.__qualname__ for f in dash.app.before_request_funcs[None]]
+        ours = registered.index("SpotifyDashboardApp.registerRoutes.<locals>."
+                                "_endSessionsTheAccountHasInvalidated")
+        csrf = next(i for i, name in enumerate(registered) if "csrf" in name.lower())
+
+        self.assertLess(csrf, ours, f"CSRF must validate first: {registered}")
+
     def test_a_static_asset_is_not_gated_on_a_session_at_all(self):
         """Static files carry no account data and are requested dozens at a
         time - checking a session version for each would be pure cost, and a
