@@ -13,10 +13,13 @@ from pathlib import Path
 
 from flask import (
     render_template, redirect, request, url_for, jsonify, make_response,
-    abort, send_from_directory,
+    abort,
 )
 
 from routes._htmx import isHtmxSwap
+#< the same cacheable-image response the authenticated /img/ routes serve: one
+#  rule for the files, wherever they are reached from
+from routes.media import sendCacheableImage
 
 from config import (
     WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, SHARE_LINK_EXPIRY_CHOICES,
@@ -346,7 +349,7 @@ def register(app, dashboard):
         link = _resolveSharedLink(token)
         if link is None or filename != os.path.basename(filename):
             return "", 404
-        resp = make_response(send_from_directory(Database.imgDir_tracks, filename))
+        resp = sendCacheableImage(Database.imgDir_tracks, filename)
         resp.headers["X-Robots-Tag"] = "noindex"
         return resp
     app.add_url_rule("/shared/<token>/img/tracks/<filename>", "serveSharedTrackImage", serveSharedTrackImage)
@@ -371,7 +374,7 @@ def register(app, dashboard):
                 db = dashboard._getReadOnlyUserDb(link["username"])
                 db.lazyFetchArtistImage(parts[0], Path(imagePath))
 
-        resp = make_response(send_from_directory(imageDir, filename))
+        resp = sendCacheableImage(imageDir, filename)
         resp.headers["X-Robots-Tag"] = "noindex"
         return resp
     app.add_url_rule("/shared/<token>/img/artists/<filename>", "serveSharedArtistImage", serveSharedArtistImage)

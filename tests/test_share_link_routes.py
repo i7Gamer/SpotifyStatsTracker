@@ -8,6 +8,8 @@ from unittest.mock import patch, MagicMock
 
 import sys
 import os
+from flask import Response
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import app as appModule
@@ -1265,9 +1267,9 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         self.dash.repo.insertPlay(username, f"track-{artistId}", 1000.0, 200000)
         self.dash.repo.commit()
 
-    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.sendCacheableImage')
     def test_valid_token_serves_track_image(self, mock_send):
-        mock_send.return_value = "OK"
+        mock_send.return_value = Response("OK")
         token = self._createLink()
         client = self.dash.app.test_client()
 
@@ -1292,10 +1294,10 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 404)
 
-    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.sendCacheableImage')
     @patch('routes.wrapped.os.path.exists', return_value=False)
     def test_valid_token_lazily_fetches_missing_artist_image(self, mock_exists, mock_send):
-        mock_send.return_value = "OK"
+        mock_send.return_value = Response("OK")
         token = self._createLink()
         self._seedPlayedArtist("art1")
         readOnlyDb = self._makeDb()
@@ -1308,14 +1310,14 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         readOnlyDb.lazyFetchArtistImage.assert_called_once()
         self.assertEqual(readOnlyDb.lazyFetchArtistImage.call_args.args[0], "art1")
 
-    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.sendCacheableImage')
     @patch('routes.wrapped.os.path.exists', return_value=False)
     def test_artist_image_is_not_fetched_for_an_id_the_owner_never_played(self, mock_exists, mock_send):
         """A share token must not become an open proxy for Spotify lookups on
         the owner's credentials: walking arbitrary artist ids through this
         route would insert an images row and dispatch an authenticated fetch
         per id, unauthenticated and unthrottled."""
-        mock_send.return_value = "OK"
+        mock_send.return_value = Response("OK")
         token = self._createLink()
         self._seedPlayedArtist("art1")
         readOnlyDb = self._makeDb()
@@ -1327,12 +1329,12 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 200)   #< still serves/404s the file itself, just never fetches
         readOnlyDb.lazyFetchArtistImage.assert_not_called()
 
-    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.sendCacheableImage')
     def test_disabled_feature_404s_image_routes(self, mock_send):
         """The kill switch has to cover the image routes too - otherwise an
         admin turning share links off leaves the artwork of every shared page
         still fetchable by token."""
-        mock_send.return_value = "OK"
+        mock_send.return_value = Response("OK")
         token = self._createLink()
         self.dash.repo.setShareLinksEnabled(False)
         client = self.dash.app.test_client()
@@ -1355,11 +1357,11 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
 
         self.assertEqual(resp.status_code, 429)
 
-    @patch('routes.wrapped.send_from_directory')
+    @patch('routes.wrapped.sendCacheableImage')
     def test_repeated_valid_image_requests_are_not_rate_limited(self, mock_send):
         """A single shared page pulls dozens of images through these routes -
         only unknown-token misses may count against the limit."""
-        mock_send.return_value = "OK"
+        mock_send.return_value = Response("OK")
         token = self._createLink()
         client = self.dash.app.test_client()
 

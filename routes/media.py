@@ -10,9 +10,31 @@ is only the authorization check, not a directory selector.
 import os
 from pathlib import Path
 
-from flask import session, send_from_directory
+from flask import make_response, session, send_from_directory
 
+from config import IMAGE_CACHE_CONTROL, IMAGE_CACHE_MAX_AGE_SECONDS
 from Database.database import Database
+
+
+def sendCacheableImage(directory, filename):
+    """One image file, cacheable for IMAGE_CACHE_MAX_AGE_SECONDS.
+
+    The image files are write-once (see the constant's comment), so the browser
+    can be told to stop asking. Without this send_from_directory sets its own
+    "no-cache", which is not the app's no-store - the images did cache - but it
+    still costs a conditional request per image per page load, and these are
+    authenticated routes: each of those 304s runs the session check and its
+    queries, ~30 times over on a top-list page.
+
+    The header is REPLACED rather than added to: Flask's max_age= emits
+    "public", and a shared proxy must not serve one viewer's authorized image
+    to the next. A missing file raises NotFound before any of this, so a 404
+    keeps the app-wide no-store and an image that has not been downloaded yet
+    is never negatively cached."""
+    response = make_response(send_from_directory(directory, filename,
+                                                 max_age=IMAGE_CACHE_MAX_AGE_SECONDS))
+    response.headers["Cache-Control"] = IMAGE_CACHE_CONTROL
+    return response
 
 
 def register(app, dashboard):
@@ -26,7 +48,7 @@ def register(app, dashboard):
     def serveTrackImage(username, filename):
         if username != _authorized_image_username() or filename != os.path.basename(filename):
             return "", 404
-        return send_from_directory(Database.imgDir_tracks, filename)
+        return sendCacheableImage(Database.imgDir_tracks, filename)
     app.add_url_rule('/img/<username>/tracks/<filename>', 'serveTrackImage', serveTrackImage)
 
     def serveArtistImage(username, filename):
@@ -43,5 +65,5 @@ def register(app, dashboard):
                 if db:
                     db.lazyFetchArtistImage(artistId, Path(imagePath))
 
-        return send_from_directory(imageDir, filename)
+        return sendCacheableImage(imageDir, filename)
     app.add_url_rule('/img/<username>/artists/<filename>', 'serveArtistImage', serveArtistImage)

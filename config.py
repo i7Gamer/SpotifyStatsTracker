@@ -314,6 +314,27 @@ NO_STORE_CACHE_CONTROL = "no-store, max-age=0"
 # bundle that would otherwise be re-fetched on every navigation.
 STATIC_ENDPOINT = "static"
 
+# The other exemption: album art and artist pictures (routes/media.py and the
+# /shared/<token> pair in routes/wrapped.py). send_from_directory already sets
+# its own "no-cache" there, so the no-store above never applied to them - but
+# no-cache still means a conditional request per image per page load, and these
+# are authenticated routes: each of those 304s costs a session read plus
+# is_user_logged_in's queries, ~30 times over on a top-list page.
+#
+# A week rather than a day, because the files are write-once:
+# tryClaimImageDownload refuses to re-claim an image already marked OK, and the
+# artist route's lazy fetch only writes when the file is missing. A given
+# <imageId>.jpeg never changes content - a different image arrives under a
+# different id - so there is nothing for a short window to catch, and the one
+# case that DOES change (an image not downloaded yet) answers 404, which stays
+# uncacheable under the rule above.
+IMAGE_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+# private, not public: the routes sit behind a session check (or a share
+# token), so a shared proxy must not serve one viewer's response to the next.
+# Flask's own max_age= argument emits "public", so this replaces its header
+# rather than adding to it.
+IMAGE_CACHE_CONTROL = f"private, max-age={IMAGE_CACHE_MAX_AGE_SECONDS}"
+
 # The detail pages (/song, /artist, /album) run Spotify's iFrame API bundle in
 # our page context; that bundle is a webpack build with the `eval` devtool, so
 # it needs 'unsafe-eval'. That directive can't be scoped to a host in CSP, so it

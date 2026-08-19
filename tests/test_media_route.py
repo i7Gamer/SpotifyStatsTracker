@@ -116,7 +116,9 @@ class TestImageRouteTraversal(AppTestCase):
             with self.subTest(view=viewName):
                 result, send = self._callView(dash, viewName, "abc123.jpeg")
 
-                self.assertEqual("SENT", result)
+                #< the view returns a Response now (sendCacheableImage stamps
+                #  Cache-Control on it), not send_from_directory's own value
+                self.assertEqual(200, result.status_code)
                 send.assert_called_once()
                 self.assertEqual("abc123.jpeg", send.call_args.args[1])
 
