@@ -658,8 +658,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             # Windows the moment a JSON has just been written is exactly when a
             # scanner may still hold it - so a blocked delete would turn a
             # successful login into a PermissionError, and a failed one into a
-            # misdiagnosed PermissionError. The stale file is in the OS temp
-            # dir, which is swept by the OS.
+            # misdiagnosed PermissionError.
+            #
+            # Giving up is acceptable because of WHAT is left behind, not
+            # because something else collects it: this file holds the user's
+            # Spotify cookies in plaintext, and mkstemp created it readable and
+            # writable by this user alone. A leftover is one owner-only file in
+            # the temp dir, which is the same protection secrets/ gets - so it
+            # is logged rather than retried.
             try:
                 tmpPath.unlink(missing_ok=True)
             except OSError as e:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from Database.repository import Repository
 from services.email_worker import EmailWorker, queue_email_notification
-from Database.queries.email_queries import EVENT_INVALID_COOKIES
+from Database.queries.email_queries import EVENT_INVALID_COOKIES, EVENT_SHARE_REQUEST
 
 # A failure deadline for the cross-thread waits below, not a pace: each wait
 # returns as soon as the worker thread gets there.
@@ -68,6 +68,40 @@ def test_stopping_with_work_still_queued_says_so(caplog):
 
     assert "2" in caplog.text
     assert "undelivered" in caplog.text.lower()
+
+
+def test_the_warning_names_what_was_dropped(caplog):
+    """A count alone does not answer the question the line exists for. Two of
+    the three events that fill this queue re-fire on their own after a restart
+    (a listener with bad cookies rebuilds constantly; a failing API key is
+    re-detected), so losing those costs nothing. A share request is created
+    ONCE - createShareRequest answers "already_requested" the next time - so
+    its mail is gone for good, and the operator needs to be able to tell which
+    kind sat in the queue."""
+    worker = EmailWorker()
+    worker.enqueue("alice", EVENT_INVALID_COOKIES)
+    worker.enqueue("bob", EVENT_INVALID_COOKIES)
+    worker.enqueue("carol", EVENT_SHARE_REQUEST)
+
+    with caplog.at_level("WARNING", logger="services.email_worker"):
+        worker.stop()
+
+    assert EVENT_SHARE_REQUEST in caplog.text
+    assert f"{EVENT_INVALID_COOKIES}=2" in caplog.text
+    assert f"{EVENT_SHARE_REQUEST}=1" in caplog.text
+
+
+def test_the_warning_does_not_consume_the_queue(caplog):
+    """Reported, not drained: stop() is only reached at shutdown today, but a
+    worker that threw its queue away on the way out would silently lose the
+    jobs a later start() would otherwise still send."""
+    worker = EmailWorker()
+    worker.enqueue("alice", EVENT_INVALID_COOKIES)
+
+    with caplog.at_level("WARNING", logger="services.email_worker"):
+        worker.stop()
+
+    assert worker._queue.qsize() == 1
 
 
 def test_stopping_with_an_empty_queue_is_quiet(caplog):

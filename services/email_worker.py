@@ -116,22 +116,47 @@ class EmailWorker:
                 # the interval was shorter than the join timeout.
                 stopEvent.wait(EMAIL_WORKER_POLL_INTERVAL_SECONDS)
 
+    def _pendingByEvent(self) -> dict[str, int]:
+        """What is still queued, counted by event type - read WITHOUT removing
+        it. Draining here would make a later start() silently lose jobs it
+        would otherwise still send, and stop() has no business deciding that.
+
+        Taken under the queue's own mutex because that is the only way to read
+        the backlog rather than consume it; qsize() answers "how many", and
+        "how many" is not the question the caller has (see stop())."""
+        with self._queue.mutex:
+            pending = list(self._queue.queue)
+        counts: dict[str, int] = {}
+        for _username, eventType, _context in pending:
+            counts[eventType] = counts.get(eventType, 0) + 1
+        return counts
+
     def stop(self) -> None:
         """Stop the background worker thread.
 
-        Deliberately does NOT drain what is left: the queue is in-memory and
-        every event that fills it is re-detected on the next start (the
-        cooldown is stamped on SUCCESS only, see email_service), while draining
-        would put an unbounded number of SMTP sends inside the join budget the
-        compose file's stop_grace_period has to cover. It is only said out
-        loud, because a notification that never went out otherwise leaves no
-        trace anywhere."""
+        Deliberately does NOT drain what is left: draining would put an
+        unbounded number of SMTP sends inside the join budget the compose
+        file's stop_grace_period has to cover. The cost of dropping one is not
+        the same for every event, which is why the line below names them:
+
+        - invalid_cookies re-fires on its own, constantly - the listener that
+          raises it is rebuilt on every stale-feed reconnect.
+        - api_key_failed re-fires too, on the next detection pass, for as long
+          as the key is still failing.
+        - share_request does NOT. createShareRequest answers
+          "already_requested" the second time and enqueues nothing, so that
+          mail is gone for good and only the in-app request survives.
+
+        (The cooldown never stands in the way of a retry either: it is stamped
+        on a SUCCESSFUL send only, see email_service.)"""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
-        pending = self._queue.qsize()
-        if pending:
-            logger.warning("EmailWorker stopped with %d undelivered notification(s)", pending)
+        counts = self._pendingByEvent()
+        if counts:
+            breakdown = ", ".join(f"{eventType}={count}" for eventType, count in sorted(counts.items()))
+            logger.warning("EmailWorker stopped with %d undelivered notification(s): %s",
+                           sum(counts.values()), breakdown)
 
 
 # Module-level singleton worker instance
