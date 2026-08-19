@@ -448,16 +448,20 @@ class TestAMintThatFailsPartWay(_KeyFileTestCase):
         Same shape as Database/backup.py::_discardPartial."""
         realUnlink = pathlib.Path.unlink
         realExists = pathlib.Path.exists
+        ourPartial = self._partialPath()
 
-        def unlinkThatLoses(self, missing_ok=False):
-            #< only a .partial that EXISTS: patch.object here is process-wide,
-            #  and _writeKeyFile also unlinks a not-yet-existing temp before
-            #  O_EXCL - a delete of nothing is not what a scanner blocks
-            if self.name.endswith(secretStore.PARTIAL_SUFFIX) and realExists(self):
+        def unlinkThatLoses(target, missing_ok=False):
+            #< only THIS test's .partial, and only once it EXISTS: patch.object
+            #  here is process-wide and ".partial" is a suffix three subsystems
+            #  use, while _writeKeyFile also unlinks a not-yet-existing temp
+            #  before O_EXCL - a delete of nothing is not what a scanner blocks
+            if target == ourPartial and realExists(target):
                 raise PermissionError("[WinError 32] used by another process")
-            return realUnlink(self, missing_ok=missing_ok)
+            return realUnlink(target, missing_ok=missing_ok)
 
-        with self._failingReplace(),                 patch.object(pathlib.Path, "unlink", unlinkThatLoses),                 self.assertRaises(OSError) as raised:
+        with self._failingReplace(), \
+                patch.object(pathlib.Path, "unlink", unlinkThatLoses), \
+                self.assertRaises(OSError) as raised:
             secretStore.readOrCreateKeyFile(self.keyPath)
 
         self.assertNotIsInstance(raised.exception, PermissionError)

@@ -196,14 +196,16 @@ class TestRunBackup(BackupWorkerTestCase):
             return _SourceWhoseCopyFails(conn) if Path(path) == self.dbPath else conn
 
         realUnlink = Path.unlink
+        ourBackupDir = self.root / "Backups"
 
-        def unlinkThatLoses(self, missing_ok=False):
-            # Only THIS file: patch.object on Path.unlink is process-wide, and
-            # the suite runs worker threads from other tests in the same
-            # process. Everything else gets the real one.
-            if self.suffix == ".partial":
+        def unlinkThatLoses(path, missing_ok=False):
+            # Only this test's own .partial: patch.object on Path.unlink is
+            # process-wide, ".partial" is a suffix three subsystems use, and the
+            # suite runs worker threads from other tests in the same process.
+            # Everything else gets the real one.
+            if path.suffix == ".partial" and path.parent == ourBackupDir:
                 raise PermissionError("[WinError 32] used by another process")
-            return realUnlink(self, missing_ok=missing_ok)
+            return realUnlink(path, missing_ok=missing_ok)
 
         with patch.object(backupModule.sqlite3, "connect", side_effect=connectFailingSource):
             with patch.object(Path, "unlink", unlinkThatLoses):

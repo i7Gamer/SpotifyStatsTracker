@@ -121,20 +121,34 @@ class TestImageWritesAreAtomic(DatabaseTestCase):
 
         realUnlink = Path.unlink
 
-        def unlinkThatLoses(self, missing_ok=False):
-            #< only the .partial: patch.object on Path.unlink is process-wide
-            if self.suffix == ".partial":
-                raise PermissionError("[WinError 32] used by another process")
-            return realUnlink(self, missing_ok=missing_ok)
-
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir)
-            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()),                  patch("PIL.Image.Image.save", failingWrite),                  patch.object(Path, "unlink", unlinkThatLoses),                  self.assertLogs("Database.database", level="ERROR") as logs:
+
+            def unlinkThatLoses(target, missing_ok=False):
+                # Only this test's own .partial: patch.object on Path.unlink is
+                # process-wide, ".partial" is a suffix three subsystems use, and
+                # the suite runs worker threads from other tests in the same
+                # process. Everything else gets the real one.
+                if target.suffix == ".partial" and target.parent == path:
+                    raise PermissionError("[WinError 32] used by another process")
+                return realUnlink(target, missing_ok=missing_ok)
+
+            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()), \
+                 patch("PIL.Image.Image.save", failingWrite), \
+                 patch.object(Path, "unlink", unlinkThatLoses), \
+                 self.assertLogs("Database.database", level="WARNING") as logs:
                 db._downloadImageTask(path, "http://example.com/i.png", "img1", "artist")
 
-        logged = " ".join(logs.output)
-        self.assertIn("no space left on device", logged)
-        self.assertNotIn("WinError 32", logged)
+        #< split by level, because the two lines say different things: the ERROR
+        #  is this download's verdict and must name the disk, while the failed
+        #  removal is a WARNING and is allowed to name WinError 32
+        errors = [r.getMessage() for r in logs.records if r.levelname == "ERROR"]
+        self.assertEqual(1, len(errors))
+        self.assertIn("no space left on device", errors[0])
+        self.assertNotIn("WinError 32", errors[0])
+        self.assertTrue(any("WinError 32" in r.getMessage()
+                            for r in logs.records if r.levelname == "WARNING"),
+                        "the removal that lost should still be on the record somewhere")
 
     def test_a_successful_save_leaves_only_the_final_file(self):
         db = self._makeDb({}, [])

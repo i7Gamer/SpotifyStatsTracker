@@ -145,20 +145,31 @@ class TestACleanupThatCannotDeleteDoesNotBecomeTheFailure(DatabaseTestCase):
         return db
 
     @staticmethod
-    def _unlinkThatLoses(realUnlink):
-        def unlink(self, missing_ok=False):
-            #< only the materialized file: patch.object on Path.unlink is
-            #  process-wide, and other tests' worker threads share the process
-            if self.name.startswith("cookies_"):
+    def _blockDeletingTheFileTheFactorySees(answer):
+        """(factory, unlink stub) where the stub refuses to delete exactly the
+        path this call materialized - patch.object on Path.unlink is
+        process-wide, and other tests' worker threads share the process, so
+        matching on the name prefix would reach beyond this test."""
+        realUnlink = Path.unlink
+        materialized = []
+
+        def factory(cookiesFile):
+            materialized.append(Path(cookiesFile))
+            return answer()
+
+        def unlink(target, missing_ok=False):
+            if materialized and target == materialized[0]:
                 raise PermissionError("[WinError 32] used by another process")
-            return realUnlink(self, missing_ok=missing_ok)
-        return unlink
+            return realUnlink(target, missing_ok=missing_ok)
+
+        return factory, unlink
 
     def test_a_successful_call_still_returns_its_result(self):
         db = self._dbWithABlockedTempDelete()
+        factory, unlink = self._blockDeletingTheFileTheFactorySees(lambda: "client")
 
-        with patch.object(Path, "unlink", self._unlinkThatLoses(Path.unlink)):
-            result = db._withCookiesFile(lambda cookiesFile: "client")
+        with patch.object(Path, "unlink", unlink):
+            result = db._withCookiesFile(factory)
 
         self.assertEqual("client", result)
 
@@ -166,8 +177,13 @@ class TestACleanupThatCannotDeleteDoesNotBecomeTheFailure(DatabaseTestCase):
         db = self._dbWithABlockedTempDelete()
         theRealProblem = RuntimeError("spotify login failed")
 
-        with patch.object(Path, "unlink", self._unlinkThatLoses(Path.unlink)):
+        def raiseIt():
+            raise theRealProblem
+
+        factory, unlink = self._blockDeletingTheFileTheFactorySees(raiseIt)
+
+        with patch.object(Path, "unlink", unlink):
             with self.assertRaises(RuntimeError) as raised:
-                db._withCookiesFile(lambda cookiesFile: (_ for _ in ()).throw(theRealProblem))
+                db._withCookiesFile(factory)
 
         self.assertIs(theRealProblem, raised.exception)
