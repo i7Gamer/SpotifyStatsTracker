@@ -122,7 +122,18 @@ class MediaFetchMixin:
                 img.save(partialPath, format="JPEG")
                 _dbmod.os.replace(partialPath, finalPath)
             except Exception:
-                partialPath.unlink(missing_ok=True)
+                # Swallowed on purpose: this runs inside an `except`, where a
+                # raised exception REPLACES the one being handled. On Windows
+                # the moment a file has just been written is exactly when a
+                # scanner may still hold it, and the log line below is the only
+                # record this download leaves - it has to name the disk that
+                # refused the save, not the handle that refused the delete.
+                # (Database/backup.py::_discardPartial, same shape.)
+                try:
+                    partialPath.unlink(missing_ok=True)
+                except OSError as cleanupError:
+                    _dbmod.logger.warning("Could not remove the incomplete image %s: %s",
+                                          partialPath, _dbmod.parseError(cleanupError))
                 raise
             self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_OK)
         except Exception as e:

@@ -437,6 +437,32 @@ class TestAMintThatFailsPartWay(_KeyFileTestCase):
         self.assertTrue(minted)
         self.assertEqual(self.keyPath.read_text(encoding="utf-8").strip(), minted)
 
+    def test_a_cleanup_that_cannot_delete_does_not_hide_why_the_mint_failed(self):
+        """The removal runs inside the `except`, where a raised exception
+        REPLACES the one being handled. This is a boot-time failure whose only
+        symptom is the message the operator sees, and on Windows the moment a
+        file has just been written is exactly when a scanner may still hold it
+        - so "No space left on device" must not become a delete permission
+        problem, which points at entirely the wrong fix.
+
+        Same shape as Database/backup.py::_discardPartial."""
+        realUnlink = pathlib.Path.unlink
+        realExists = pathlib.Path.exists
+
+        def unlinkThatLoses(self, missing_ok=False):
+            #< only a .partial that EXISTS: patch.object here is process-wide,
+            #  and _writeKeyFile also unlinks a not-yet-existing temp before
+            #  O_EXCL - a delete of nothing is not what a scanner blocks
+            if self.name.endswith(secretStore.PARTIAL_SUFFIX) and realExists(self):
+                raise PermissionError("[WinError 32] used by another process")
+            return realUnlink(self, missing_ok=missing_ok)
+
+        with self._failingReplace(),                 patch.object(pathlib.Path, "unlink", unlinkThatLoses),                 self.assertRaises(OSError) as raised:
+            secretStore.readOrCreateKeyFile(self.keyPath)
+
+        self.assertNotIsInstance(raised.exception, PermissionError)
+        self.assertIn("No space left on device", str(raised.exception))
+
     def test_a_write_that_fails_before_the_rename_is_cleaned_up_too(self):
         """The other half of the try block. Patching the write rather than the
         rename also proves the descriptor is closed on the way out - Windows

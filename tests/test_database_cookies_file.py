@@ -128,3 +128,46 @@ class TestStartListenerAndImportHistoryUseDatabaseCookies(DatabaseTestCase):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class TestACleanupThatCannotDeleteDoesNotBecomeTheFailure(DatabaseTestCase):
+    """The temp cookies file is removed in a `finally`, and an exception raised
+    there REPLACES whatever the block was doing - a returned value included.
+    On Windows a scanner may still hold a just-written JSON for a moment, and
+    this file is written on every import and every Spotify client build.
+
+    Same shape as Database/backup.py::_discardPartial and the image writer's
+    staged save."""
+
+    def _dbWithABlockedTempDelete(self):
+        db = self._makeDb({}, [], username="alice")
+        db.cookiesFile = None
+        return db
+
+    @staticmethod
+    def _unlinkThatLoses(realUnlink):
+        def unlink(self, missing_ok=False):
+            #< only the materialized file: patch.object on Path.unlink is
+            #  process-wide, and other tests' worker threads share the process
+            if self.name.startswith("cookies_"):
+                raise PermissionError("[WinError 32] used by another process")
+            return realUnlink(self, missing_ok=missing_ok)
+        return unlink
+
+    def test_a_successful_call_still_returns_its_result(self):
+        db = self._dbWithABlockedTempDelete()
+
+        with patch.object(Path, "unlink", self._unlinkThatLoses(Path.unlink)):
+            result = db._withCookiesFile(lambda cookiesFile: "client")
+
+        self.assertEqual("client", result)
+
+    def test_the_factorys_own_error_is_what_propagates(self):
+        db = self._dbWithABlockedTempDelete()
+        theRealProblem = RuntimeError("spotify login failed")
+
+        with patch.object(Path, "unlink", self._unlinkThatLoses(Path.unlink)):
+            with self.assertRaises(RuntimeError) as raised:
+                db._withCookiesFile(lambda cookiesFile: (_ for _ in ()).throw(theRealProblem))
+
+        self.assertIs(theRealProblem, raised.exception)

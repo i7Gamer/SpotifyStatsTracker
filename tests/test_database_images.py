@@ -104,6 +104,38 @@ class TestImageWritesAreAtomic(DatabaseTestCase):
             self.assertEqual(leftovers, [],
                              f"a half-written image was left where the app will serve it: {leftovers}")
 
+    def test_a_cleanup_that_itself_fails_does_not_hide_why_the_save_failed(self):
+        """The removal runs inside an `except`, where a raised exception
+        REPLACES the one being handled - and on Windows the moment a file has
+        just been written is exactly when a scanner may still hold it. The log
+        line is the only record this download leaves, so it has to name the
+        disk, not the janitor. (Same shape as Database/backup.py's
+        _discardPartial, which is where this was found.)"""
+        db = self._makeDb({}, [])
+
+        def failingWrite(self_img, target, **kwargs):
+            #< bytes([...]) rather than an escape: the same JPEG magic the
+            #  sibling test writes, spelled so no quoting layer can mangle it
+            Path(target).write_bytes(bytes([0xFF, 0xD8, 0xFF, 0xE0]) + b"truncated")
+            raise OSError("no space left on device")
+
+        realUnlink = Path.unlink
+
+        def unlinkThatLoses(self, missing_ok=False):
+            #< only the .partial: patch.object on Path.unlink is process-wide
+            if self.suffix == ".partial":
+                raise PermissionError("[WinError 32] used by another process")
+            return realUnlink(self, missing_ok=missing_ok)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir)
+            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()),                  patch("PIL.Image.Image.save", failingWrite),                  patch.object(Path, "unlink", unlinkThatLoses),                  self.assertLogs("Database.database", level="ERROR") as logs:
+                db._downloadImageTask(path, "http://example.com/i.png", "img1", "artist")
+
+        logged = " ".join(logs.output)
+        self.assertIn("no space left on device", logged)
+        self.assertNotIn("WinError 32", logged)
+
     def test_a_successful_save_leaves_only_the_final_file(self):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:

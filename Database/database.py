@@ -652,7 +652,18 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         try:
             return factory(str(tmpPath))
         finally:
-            tmpPath.unlink(missing_ok=True)
+            # Swallowed on purpose: an exception raised in a `finally` replaces
+            # whatever the block was doing - a RETURN included. This file is
+            # written on every import and every Spotify client build, and on
+            # Windows the moment a JSON has just been written is exactly when a
+            # scanner may still hold it - so a blocked delete would turn a
+            # successful login into a PermissionError, and a failed one into a
+            # misdiagnosed PermissionError. The stale file is in the OS temp
+            # dir, which is swept by the OS.
+            try:
+                tmpPath.unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Could not remove the temporary cookies file %s: %s", tmpPath, parseError(e))
 
     @staticmethod
     def _splitEntryAndTrack(metadata: dict) -> tuple[dict, dict]:

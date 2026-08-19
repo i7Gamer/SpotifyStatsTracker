@@ -151,7 +151,18 @@ def _writeKeyFile(path: Path, contents: str) -> None:
             stream.write(contents)
         os.replace(tempPath, path)
     except Exception:
-        tempPath.unlink(missing_ok=True)
+        # Swallowed on purpose: this runs inside an `except`, where a raised
+        # exception REPLACES the one being handled. A boot that cannot persist
+        # its key is diagnosed entirely from the message the operator sees, and
+        # on Windows the moment a file has just been written is exactly when a
+        # scanner may still hold it - "No space left on device" turning into a
+        # delete permission error points at the wrong fix. The leftover does not
+        # wedge the next boot either: the unlink at the top of this function
+        # clears a stale .partial before O_EXCL ever sees it.
+        try:
+            tempPath.unlink(missing_ok=True)
+        except OSError as cleanupError:
+            logger.warning("Could not remove the incomplete key file %s: %s", tempPath, cleanupError)
         raise
 
 
