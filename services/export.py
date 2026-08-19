@@ -263,11 +263,35 @@ def resolvePlaylistFormat(tracks: list[dict], fmt: str, title: str):
     return generatePlaylistCsv(tracks), "text/csv; charset=utf-8"
 
 
+# The C0 control characters XML 1.0 forbids outright: everything below 0x20
+# except tab (0x09), line feed (0x0A) and carriage return (0x0D). Unlike & and
+# <, there is no escape for these - not even a numeric reference is legal - so
+# one of them does not corrupt its own element, it makes the WHOLE document
+# unparseable and the player rejects the file.
+_XSPF_ILLEGAL_CHARS = str.maketrans(
+    {code: None for code in list(range(0x00, 0x09)) + [0x0B, 0x0C] + list(range(0x0E, 0x20))})
+
+
+def _xspfSafeText(value: str) -> str:
+    """XML 1.0 has no representation for most control characters, so they are
+    dropped rather than escaped - the sibling of _m3uSafeText above, for the
+    format whose metacharacters xml_escape already handles.
+
+    Reachable from both sides of the app: track/artist/album names come from
+    uploaded export files (the importer stores what the file says), and the
+    playlist title is built out of ?tags= in routes/tags.py::playlistExport."""
+    return (value or "").translate(_XSPF_ILLEGAL_CHARS)
+
+
 def generatePlaylistXspf(tracks: list[dict], title: str = "Spotify Tracker Playlist"):
     import xml.sax.saxutils as xml_escape
+
+    def xmlText(value):
+        return xml_escape.escape(_xspfSafeText(value))
+
     yield '<?xml version="1.0" encoding="UTF-8"?>\n'
     yield '<playlist version="1" xmlns="http://xspf.org/ns/0/">\n'
-    yield f'  <title>{xml_escape.escape(title)}</title>\n'
+    yield f'  <title>{xmlText(title)}</title>\n'
     yield '  <trackList>\n'
     for track in tracks:
         artists = track.get("artists") or []
@@ -277,12 +301,12 @@ def generatePlaylistXspf(tracks: list[dict], title: str = "Spotify Tracker Playl
         album_name = album.get("name", "") if isinstance(album, dict) else ""
         spotify_uri = f"spotify:track:{track['id']}"
         yield '    <track>\n'
-        yield f'      <location>{xml_escape.escape(spotify_uri)}</location>\n'
-        yield f'      <title>{xml_escape.escape(track_title)}</title>\n'
+        yield f'      <location>{xmlText(spotify_uri)}</location>\n'
+        yield f'      <title>{xmlText(track_title)}</title>\n'
         if artist_names:
-            yield f'      <creator>{xml_escape.escape(artist_names)}</creator>\n'
+            yield f'      <creator>{xmlText(artist_names)}</creator>\n'
         if album_name:
-            yield f'      <album>{xml_escape.escape(album_name)}</album>\n'
+            yield f'      <album>{xmlText(album_name)}</album>\n'
         yield '    </track>\n'
     yield '  </trackList>\n'
     yield '</playlist>\n'

@@ -56,9 +56,8 @@ class ListenerMixin:
                 continue
 
             # Sanity check: verify the timestamp makes sense (not in far future)
-            import time as time_module
-            current_time = time_module.time()
-            if numeric_ts > current_time + 86400:  # More than 1 day in future
+            current_time = _dbmod.time.time()
+            if numeric_ts > current_time + self.LISTENER_FUTURE_PLAY_GRACE_SECONDS:
                 _dbmod.logger.error(
                     "CONTAMINATION CHECK FAILED: Track %s has timestamp %s (%.0f seconds in future). "
                     "This suggests cross-user data contamination. Skipping this play.",
@@ -499,9 +498,9 @@ class ListenerMixin:
         configured (invoked from Listener._checkWebApiBackfill's
         onWebApiSnapshot callback).
 
-        Bounded to the exact [oldest, newest] played_at span the API response
-        covers - never reaches past that window, so it can't touch older
-        history."""
+        Bounded to the [oldest, newest] played_at span the API response covers,
+        widened at each end by the width of one duplicate pair (see the padding
+        below) - so it can't touch older history."""
         if not apiItems:
             return
 
@@ -520,8 +519,17 @@ class ListenerMixin:
             _dbmod.logger.debug("Reconciliation skipped: no API items with both track id and played_at")
             return
 
-        windowStart = min(apiTimes)
-        windowEnd = max(apiTimes)
+        # Padded by the widest tolerance a PAIR can span, because the window is
+        # built from the API's stamps but the row that proves a copy is a copy
+        # was written by a different recorder: for the oldest and newest item in
+        # a page its sibling can land just outside, and a row the query never
+        # returns cannot join a cluster - the pair then reads as one lonely play
+        # and the duplicate survives. Widening the candidate set only; deletion
+        # still needs both proofs below, so nothing unproven becomes deletable.
+        windowPadding = max(self.DUPLICATE_RECORDING_TOLERANCE_SECONDS,
+                            self.BACKFILL_END_TIME_MATCH_TOLERANCE_SECONDS)
+        windowStart = min(apiTimes) - windowPadding
+        windowEnd = max(apiTimes) + windowPadding
 
         localPlays = self.repo.getPlaysWithSourceInRange(self.user, windowStart, windowEnd)
         if not localPlays:

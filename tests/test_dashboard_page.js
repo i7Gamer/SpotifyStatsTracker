@@ -10,10 +10,22 @@
 const assert = require('assert');
 
 global.window = {};
+// Recorded, not swallowed: WHICH events a handler is bound to is itself a
+// decision worth asserting - the deferred cards were bound to
+// htmx:responseError only, so a dropped connection left them on their loading
+// placeholder forever while the summary above them handled both.
+const bodyListeners = {};
+// Empty while the module's top-level code runs (so every load-time lookup still
+// misses, as before); a test fills it in just before firing an event.
+let elementsById = {};
 global.document = {
-  body: { addEventListener() {} },
+  body: {
+    addEventListener(type, handler) {
+      (bodyListeners[type] = bodyListeners[type] || []).push(handler);
+    },
+  },
   addEventListener() {},
-  getElementById() { return null; },     //< no now-playing card, no friends strip
+  getElementById(id) { return elementsById[id] || null; },   //< empty at load: no now-playing card, no friends strip
   querySelector() { return null; },      //< no streak calendar
   //< `tag` so the chip-link tests can tell an <a> from the <span> a link-less
   //  field falls back to
@@ -251,6 +263,39 @@ run('a single missed poll is not worth flagging', () => {
 run('three in a row means what is on screen may be minutes old', () => {
   assert.strictEqual(pollIsStale(3), true);
   assert.strictEqual(pollIsStale(9), true);
+});
+
+// --- the deferred cards' failure handling -------------------------------------
+
+function fireBodyEvent(type, detail) {
+  (bodyListeners[type] || []).forEach(function (handler) { handler({ detail: detail }); });
+}
+
+// Both events, because they are the same failure to a reader of the page: the
+// request did not come back. htmx fires sendError for the ones that never
+// reached the server at all (dropped connection, DNS, offline), and a card
+// bound to responseError alone sits on "Loading..." forever for those.
+['htmx:responseError', 'htmx:sendError'].forEach(function (type) {
+  run(`a failed discover card is emptied on ${type}`, () => {
+    const card = { cleared: false, replaceChildren() { this.cleared = true; } };
+    elementsById = { discoverCard: card };
+    fireBodyEvent(type, { target: card });
+    elementsById = {};
+    // Blanked, not error-bannered: locked/empty/a-list are statements about the
+    // user's own library that a failed request is no evidence for.
+    assert.strictEqual(card.cleared, true);
+  });
+
+  run(`a failed trends card gets the retryable error on ${type}`, () => {
+    const trends = {};
+    let renderedInto = null;
+    elementsById = { dashboardTrendsContainer: trends };
+    global.window.AjaxStatus = { renderInto(target) { renderedInto = target; } };
+    fireBodyEvent(type, { target: trends });
+    elementsById = {};
+    delete global.window.AjaxStatus;
+    assert.strictEqual(renderedInto, trends);
+  });
 });
 
 console.log('all dashboard-page tests passed');

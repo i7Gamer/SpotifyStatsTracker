@@ -26,8 +26,10 @@ guarantee.
 """
 import sys
 import os
+import tempfile
 import unittest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -35,6 +37,7 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
 from Database.database import Database
+from Database.repository import Repository
 from Database.utils import timeToInt
 
 
@@ -77,6 +80,19 @@ def _importRow(trackId, playedAt):
 
 def _legacyRow(trackId, playedAt):
     return {"id": trackId, "playedAt": playedAt, "createdReason": None}
+
+
+def _track(trackId):
+    """The minimum catalog row a real (non-mocked) play can reference. No isrc:
+    an empty one is deliberately not a shared identity, so these group by their
+    own id and the boundary tests below say nothing about identity matching."""
+    return {"id": trackId, "name": f"Song {trackId}", "url": "", "duration": 200000,
+            "artists": [{"id": "art1", "name": "Artist One", "url": "",
+                         "imageUrl": "", "imageId": "art1"}],
+            "album": {"id": "alb1", "name": "Album One", "url": "", "imageId": "alb1",
+                      "imageUrl": "", "totalTracks": 1, "releaseDate": 0.0},
+            "imageUrl": "", "imageId": "alb1", "explicit": False, "isrc": "",
+            "discNumber": 1, "trackNumber": 1, "releaseDate": 0.0}
 
 
 class TestReconcileWithWebApiHistory(unittest.TestCase):
@@ -289,8 +305,11 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
 
         db.repo.commit.assert_not_called()
 
-    def test_query_window_is_bounded_by_min_and_max_api_timestamps(self):
-        """Never touches plays outside the exact span the API response covers."""
+    def test_query_window_is_the_api_span_plus_one_pair_tolerance(self):
+        """Never reaches past the span the API response covers, except by the
+        width of a single duplicate PAIR at each end - see
+        TestReconcileWindowBoundary for why that much is needed and no more.
+        The bound is what stops this pass from touching older history."""
         db = _bareDatabase()
         db.repo.getPlaysWithSourceInRange.return_value = []
 
@@ -301,7 +320,10 @@ class TestReconcileWithWebApiHistory(unittest.TestCase):
 
         args, kwargs = db.repo.getPlaysWithSourceInRange.call_args
         startTs, endTs = args[1], args[2]
-        self.assertEqual(endTs - startTs, 2 * 60 * 60)
+        padding = max(TOLERANCE, END_TOLERANCE)
+        self.assertEqual(startTs, timeToInt("2026-07-13T10:00:00Z") - padding)
+        self.assertEqual(endTs, timeToInt("2026-07-13T12:00:00Z") + padding)
+        self.assertEqual(endTs - startTs, 2 * 60 * 60 + 2 * padding)
 
     def test_delete_failure_is_not_counted_and_does_not_raise(self):
         """deletePlay() returning False (row already gone) must not crash or
@@ -486,6 +508,101 @@ class TestReconcileAcrossReleases(unittest.TestCase):
         db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
 
         db.repo.deletePlay.assert_called_once_with("alice", "t1", API_TS + 1)
+
+
+class TestReconcileWindowBoundary(unittest.TestCase):
+    """A duplicate PAIR does not have to sit inside the API's own span.
+
+    The window is built from the API items' played_at stamps, but the local row
+    that proves a backfill copy is a copy is written by a different recorder
+    with a different clock and a different idea of what played_at means (start
+    vs end - spotify/web-api#1083). For the OLDEST and NEWEST item in a page,
+    that sibling can land just outside the span, and a row the query never
+    returns cannot join a cluster: the pair looks like one lonely play and the
+    duplicate survives to be counted forever.
+
+    Runs against a real Repository rather than a MagicMock, because the whole
+    question is which rows the QUERY comes back with - a mock returns whatever
+    it is handed regardless of the window and would pass either way."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+        #< plays carry real foreign keys, so the user and the track have to
+        #  exist before a play can reference them
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertTrack(_track("t1"))
+        self.repo.upsertTrack(_track("t2"))
+        self.repo.commit()
+        self.db = Database.__new__(Database)
+        self.db.user = "alice"
+        self.db.repo = self.repo
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+        self._tmpdir.cleanup()
+
+    def _remainingPlayTimes(self):
+        return sorted(play["playedAt"] for play in
+                      self.repo.getPlaysWithSourceInRange("alice", 0, API_TS + 10000))
+
+    def test_a_listener_row_just_after_the_newest_item_still_proves_a_duplicate(self):
+        # The realistic shape: the API's newest stamp IS the play's start, and
+        # the listener saw the same track change a few seconds later, so its row
+        # sits past the end of the span the page covers.
+        self.repo.insertPlay("alice", "t1", API_TS, 200000,
+                             created_reason="web_api_backfill_play (user: alice)")
+        self.repo.insertPlay("alice", "t1", API_TS + TOLERANCE - 1, 200000,
+                             created_reason="listener_play (user: alice)")
+        self.repo.commit()
+
+        self.db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        #< the backfill copy goes, the listener row that proved it stays
+        self.assertEqual(self._remainingPlayTimes(), [API_TS + TOLERANCE - 1])
+
+    def test_a_listener_row_that_ended_just_before_the_oldest_item_still_proves_one(self):
+        # The end-time arm at the low boundary: the listener row's created_at
+        # (its observed end) is what pairs with the backfill copy's played_at,
+        # and it can sit a few seconds before the oldest stamp in the page.
+        with patch("Database.queries.plays.time") as mockTime:
+            mockTime.time.return_value = API_TS - 2   #< the listener row's created_at
+            self.repo.insertPlay("alice", "t1", API_TS - 300, 200000,
+                                 created_reason="listener_play (user: alice)")
+        self.repo.insertPlay("alice", "t1", API_TS, 200000,
+                             created_reason="web_api_backfill_play (user: alice)")
+        self.repo.commit()
+
+        self.db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        self.assertEqual(self._remainingPlayTimes(), [API_TS - 300])
+
+    def test_padding_does_not_delete_a_lone_play_outside_the_span(self):
+        """Widening the candidate set must not widen what counts as proof: a
+        play just outside the span with no sibling is still untouchable."""
+        self.repo.insertPlay("alice", "t1", API_TS, 200000,
+                             created_reason="web_api_backfill_play (user: alice)")
+        self.repo.insertPlay("alice", "t2", API_TS + TOLERANCE - 1, 200000,
+                             created_reason="web_api_backfill_play (user: alice)")
+        self.repo.commit()
+
+        self.db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        self.assertEqual(self._remainingPlayTimes(), [API_TS, API_TS + TOLERANCE - 1])
+
+    def test_a_duplicate_far_outside_the_span_is_still_left_alone(self):
+        """The bound is loosened by a tolerance, not removed: an hour-old pair
+        the page does not cover is none of this pass's business."""
+        anHourBefore = API_TS - 3600
+        self.repo.insertPlay("alice", "t1", anHourBefore, 200000,
+                             created_reason="web_api_backfill_play (user: alice)")
+        self.repo.insertPlay("alice", "t1", anHourBefore + 1, 200000,
+                             created_reason="listener_play (user: alice)")
+        self.repo.commit()
+
+        self.db._reconcileWithWebApiHistory([{"track": {"id": "t1"}, "played_at": API_PLAYED_AT}])
+
+        self.assertEqual(self._remainingPlayTimes(), [anHourBefore, anHourBefore + 1])
 
 
 if __name__ == "__main__":

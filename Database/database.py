@@ -269,6 +269,12 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                 #  7062895ms for a 171s track) - the play is recorded with the
                                                 #  track's actual length instead of being dropped
 
+    LISTENER_FUTURE_PLAY_GRACE_SECONDS = 86400  #< how far ahead of now a listener-reported play may be stamped
+                                                #  before it reads as another account's data arriving on this
+                                                #  listener (the contamination check) rather than as clock or
+                                                #  timezone skew. A day, because skew is hours at worst and a
+                                                #  wrongly-dropped play cannot be recovered
+
     BACKFILLER_MIN_START_DELAY = 30            #< random startup-offset bounds for the metadata backfiller,
     BACKFILLER_MAX_START_DELAY = 90            #  in seconds - staggers per-user threads after a restart
 

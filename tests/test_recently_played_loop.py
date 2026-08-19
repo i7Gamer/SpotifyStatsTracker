@@ -275,6 +275,37 @@ class TestPollLoop(unittest.TestCase):
         self.assertEqual(len(callbackCalls), 1)
         self.assertEqual(callbackCalls[0][0], "spotify:track:aaa")   #< the PREVIOUS track
 
+    def test_the_containment_warning_names_the_play_it_is_holding(self):
+        """The line a person reads when this fires has to answer "how many
+        plays is this?" - a burst of four in two minutes is one play retried
+        four times or four plays lost, and the message said neither. It was
+        exactly this on the live instance (17 hits over 11 days, in bursts),
+        with nothing in the log to tell the two apart."""
+        stateA = makePlayingState(uid="uid-1", uri="spotify:track:aaa")
+        stateB = makePlayingState(uid="uid-2", uri="spotify:track:bbb")
+        manager = _ScriptedStateManager([stateA, stateB])
+
+        from Database.Spotify.recentlyPlayed import RecentlyPlayedManager
+        with patch("spotapi.status.PlayerStatus"):
+            lpm = RecentlyPlayedManager(MagicMock())
+        lpm.manager = manager
+        lpm.run = True
+
+        def stopAfterSecondSleep(_secs):
+            if not getattr(stopAfterSecondSleep, "seen", False):
+                stopAfterSecondSleep.seen = True
+                return
+            lpm.run = False
+
+        with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING") as cm, \
+                patch("time.sleep", side_effect=stopAfterSecondSleep):
+            lpm.updateLoop(MagicMock(side_effect=RuntimeError("track lookup blew up")),
+                           refreshInterval=1)
+
+        warning = "\n".join(cm.output)
+        self.assertIn("spotify:track:aaa", warning)   #< the play being held, not the one now playing
+        self.assertIn("retry", warning.lower())
+
     def test_a_failed_play_is_retried_on_the_next_poll(self):
         """Containment must not turn into dropping: lastPlayedUid only advances
         after the callback returns, so the next poll of the same state retries
@@ -969,6 +1000,27 @@ class TestPushLoop(unittest.TestCase):
         self.assertEqual(outcome, "stopped")
         callback.assert_called_once()
         self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")   #< the PREVIOUS track
+
+    def test_a_failing_callback_is_logged_with_the_play_it_is_holding(self):
+        """The push path's half of the poll path's message - and the half that
+        actually fires in production (17 times over 11 days, in bursts of 2-4,
+        where naming the play is what tells a burst from a loss)."""
+        first, second = pushedCluster(uid="uid-1"), pushedCluster(
+            trackUri="spotify:track:bbb", uid="uid-2")
+        manager = _PushManager([pushFrame(first), pushFrame(second)], initialCluster=first)
+        from Database.Spotify.recentlyPlayed import _runPushLoop
+
+        lpm = _pushLastPlayed(manager)
+        manager.onExhausted = lambda: setattr(lpm, "run", False)
+
+        with self.assertLogs("Database.Spotify.recentlyPlayed", level="WARNING") as cm:
+            _runPushLoop(lpm, MagicMock(side_effect=RuntimeError("track lookup blew up")))
+
+        warning = "\n".join(cm.output)
+        self.assertIn("spotify:track:aaa", warning)
+        self.assertIn("retry", warning.lower())
+        #< and the loop survived it: containment is what makes the retry possible
+        self.assertEqual(lpm.lastPlayedUid, "uid-1")
 
     def test_a_repeated_push_for_the_same_track_records_nothing(self):
         cluster = pushedCluster(uid="uid-1")

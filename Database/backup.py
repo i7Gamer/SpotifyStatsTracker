@@ -200,6 +200,15 @@ class BackupWorker(WorkerTelemetryMixin):
             destination = sqlite3.connect(partialPath)
             try:
                 source.backup(destination)
+            except BaseException:
+                # Closed first, then removed: on Windows an open handle blocks
+                # the unlink. The sweep at the top of the next run would collect
+                # it eventually, but "eventually" is the next scheduled backup,
+                # and a full-size copy of the database left behind is exactly
+                # what must not happen when the copy failed for want of space.
+                destination.close()
+                partialPath.unlink(missing_ok=True)
+                raise
             finally:
                 destination.close()
         finally:

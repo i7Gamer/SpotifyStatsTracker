@@ -51,7 +51,9 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
     # others - values above this cutoff (~5138 CE as seconds) can only be ms.
     OFFLINE_TIMESTAMP_MS_CUTOFF = 1e11
     # Sanity floor for offline_timestamp: before 2006 (Spotify's founding era)
-    # it can't be a real play time - fall back to the ts-derived start.
+    # it can't be a real play time - fall back to the ts-derived start. Applies
+    # to that field only, not to a play's start time in general - see
+    # _plausibleStart for why the general bound has to be lower.
     MIN_PLAUSIBLE_PLAY_TIMESTAMP = int(datetime.datetime(2006, 1, 1, tzinfo=datetime.timezone.utc).timestamp())
 
     # Error-text markers for lookup failures that are likely temporary (network,
@@ -165,7 +167,12 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
             episodes most real exports contain.
         droppedNegativeTime - a pre-existing, deliberate sanity filter. Counted
             for visibility only; folding it into the above would newly abort
-            overwrite imports for exports that have always been importable."""
+            overwrite imports for exports that have always been importable.
+        droppedImplausibleTime - the same kind of filter, for a start time that
+            cannot be a real play (see _plausibleStart), and counted apart from
+            droppedMalformed for exactly the reason above: it is reachable from
+            ordinary user files, and one such row must not abort an overwrite
+            import of an otherwise readable 100k-entry export."""
         parsedItems = []
         loggedMalformed = 0
         for index, item in enumerate(history):
@@ -185,6 +192,9 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                 if timePlayed < 0:
                     self._bumpStat(stats, "droppedNegativeTime")
                     continue
+                if not self._plausibleStart(startTimestamp):
+                    self._bumpStat(stats, "droppedImplausibleTime")
+                    continue
                 parsedItems.append((name, artist, startTimestamp, timePlayed, trackUri, albumName, extras, playedFrom))
             except Exception as e:
                 self._bumpStat(stats, "droppedMalformed")
@@ -197,6 +207,34 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                     logger.warning("Skipping unreadable export entry at position %d: %s",
                                    index, parseError(e))
         return parsedItems
+
+    def _plausibleStart(self, startTimestamp) -> bool:
+        """Could this be the start of a real play?
+
+        Nothing else on the way in says no: timeToInt answers 0 for a stamp it
+        cannot read (a null `ts`, an empty endTime, a hand-edited file), the
+        entry function then subtracts the play's own length from it, and the
+        result - a negative number - was written to plays.played_at as a listen
+        dated 1969, where it sits in the streak calendar and the year list
+        forever.
+
+        Read through timeToInt for the same reason coverage() does: a start is
+        not always a number here. The Musicolet path formats its synthetic
+        stamps as strings, and a caller may pass a datetime.
+
+        The floor is the epoch, NOT MIN_PLAUSIBLE_PLAY_TIMESTAMP, even though
+        that constant is right there and reads like the obvious bound: those
+        Musicolet stamps are anchored at MUSICOLET_SYNTHETIC_TIME_ANCHOR
+        (2000-01-01, deliberately fixed so re-importing the same file is a
+        no-op), so a 2006 floor would drop every play from that format. What
+        this rejects is the unreadable stamp and what derives from it, which is
+        the whole of the observed defect - a real-looking but wrong year is the
+        user's own data and none of a sanity filter's business.
+
+        A floor only: a stamp in the future is the LISTENER's contamination
+        signal, and an export is a record of the past that a wrong timezone can
+        legitimately push a few hours ahead of the clock reading it here."""
+        return timeToInt(startTimestamp) > 0
 
     def _resolveKnownKey(self, trackUri, name, artist, known):
         """ Return whichever of trackUri or the name+artist key is already cached in
@@ -233,12 +271,15 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
 
         def fetchOne(key, info):
             name, artist, trackUri, albumName = info
-            meta = None
             try:
-                meta = self._fetchTrackMeta(name, artist, trackUri)
+                return key, self._fetchTrackMeta(name, artist, trackUri), None
             except Exception as e:
                 logger.warning("Error fetching %s by %s: %s", name, artist, parseError(e))
-            return key, meta
+                # The error travels with the result: whether this track is
+                # UNRESOLVABLE or merely unreachable right now decides whether
+                # the answer can be cached (below), and only the exception says
+                # which - the same question _processPlay asks one layer down.
+                return key, None, e
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_PREFETCH_WORKERS) as executor:
             futures = {executor.submit(fetchOne, k, val): k for k, val in missingTracks.items()}
@@ -253,9 +294,9 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                     )
 
                 try:
-                    key, meta = future.result()
+                    key, meta, error = future.result()
+                    name, artist, trackUri, albumName = missingTracks[key]
                     if meta:
-                        name, artist, trackUri, albumName = missingTracks[key]
                         formatted = Client.formatTrack(meta, embedPlaybackInfo=False)
                         formatted = self._overlayExportMetadata(formatted, name, artist, albumName)
                         known[formatted["id"]] = formatted
@@ -263,6 +304,30 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                             known[key] = formatted
                         if len(formatted["artists"]) > 0:
                             known[_knownNameKey(formatted["name"], formatted["artists"][0]["name"])] = formatted
+                    elif error is not None and not self._isTransientLookupError(error):
+                        # Spotify does not have this track, and asking again in a
+                        # second will not change that - so answer it HERE, the
+                        # way _processPlay would have. Without this the failure
+                        # was recorded nowhere, `known` still had no entry, and
+                        # the same track was looked up a second time, serially,
+                        # once per unresolvable track - double the volume against
+                        # a catalog quota measured in hundreds per day.
+                        #
+                        # duration 0, not the play's length: the play is not in
+                        # scope here, and _processPlay's synthetic branch already
+                        # raises a synthetic record's duration to the longest
+                        # play it sees, which is the same value it would have
+                        # started from.
+                        synthetic = self._createSyntheticTrack(name, artist, trackUri, 0,
+                                                               albumName=albumName)
+                        known[synthetic["id"]] = synthetic
+                        if key != synthetic["id"]:
+                            known[key] = synthetic
+                        known[_knownNameKey(name, artist)] = synthetic
+                    #< a TRANSIENT error is deliberately left out of `known`: it
+                    #  says nothing about whether the track exists, so the
+                    #  per-play path must be free to try again (and a
+                    #  still-failing one is counted as droppedTransient there)
                 except Exception as e:
                     logger.error("Error saving pre-fetched track: %s", parseError(e))
 

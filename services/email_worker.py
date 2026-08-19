@@ -117,10 +117,21 @@ class EmailWorker:
                 stopEvent.wait(EMAIL_WORKER_POLL_INTERVAL_SECONDS)
 
     def stop(self) -> None:
-        """Stop the background worker thread."""
+        """Stop the background worker thread.
+
+        Deliberately does NOT drain what is left: the queue is in-memory and
+        every event that fills it is re-detected on the next start (the
+        cooldown is stamped on SUCCESS only, see email_service), while draining
+        would put an unbounded number of SMTP sends inside the join budget the
+        compose file's stop_grace_period has to cover. It is only said out
+        loud, because a notification that never went out otherwise leaves no
+        trace anywhere."""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
+        pending = self._queue.qsize()
+        if pending:
+            logger.warning("EmailWorker stopped with %d undelivered notification(s)", pending)
 
 
 # Module-level singleton worker instance

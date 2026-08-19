@@ -1,8 +1,14 @@
 import unittest
+from xml.etree import ElementTree
+
 from services.export import (
     generatePlaylistCsv, generatePlaylistM3u, generatePlaylistXspf, PLAYLIST_CSV_COLUMNS,
     _csvSafeCell,
 )
+
+#< every element generatePlaylistXspf emits carries the XSPF namespace, so
+#  findtext() has to name it - the alternative is stripping it from every tag
+XSPF_NS = "{http://xspf.org/ns/0/}"
 
 
 class TestPlaylistExport(unittest.TestCase):
@@ -114,6 +120,74 @@ class TestM3uIsLineSafe(unittest.TestCase):
         content = self._m3u("Song 1 <Rock>", artist="Artist & Co")
 
         self.assertIn("#EXTINF:-1,Artist & Co - Song 1 <Rock>", content)
+
+
+class TestXspfIsParseableXml(unittest.TestCase):
+    """XML 1.0 forbids most C0 control characters outright - there is no escape
+    for them, and one makes the WHOLE document unparseable rather than just the
+    element holding it. They reach here from two directions: track/artist/album
+    names come out of uploaded export files, and the playlist title is built
+    straight out of ?tags= (routes/tags.py::playlistExport). Every assertion
+    below PARSES the result instead of matching strings, because "a player can
+    open this file" is the actual claim being made."""
+
+    # The three C0 characters XML 1.0 does allow. They must survive: dropping
+    # them would rewrite names that are legal in the format today.
+    TAB, LINE_FEED, CARRIAGE_RETURN = chr(0x09), chr(0x0A), chr(0x0D)
+    FORBIDDEN = "".join(chr(code) for code in
+                        list(range(0x00, 0x09)) + [0x0B, 0x0C] + list(range(0x0E, 0x20)))
+
+    def _xspf(self, name="Song", artist="Artist", album="Album", title="Playlist"):
+        return "".join(generatePlaylistXspf([{
+            "id": "t1", "name": name, "artists": [{"name": artist}],
+            "album": {"name": album}, "isrc": "", "url": "",
+        }], title=title))
+
+    def _trackField(self, content, field):
+        root = ElementTree.fromstring(content)
+        return root.findtext(f"{XSPF_NS}trackList/{XSPF_NS}track/{XSPF_NS}{field}")
+
+    def test_a_control_character_in_a_track_name_still_parses(self):
+        content = self._xspf(name="Song" + chr(0x0B) + "Two")
+
+        self.assertEqual(self._trackField(content, "title"), "SongTwo")
+
+    def test_a_control_character_in_an_artist_name_still_parses(self):
+        content = self._xspf(artist="Artist" + chr(0x00) + "Zero")
+
+        self.assertEqual(self._trackField(content, "creator"), "ArtistZero")
+
+    def test_a_control_character_in_an_album_name_still_parses(self):
+        content = self._xspf(album="Album" + chr(0x1F) + "One")
+
+        self.assertEqual(self._trackField(content, "album"), "AlbumOne")
+
+    def test_a_control_character_in_the_playlist_title_still_parses(self):
+        # The one an ordinary user reaches without importing anything:
+        # /playlist/export?fmt=xspf&tags=<control character>.
+        root = ElementTree.fromstring(self._xspf(title="Playlist (" + chr(0x08) + ")"))
+
+        self.assertEqual(root.findtext(f"{XSPF_NS}title"), "Playlist ()")
+
+    def test_every_character_xml_forbids_is_removed(self):
+        content = self._xspf(name="a" + self.FORBIDDEN + "b")
+
+        self.assertEqual(self._trackField(content, "title"), "ab")
+
+    def test_the_control_characters_xml_allows_are_kept(self):
+        content = self._xspf(name="a" + self.TAB + self.LINE_FEED + self.CARRIAGE_RETURN + "b")
+
+        # The parser normalizes CR to LF on the way back out (XML's own
+        # line-end handling), so this asserts nothing was DROPPED rather than
+        # byte equality.
+        self.assertEqual(self._trackField(content, "title"),
+                         "a" + self.TAB + self.LINE_FEED + self.LINE_FEED + "b")
+
+    def test_the_metacharacters_it_already_escaped_still_round_trip(self):
+        content = self._xspf(name="Song 1 <Rock>", artist="Artist & Co")
+
+        self.assertEqual(self._trackField(content, "title"), "Song 1 <Rock>")
+        self.assertEqual(self._trackField(content, "creator"), "Artist & Co")
 
 
 if __name__ == "__main__":

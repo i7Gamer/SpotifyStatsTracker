@@ -302,7 +302,11 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         fileName = os.path.basename(path)
         destinationDirectory = os.path.join(fileDirectory, subdirName)
         if not os.path.exists(destinationDirectory):
-            os.makedirs(destinationDirectory)
+            # exist_ok, even under the guard: the file being routed here has
+            # ALREADY been imported, so a FileExistsError from losing the
+            # check-then-create race hands it back to the watchdog and imports
+            # it a second time. The guard stays only to keep the log line rare.
+            os.makedirs(destinationDirectory, exist_ok=True)
             logger.info(f"Created directory: {destinationDirectory}")
         destinationPath = os.path.join(destinationDirectory, fileName)
         if os.path.exists(destinationPath):

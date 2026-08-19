@@ -139,6 +139,38 @@ class TestRunBackup(BackupWorkerTestCase):
         notes = {row[0] for row in snapshot.execute("SELECT note FROM plays")}
         self.assertEqual(notes, {"keep me safe", "still in the wal"})
 
+    def test_a_failed_copy_does_not_leave_its_partial_behind(self):
+        """The sweep at the top of the next run collects it eventually, but
+        "eventually" is the next scheduled backup - a full-size copy of the
+        database sits in Backups/ until then, and on a disk-full failure that
+        is the one thing that must not happen."""
+        worker = self._makeWorker()
+        realConnect = sqlite3.connect
+
+        class _SourceWhoseCopyFails:
+            """sqlite3.Connection is an immutable C type, so the failure is
+            injected by wrapping the SOURCE connection - the destination stays
+            real, because the .partial file it creates is the point."""
+            def __init__(self, conn):
+                self._conn = conn
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            def backup(self, *args, **kwargs):
+                raise sqlite3.OperationalError("disk I/O error")
+
+        def connectFailingSource(path, *args, **kwargs):
+            conn = realConnect(path, *args, **kwargs)
+            return _SourceWhoseCopyFails(conn) if Path(path) == self.dbPath else conn
+
+        with patch.object(backupModule.sqlite3, "connect", side_effect=connectFailingSource):
+            with self.assertRaises(sqlite3.OperationalError):
+                worker.runBackup()
+
+        leftovers = sorted(p.name for p in (self.root / "Backups").iterdir())
+        self.assertEqual(leftovers, [])
+
     def test_no_partial_files_left_behind(self):
         worker = self._makeWorker()
 

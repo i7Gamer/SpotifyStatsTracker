@@ -339,6 +339,33 @@ class TestAutoImporterOutcomeRouting(unittest.TestCase):
         self.assertIn("DONE", os.path.normpath(destination).split(os.sep))
 
 
+class TestDestinationDirectoryCreation(unittest.TestCase):
+    """The DONE/ and FAILED/ directories are created on the way to moving a
+    file into them, and the file has already been imported by then - a raise
+    here re-delivers it on the next poll and imports it twice."""
+
+    def test_a_directory_that_appears_between_the_check_and_the_create(self):
+        """The check-then-create window: os.path.exists said no, and by the
+        time makedirs runs the directory is there (the other user's watchdog,
+        an unpacking archive, anything). Without exist_ok that is a
+        FileExistsError out of a path that had nothing to fail about."""
+        importer = AutoImporter("/dummy/path", MagicMock())
+
+        with patch("Database.Importers.AutoImporter.os.path.exists", return_value=False), \
+                patch("Database.Importers.AutoImporter.os.makedirs",
+                      side_effect=self._makedirsThatLosesTheRace) as mock_makedirs:
+            destination = importer._destinationPath("/dummy/path/a.json")
+
+        self.assertIn("DONE", os.path.normpath(destination).split(os.sep))
+        #< exist_ok is the fix, not a try/except around the call
+        self.assertTrue(mock_makedirs.call_args.kwargs.get("exist_ok"))
+
+    @staticmethod
+    def _makedirsThatLosesTheRace(path, exist_ok=False):
+        if not exist_ok:
+            raise FileExistsError(f"[WinError 183] Cannot create a file when it already exists: {path}")
+
+
 class TestAutoImporterUnreadableFileRouting(unittest.TestCase):
     """A file whose CONTENT can't be decoded is as dead as one the importer
     rejects, so it goes to FAILED/ for the same reason: left in the watch

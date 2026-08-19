@@ -1,3 +1,4 @@
+import time as _time
 import unittest
 from unittest.mock import MagicMock, call
 import sys
@@ -96,6 +97,32 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
         db._addToDatabaseFromListener(None)
         db._addToDatabaseFromListener([])
         db.appendTrackData.assert_not_called()
+
+    def test_a_play_further_ahead_than_the_contamination_grace_is_dropped(self):
+        """A stamp this far in the future is another account's data arriving on
+        this listener, not a clock skew - the check that name says so."""
+        db = _bareDatabase()
+        beyondGrace = _time.time() + Database.LISTENER_FUTURE_PLAY_GRACE_SECONDS + 60
+        items = [{"track": {"id": "t1"}, "played_at": beyondGrace,
+                  "ms_played": 60000, "context": None}]
+
+        with self.assertLogs("Database.database", level="ERROR") as cm:
+            db._addToDatabaseFromListener(items)
+
+        db.appendTrackData.assert_not_called()
+        self.assertTrue(any("CONTAMINATION" in message for message in cm.output))
+
+    def test_a_play_inside_the_grace_is_still_recorded(self):
+        """The grace is what keeps an ordinary clock or timezone disagreement
+        from being read as contamination."""
+        db = _bareDatabase()
+        withinGrace = _time.time() + Database.LISTENER_FUTURE_PLAY_GRACE_SECONDS - 60
+        items = [{"track": {"id": "t1"}, "played_at": withinGrace,
+                  "ms_played": 60000, "context": None}]
+
+        db._addToDatabaseFromListener(items)
+
+        db.appendTrackData.assert_called_once()
 
     def test_corrupt_duration_is_clamped_to_track_length_not_skipped(self):
         """SpotipyFree sometimes reports an absurd play duration (e.g. time

@@ -353,7 +353,12 @@ def _applyPushedState(self, manager, callback) -> None:
         state = spotapi.status.PlayerState.from_dict(copy.deepcopy(cached))
         _applyStateToTracking(self, state, callback)
     except Exception as e:  # noqa: BLE001 - a malformed push or failing callback must not kill the loop
-        logger.warning("[Spotify] Could not apply a pushed player state: %s", e)
+        # Names the play being held, for the reason the poll path's twin does:
+        # on the live instance this fired 17 times over 11 days in bursts of
+        # 2-4, and the old wording could not say whether that was one play
+        # retried or several dropped.
+        logger.warning("[Spotify] Could not apply a pushed player state for %s "
+                       "- holding it for retry: %s", self.lastTrackUri or "no track", e)
 
 
 def _subscribeConnectState(manager):
@@ -692,7 +697,14 @@ def _pollLoopBody(self, callback, refreshInterval=3):
             try:
                 _applyStateToTracking(self, state, callback)
             except Exception as applyError:  # noqa: BLE001 - a failing play callback must not escalate to a reconnect
-                logger.warning("[Spotify] Could not record the observed play state: %s", applyError)
+                # Names the play being held and says it is not lost: these
+                # arrive in BURSTS (the same play re-offered until the lookup
+                # succeeds), and without the uri a reader cannot tell one play
+                # retried four times from four plays dropped - which is the only
+                # question the line is there to answer.
+                logger.warning("[Spotify] Could not record the observed play state for %s "
+                               "- holding it for retry: %s",
+                               self.lastTrackUri or "no track", applyError)
             _sleepUntilStopped(self, refreshInterval)
         except Exception as e:
             logger.error("[Spotify] Error in Recently Played: %s", e, exc_info=True)

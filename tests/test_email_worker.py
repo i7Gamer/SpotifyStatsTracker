@@ -53,6 +53,32 @@ def test_each_run_gets_its_own_stop_event():
     worker.stop()
 
 
+def test_stopping_with_work_still_queued_says_so(caplog):
+    """Undelivered notifications are dropped at shutdown, and that is the right
+    trade - draining would put an unbounded number of SMTP sends inside the
+    join budget the compose stop_grace_period has to cover. What is not right
+    is doing it silently: a share-request mail that never went out leaves no
+    trace at all otherwise."""
+    worker = EmailWorker()
+    worker.enqueue("alice", EVENT_INVALID_COOKIES)
+    worker.enqueue("bob", EVENT_INVALID_COOKIES)
+
+    with caplog.at_level("WARNING", logger="services.email_worker"):
+        worker.stop()   #< never started: nothing has drained the queue
+
+    assert "2" in caplog.text
+    assert "undelivered" in caplog.text.lower()
+
+
+def test_stopping_with_an_empty_queue_is_quiet(caplog):
+    worker = EmailWorker()
+
+    with caplog.at_level("WARNING", logger="services.email_worker"):
+        worker.stop()
+
+    assert caplog.text == ""
+
+
 @patch("services.email_worker.send_email_notification")
 def test_email_worker_processes_queue(mock_send):
     mock_send.return_value = True

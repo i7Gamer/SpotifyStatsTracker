@@ -514,7 +514,13 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
 //   Trends gets the shared inline error + Retry, which is what its own catch
 //     did: three "Loading listening trends…" placeholders say nothing useful on
 //     their own and would otherwise stay up forever.
-document.body.addEventListener('htmx:responseError', function (evt) {
+//
+// Bound to sendError as well as responseError, like the summary handler above:
+// the two are one failure to a reader of the page (nothing came back), and
+// sendError is the half that fires when the request never reached the server -
+// a dropped connection, DNS, offline. Bound to responseError alone, exactly
+// those left both cards on a placeholder claiming work was still in progress.
+var reportDeferredCardFailure = function (evt) {
   if (!evt.detail) return;
   var card = document.getElementById('discoverCard');
   if (card && evt.detail.target === card) {
@@ -528,7 +534,9 @@ document.body.addEventListener('htmx:responseError', function (evt) {
                 { target: '#dashboardTrendsContainer', swap: 'innerHTML' });
     });
   }
-});
+};
+document.body.addEventListener('htmx:responseError', reportDeferredCardFailure);
+document.body.addEventListener('htmx:sendError', reportDeferredCardFailure);
 
 // Listening calendar: a cursor-following overlay on hover (like the charts
 // page tooltips), replacing the native `title` hint so the day's play count

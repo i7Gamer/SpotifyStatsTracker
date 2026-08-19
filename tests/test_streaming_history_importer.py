@@ -739,6 +739,114 @@ class TestVideoExportRows(unittest.TestCase):
         self.assertEqual(stats.get("droppedNegativeTime"), 1)
         self.assertIsNone(stats.get("droppedMalformed"))
 
+    def test_an_unreadable_timestamp_is_counted_under_its_own_key(self):
+        """`"ts": null` is not an error anywhere on the way in: timeToInt
+        answers 0 for anything it cannot read, so the entry parsed into a play
+        at played_at = -(ms_played // 1000) and landed in the database dated
+        1969. Counted like droppedNegativeTime and NOT like droppedMalformed,
+        for that key's own reason: droppedMalformed is in
+        UNREADABLE_DROP_STAT_KEYS, so a single unreadable stamp in a 100k-entry
+        export would abort the whole overwrite import."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        entry = {
+            "ts": None, "ms_played": 150000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedImplausibleTime"), 1)
+        self.assertIsNone(stats.get("droppedMalformed"))
+
+    def test_the_bound_is_the_epoch_not_spotifys_founding_era(self):
+        """MIN_PLAUSIBLE_PLAY_TIMESTAMP (2006) is the obvious-looking floor and
+        the wrong one: Musicolet's synthetic play times are anchored at
+        MUSICOLET_SYNTHETIC_TIME_ANCHOR - 2000-01-01, fixed so re-importing the
+        same file is a no-op - so that floor would drop every play from that
+        format. A pre-2006 stamp is imported; only an unreadable one is not."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK
+        entry = {
+            "ts": "2000-01-01T00:00:10Z", "ms_played": 10000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(len(metas), 1)
+        self.assertIsNone(stats.get("droppedImplausibleTime"))
+
+    def test_a_start_time_that_is_not_a_number_is_read_not_rejected(self):
+        """A start is not always numeric here - the Musicolet path formats its
+        stamps as strings, and coverage() has always read them through
+        timeToInt. The guard has to do the same or it drops readable plays."""
+        importer = Importer()
+
+        self.assertTrue(importer._plausibleStart("2023-01-01 00:00:00"))
+        self.assertFalse(importer._plausibleStart(None))
+        self.assertFalse(importer._plausibleStart("not a date"))
+
+    def test_a_start_time_pushed_below_the_bound_by_its_own_length_is_dropped(self):
+        """The START is what gets stored, so it is what has to be plausible: an
+        end stamp inside the era with an absurd ms_played derives a start
+        outside it."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 10 ** 13,   #< ~317 years
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedImplausibleTime"), 1)
+
+    def test_an_unreadable_timestamp_in_an_account_export_is_dropped_too(self):
+        """Account exports go through the same _parseHistory, with their own
+        entry function - the guard belongs to both or to neither."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        stats = {}
+
+        metas = list(importer.importAcountHistory(
+            [{"endTime": None, "msPlayed": 150000,
+              "trackName": "Song One", "artistName": "Artist One"}],
+            known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedImplausibleTime"), 1)
+        self.assertIsNone(stats.get("droppedMalformed"))
+
+    def test_an_ordinary_play_is_not_dropped_by_the_plausibility_bound(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.track.return_value = FAKE_TRACK
+        entry = {
+            "ts": "2023-05-01T10:00:00Z", "ms_played": 150000,
+            "master_metadata_track_name": "Song One",
+            "master_metadata_album_artist_name": "Artist One",
+            "spotify_track_uri": "spotify:track:track123",
+        }
+        stats = {}
+
+        metas = list(importer.importExtendedHistory([entry], known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(len(metas), 1)
+        self.assertIsNone(stats.get("droppedImplausibleTime"))
+
     def test_account_export_entries_are_counted_too(self):
         """_parseHistory is shared by all three export formats."""
         importer = Importer()
@@ -780,6 +888,50 @@ class TestVideoExportRows(unittest.TestCase):
 
         self.assertEqual(len(metas), 2)
         self.assertEqual(importer._fetchTrackMeta.call_count, 1)
+
+    def test_a_track_spotify_does_not_have_is_looked_up_once_not_twice(self):
+        """The prefetch's failures were recorded nowhere, so `known` had no
+        entry for them and _processPlay looked the same track up AGAIN - once
+        per unresolvable track, serially, straight back into the ~600-lookups-a-
+        day catalog quota. The synthetic record _processPlay would have built is
+        built here instead, keyed exactly as it keys it."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer._fetchTrackMeta = MagicMock(side_effect=Exception("404 not found"))
+        plays = [
+            {"endTime": "2023-05-01 10:00", "msPlayed": 150000,
+             "trackName": "Gone Song", "artistName": "Gone Artist"},
+            {"endTime": "2023-05-01 11:00", "msPlayed": 150000,
+             "trackName": "Gone Song", "artistName": "Gone Artist"},
+        ]
+
+        metas = list(importer.importAcountHistory(plays, known=[], progressCallback=None))
+
+        #< both plays still recorded, against the synthetic record
+        self.assertEqual(len(metas), 2)
+        self.assertEqual(importer._fetchTrackMeta.call_count, 1)
+        self.assertEqual({meta["name"] for meta in metas}, {"Gone Song"})
+
+    def test_a_transient_prefetch_failure_is_still_retried_per_play(self):
+        """The exception NOT to freeze into the catalog. A rate limit or an
+        outage says nothing about whether the track exists, so it must stay out
+        of `known` and let _processPlay try again - that retry is what turns a
+        blip into a normal import instead of a permanent synthetic record."""
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer._fetchTrackMeta = MagicMock(side_effect=Exception("429 rate limit exceeded"))
+        plays = [
+            {"endTime": "2023-05-01 10:00", "msPlayed": 150000,
+             "trackName": "Gone Song", "artistName": "Gone Artist"},
+        ]
+        stats = {}
+
+        metas = list(importer.importAcountHistory(plays, known=[], progressCallback=None, stats=stats))
+
+        self.assertEqual(metas, [])
+        self.assertEqual(stats.get("droppedTransient"), 1)
+        #< the prefetch tried, and _processPlay tried again rather than trusting it
+        self.assertEqual(importer._fetchTrackMeta.call_count, 2)
 
     def test_a_fabricated_track_id_is_not_asked_of_spotify(self):
         """The guard here tested `startswith("synth_")`, but no TRACK id in this
