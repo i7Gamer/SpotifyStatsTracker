@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+#< the sweep lives with the other manual tools (same pattern as test_merge_tools.py)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'tools')))
 
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]

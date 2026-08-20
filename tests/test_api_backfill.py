@@ -1242,7 +1242,7 @@ class TestBackfillSourceTagIsOneConstant(unittest.TestCase):
     """The listener tags backfilled plays with a source string, and three
     unrelated places depend on that exact spelling: the insert guard compares
     `source == WEB_API_BACKFILL_SOURCE`, and the reconciler plus
-    sweep_backfill_duplicates.py LIKE-match the `<source>_play%` created_reason
+    tools/sweep_backfill_duplicates.py LIKE-match the `<source>_play%` created_reason
     it turns into. They all agreed only by coincidence - a rename in the
     listener alone would silently stop deduplicating and start double-recording
     plays, with nothing raising."""

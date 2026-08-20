@@ -605,7 +605,7 @@ class PlayQueries:
         clusters would delete genuine replays.
 
         So the skip case is OWNED by hasPlayNearTime's skip arm, which stops
-        the duplicate being written at all, and by sweep_backfill_duplicates.py
+        the duplicate being written at all, and by tools/sweep_backfill_duplicates.py
         for anything that landed before that arm existed (its own
         --skip-tolerance, same constant). Reaching it from here would need a
         separate arm in _isSameListen keyed to the skip tolerance, not a

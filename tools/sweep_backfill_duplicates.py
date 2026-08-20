@@ -3,6 +3,14 @@
 
 """One-off sweep for historical pause-stretched backfill duplicates.
 
+SPENT: the live instance was swept clean on 2026-08-17 (both pairings, plus the
+cross-release-id arm added that day - 45 rows, 9.6% of backfill-sourced plays),
+and the live layers now prevent every class this cleans up. It lives in tools/
+with the other manual read-mostly scripts - excluded from the Docker image by
+.dockerignore, like them - and is kept at all because it is still the recovery
+path for a database restored from a pre-sweep backup: a fresh --db dry run says
+in one command whether such a restore brought the duplicates back.
+
 The live dedup layers (backfill announce, insert guard, reconciler) recognise a
 Web API backfill row as a copy of a listener recording via the listener row's
 created_at - the observed end of the play, pauses included, since the listener

@@ -46,7 +46,7 @@ UNKNOWN_ALBUM_NAME = "Unknown Album"
 # It lives here, in the leaf module both sides can import, because three
 # unrelated places have to agree on the exact spelling: the insert guard
 # compares `source == WEB_API_BACKFILL_SOURCE`, while the reconciler and
-# sweep_backfill_duplicates.py LIKE-match the created_reason prefix it becomes.
+# tools/sweep_backfill_duplicates.py LIKE-match the created_reason prefix it becomes.
 # As a literal in the listener it agreed with them only by coincidence - a
 # rename there would have silently stopped the dedup and started
 # double-recording plays, with nothing raising.

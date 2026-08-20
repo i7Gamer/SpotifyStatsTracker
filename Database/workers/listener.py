@@ -421,7 +421,7 @@ class ListenerMixin:
 
         Two IDENTITY proofs, both transitive, so they are unioned rather than
         tested pairwise: a shared merge group (canonical_id), and a shared
-        ISRC. sweep_backfill_duplicates.py carries a third, name + duration +
+        ISRC. tools/sweep_backfill_duplicates.py carries a third, name + duration +
         primary artist - deliberately NOT honoured here. That one is a
         heuristic, and this path deletes from live history unattended; the
         sweep prints a dry run for a person to read first, which is where a
