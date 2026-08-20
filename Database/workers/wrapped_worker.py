@@ -174,33 +174,23 @@ class WrappedWorkerMixin:
         topArtists = self.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
         topAlbums = self.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
 
-        # 7. Discoveries lists (unbounded query filtered by firstListenedAt)
-        songsStats = self.getSongsStats(sortBy="plays")
-        artistsStats = self.getArtistsStats()
-        albumsStats = self.getAlbumsStats(sortBy="plays")
-
-        yearStartTs, yearEndTs = yearStart.timestamp(), yearEnd.timestamp()
-
-        discoveredSongsList = [
-            item for item in songsStats
-            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
-        ]
-        discoveredSongsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
-        discoveredSongsList = discoveredSongsList[:WRAPPED_LIST_LIMIT]
-
-        discoveredArtistsList = [
-            item for item in artistsStats
-            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
-        ]
-        discoveredArtistsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
-        discoveredArtistsList = discoveredArtistsList[:WRAPPED_LIST_LIMIT]
-
-        discoveredAlbumsList = [
-            item for item in albumsStats
-            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
-        ]
-        discoveredAlbumsList.sort(key=lambda item: item.get("plays", 0), reverse=True)
-        discoveredAlbumsList = discoveredAlbumsList[:WRAPPED_LIST_LIMIT]
+        # 7. Discoveries lists. The same lifetime aggregates as always -
+        #    ranking and displayed counts stay LIFETIME numbers, and an entity
+        #    is credited to the year of its first-ever listen - but the
+        #    first-listen filter, the plays ordering and the list cap now run
+        #    in SQL (see Repository._firstListenClause). The old shape
+        #    hydrated every entity ever played, three times, to keep 100 rows
+        #    each - and the current year recalculates on every worker cycle
+        #    that saw new plays, i.e. every 15 minutes of active listening.
+        discoveredSongsList = self.getSongsStats(
+            sortBy="plays", limit=WRAPPED_LIST_LIMIT,
+            firstListenedStart=yearStart, firstListenedEnd=yearEnd)
+        discoveredArtistsList = self.getArtistsStats(
+            sortBy="plays", limit=WRAPPED_LIST_LIMIT,
+            firstListenedStart=yearStart, firstListenedEnd=yearEnd)
+        discoveredAlbumsList = self.getAlbumsStats(
+            sortBy="plays", limit=WRAPPED_LIST_LIMIT,
+            firstListenedStart=yearStart, firstListenedEnd=yearEnd)
 
         data = {
             "calculated_at": _dbmod.time.time(),

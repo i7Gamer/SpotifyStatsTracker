@@ -1308,7 +1308,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                        trackId: str | None = None, artistId: str | None = None,
                        albumId: str | None = None, searchQuery: str | None = None,
-                       trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list:
+                       trackIds: list[str] | None = None, fullPlaysOnly: bool = False,
+                       firstListenedStart: datetime.datetime = None,
+                       firstListenedEnd: datetime.datetime = None) -> list:
         """Return songs sorted by `sortBy` with full song metadata and listen
         totals - sorted/paged in SQL via a single batched query (see
         Repository.getSongsPage) rather than hydrating every song ever played
@@ -1318,7 +1320,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         explicit set of track ids (the tag-filtered Top Songs page). `searchQuery`
         narrows to songs whose name, artist(s), or album match. `fullPlaysOnly`
         excludes plays that never reached the completion-complete percent of
-        the track's duration - defaults False so only the Top Songs page opts in."""
+        the track's duration - defaults False so only the Top Songs page opts in.
+        `firstListenedStart`/`firstListenedEnd` keep only songs whose FIRST-EVER
+        listen falls in that half-open window while counts stay lifetime - the
+        Wrapped discovery lists (see Repository._firstListenClause); not
+        supported by the skip-sort branch, whose query has no discovery caller."""
         if sortBy == self.SKIP_SORT_BY:
             # Its own query rather than a skips column on getSongsPage: that
             # query's is_skip=0 predicate is load-bearing for its plan (an
@@ -1347,9 +1353,12 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 for row in rows if row["track_id"] in tracksById
             ]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        firstListenStartTs, firstListenEndTs = self._dateRangeToTimestamps(firstListenedStart, firstListenedEnd)
         return self.repo.getSongsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
                                        trackId=trackId, artistId=artistId, albumId=albumId, searchQuery=searchQuery,
-                                       trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
+                                       trackIds=trackIds, fullPlaysOnly=fullPlaysOnly,
+                                       firstListenStartTs=firstListenStartTs,
+                                       firstListenEndTs=firstListenEndTs)
 
     def getTaggedTracks(self, tags: list[str], match_mode: str = "any", sortBy: str = "plays") -> list[dict]:
         """Return hydrated tracks matching tag filter for the current user.
@@ -1721,23 +1730,29 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def getAlbumsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                         sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                         albumId: str | None = None, searchQuery: str | None = None,
-                        albumIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list:
+                        albumIds: list[str] | None = None, fullPlaysOnly: bool = False,
+                        firstListenedStart: datetime.datetime = None,
+                        firstListenedEnd: datetime.datetime = None) -> list:
         """Return albums sorted by `sortBy` with aggregated listen totals - sorted/
         paged in SQL via a single batched query (see Repository.getAlbumsPage),
         mirroring getSongsStats(). `albumId` narrows this to a single album's
         stats. `albumIds` narrows to an explicit set of album ids (the
         tag-filtered Top Albums page). `searchQuery` narrows to albums whose
-        name or artist(s) match. `fullPlaysOnly` mirrors getSongsStats()'s
-        param of the same name."""
+        name or artist(s) match. `fullPlaysOnly` and
+        `firstListenedStart`/`firstListenedEnd` mirror getSongsStats()'s
+        params of the same names."""
         if sortBy == self.SKIP_SORT_BY:
             rows = self._skipSortedPage(
                 self.repo.getMostSkippedAlbums, startDate, endDate, limit, offset,
                 albumId=albumId, searchQuery=searchQuery, albumIds=albumIds, fullPlaysOnly=fullPlaysOnly)
             return [self._withSkipRate(row) for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        firstListenStartTs, firstListenEndTs = self._dateRangeToTimestamps(firstListenedStart, firstListenedEnd)
         return self.repo.getAlbumsPage(self.user, startTs, endTs, sortBy=sortBy, limit=limit, offset=offset,
                                         albumId=albumId, searchQuery=searchQuery, albumIds=albumIds,
-                                        fullPlaysOnly=fullPlaysOnly)
+                                        fullPlaysOnly=fullPlaysOnly,
+                                        firstListenStartTs=firstListenStartTs,
+                                        firstListenEndTs=firstListenEndTs)
 
     def getAlbum(self, albumId: str) -> dict | None:
         """A single album's aggregate stats - the album-detail page's lookup.
@@ -1787,7 +1802,9 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     def getArtistsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                          artistId: str | None = None, sortBy: str = "plays", limit: int | None = None,
                          offset: int = 0, searchQuery: str | None = None,
-                         artistIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list:
+                         artistIds: list[str] | None = None, fullPlaysOnly: bool = False,
+                         firstListenedStart: datetime.datetime = None,
+                         firstListenedEnd: datetime.datetime = None) -> list:
         """Return artists sorted by `sortBy` with aggregated data and listen
         totals - sorted/paged in SQL via a single batched query (see
         Repository.getArtistAggregates) rather than fetching every artist and
@@ -1795,16 +1812,20 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         `artistId` narrows this to a single artist's stats; `artistIds` narrows
         to an explicit set of artist ids (the tag-filtered Top Artists page);
         `searchQuery` narrows to artists whose name matches. `fullPlaysOnly`
-        mirrors getSongsStats()'s param of the same name."""
+        and `firstListenedStart`/`firstListenedEnd` mirror getSongsStats()'s
+        params of the same names."""
         if sortBy == self.SKIP_SORT_BY:
             rows = self._skipSortedPage(
                 self.repo.getMostSkippedArtists, startDate, endDate, limit, offset,
                 artistId=artistId, searchQuery=searchQuery, artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
             return [self._withSkipRate(row) for row in rows]
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
+        firstListenStartTs, firstListenEndTs = self._dateRangeToTimestamps(firstListenedStart, firstListenedEnd)
         return self.repo.getArtistAggregates(self.user, startTs, endTs, artistId=artistId, sortBy=sortBy,
                                               limit=limit, offset=offset, searchQuery=searchQuery,
-                                              artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
+                                              artistIds=artistIds, fullPlaysOnly=fullPlaysOnly,
+                                              firstListenStartTs=firstListenStartTs,
+                                              firstListenEndTs=firstListenEndTs)
 
     def getArtist(self, artistId: str, startDate: datetime.datetime = None,
                   endDate: datetime.datetime = None) -> dict | None:

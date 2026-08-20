@@ -949,11 +949,29 @@ class PlayQueries:
         it used to need having gone with the collapse."""
         return "", "COUNT(DISTINCT p.track_id) AS unique_song_count"
 
+    @staticmethod
+    def _firstListenClause(params: list, firstListenStartTs: float | None,
+                           firstListenEndTs: float | None) -> str:
+        """HAVING filter on a group's FIRST listen - MIN(p.played_at) over
+        every play the aggregate sees, i.e. the whole lifetime when no date
+        range narrows it. This is the Wrapped discovery lists' question
+        ("which songs/artists/albums did this year introduce?"), pushed into
+        SQL so the worker keeps its 100 rows without hydrating every entity
+        ever played. Half-open [start, end), matching _dateRangeClause's
+        convention; both bounds or nothing - a discovery window is a year,
+        never a ray."""
+        if firstListenStartTs is None or firstListenEndTs is None:
+            return ""
+        params += [firstListenStartTs, firstListenEndTs]
+        return " HAVING MIN(p.played_at) >= ? AND MIN(p.played_at) < ?"
+
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
                              sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                              searchQuery: str | None = None, artistIds: list[str] | None = None,
-                             fullPlaysOnly: bool = False) -> list[dict]:
+                             fullPlaysOnly: bool = False,
+                             firstListenStartTs: float | None = None,
+                             firstListenEndTs: float | None = None) -> list[dict]:
         """One row per artist who appears on at least one played track, grouped by
         artist id (not name - two different artists that happen to share a display
         name are no longer merged, unlike the old name-keyed in-memory grouping).
@@ -998,6 +1016,9 @@ class PlayQueries:
         if fullPlaysOnly:
             aggJoin = self._tracksJoin()
             aggFilter += self._fullPlaysClause(params)
+        #< before the outer search appends ITS params - the HAVING sits inside
+        #  the CTE, so its placeholders bind ahead of the outer WHERE's
+        firstListenClause = self._firstListenClause(params, firstListenStartTs, firstListenEndTs)
         outerFilter = ""
         if searchQuery:
             # The name filter only selects WHICH artists to return; it never
@@ -1017,7 +1038,7 @@ class PlayQueries:
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id{tsongJoin}{aggJoin}
                 WHERE p.username = ? AND p.is_skip=0{rangeClause}{aggFilter}
-                GROUP BY ta.artist_id
+                GROUP BY ta.artist_id{firstListenClause}
             )
             SELECT ar.id AS id, ar.name AS name, ar.url AS url, ar.image_id AS image_id,
                    agg.plays AS plays, agg.total_time_listened AS total_time_listened,
@@ -1120,7 +1141,9 @@ class PlayQueries:
                       sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                       trackId: str | None = None, artistId: str | None = None,
                       albumId: str | None = None, searchQuery: str | None = None,
-                      trackIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list[dict]:
+                      trackIds: list[str] | None = None, fullPlaysOnly: bool = False,
+                      firstListenStartTs: float | None = None,
+                      firstListenEndTs: float | None = None) -> list[dict]:
         """Sorted/paged song stats in one batched round-trip, replacing the old
         "aggregate, then getTrack() per row" N+1 pattern - a caller asking for
         page N now pays for page N, not for every song ever played.
@@ -1204,6 +1227,7 @@ class PlayQueries:
                                                  canonicalColumn="c.id" if e == "c" else None)
         if fullPlaysOnly:
             extraClauses += self._fullPlaysClause(params)
+        firstListenClause = self._firstListenClause(params, firstListenStartTs, firstListenEndTs)
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -1223,7 +1247,7 @@ class PlayQueries:
             JOIN tracks t ON t.id = p.track_id{canonicalJoin}
             LEFT JOIN albums al ON al.id = {e}.album_id
             WHERE p.username = ? AND p.is_skip=0{rangeClause}{extraClauses}
-            GROUP BY {e}.id
+            GROUP BY {e}.id{firstListenClause}
             ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, track_id ASC
             LIMIT ? OFFSET ?
             """,
@@ -1307,7 +1331,9 @@ class PlayQueries:
     def getAlbumsPage(self, username: str, startTs: float | None = None, endTs: float | None = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                        albumId: str | None = None, searchQuery: str | None = None,
-                       albumIds: list[str] | None = None, fullPlaysOnly: bool = False) -> list[dict]:
+                       albumIds: list[str] | None = None, fullPlaysOnly: bool = False,
+                       firstListenStartTs: float | None = None,
+                       firstListenEndTs: float | None = None) -> list[dict]:
         """Sorted/paged album stats in one batched round-trip - one row per
         album, aggregated across every track on it this user played. Mirrors
         getSongsPage()'s SQL-first sort/page pattern exactly.
@@ -1351,6 +1377,7 @@ class PlayQueries:
         extraClauses += self._albumSearchNarrowClause(params, searchQuery)
         if fullPlaysOnly:
             extraClauses += self._fullPlaysClause(params)
+        firstListenClause = self._firstListenClause(params, firstListenStartTs, firstListenEndTs)
         params += [limitValue, offset]
 
         rows = conn.execute(
@@ -1364,7 +1391,7 @@ class PlayQueries:
             JOIN tracks t ON t.id = p.track_id
             JOIN albums al ON al.id = t.album_id
             WHERE p.username = ? AND p.is_skip=0{rangeClause}{extraClauses}
-            GROUP BY al.id
+            GROUP BY al.id{firstListenClause}
             ORDER BY {sortColumn} {direction}, total_time_listened DESC, name COLLATE NOCASE ASC, album_id ASC
             LIMIT ? OFFSET ?
             """,
