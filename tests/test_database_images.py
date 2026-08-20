@@ -920,5 +920,78 @@ class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
         self.assertEqual(db.repo.imageStatus("track-ok2", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
 
 
+class TestWebApiTokenCache(unittest.TestCase):
+    """Every artist-image lookup used to POST accounts.spotify.com for a fresh
+    access token and discard it after one request. The image-status claims
+    already dedup lookups to once per artist ever, but a big import queues
+    hundreds of missing artists - hundreds of identical token POSTs for a
+    token that lives an hour."""
+
+    def _dbWithCreds(self, refreshToken="rtoken"):
+        db = _bareDatabase()
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "csecret",
+            "refresh_token": refreshToken})
+        return db
+
+    def _artistResponse(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"images": [{"url": "https://i.scdn.co/image/abc"}]}
+        return resp
+
+    def test_a_second_lookup_reuses_the_token(self):
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="tok1") as refresh, \
+                patch("Database.database.requests.get", return_value=self._artistResponse()):
+            db._fetchArtistImageUrl("a1")
+            db._fetchArtistImageUrl("a2")
+
+        self.assertEqual(refresh.call_count, 1)
+
+    def test_an_expired_token_is_refreshed(self):
+        import time
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   side_effect=["tok1", "tok2"]) as refresh, \
+                patch("Database.database.requests.get", return_value=self._artistResponse()):
+            db._fetchArtistImageUrl("a1")
+            #< age the cache past its TTL rather than patching the clock -
+            #  time.monotonic is process-wide and other threads read it
+            token, mintedFrom, _expiresAt = db._webApiTokenCache
+            db._webApiTokenCache = (token, mintedFrom, time.monotonic() - 1)
+            db._fetchArtistImageUrl("a2")
+
+        self.assertEqual(refresh.call_count, 2)
+
+    def test_rotated_credentials_miss_the_cache(self):
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   side_effect=["tok1", "tok2"]) as refresh, \
+                patch("Database.database.requests.get", return_value=self._artistResponse()):
+            db._fetchArtistImageUrl("a1")
+            db.getUserSpotifyCredentials = MagicMock(return_value={
+                "client_id": "cid", "client_secret": "csecret",
+                "refresh_token": "rotated"})
+            db._fetchArtistImageUrl("a2")
+
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(refresh.call_args[0][2], "rotated")
+
+    def test_a_failed_refresh_is_not_cached(self):
+        db = self._dbWithCreds()
+        mock_sp = MagicMock()
+        mock_sp.artist.return_value = {"images": []}
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value=None) as refresh, \
+                patch("Database.Spotify.Spotify", return_value=mock_sp):
+            db._fetchArtistImageUrl("a1")
+            db._fetchArtistImageUrl("a2")
+
+        #< None must not be remembered as a token - the next lookup retries
+        self.assertEqual(refresh.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

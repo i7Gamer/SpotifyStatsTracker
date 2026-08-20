@@ -33,6 +33,12 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 # a stalled endpoint should cost one slow attempt rather than a wedged worker.
 MEDIA_FETCH_HTTP_TIMEOUT_SECONDS = 10
 
+# How long a minted Web API access token is reused before asking
+# accounts.spotify.com for another. Spotify issues them with expires_in=3600;
+# 50 minutes leaves a 10-minute margin so a token handed out at the edge of
+# the window still outlives the request it authorizes.
+WEB_API_TOKEN_CACHE_SECONDS = 50 * 60
+
 
 # The 4xx that ask us back rather than turning us away: Request Timeout, Too
 # Early, Too Many Requests. They sit on the client side of the number and the
@@ -169,6 +175,43 @@ class MediaFetchMixin:
     def saveTrackImg(self, url: str, imgId: str):
         self._saveImg(self.imgDir_tracks, url, imgId, kind=_dbmod.IMAGE_KIND_TRACK)
 
+    #< (access token, the refresh token it was minted from, monotonic expiry) -
+    #  a class attribute so it has a declared home and a documented default
+    #  (the metadata backfiller's _catalogBackoffUntil pattern); per-instance,
+    #  i.e. per-user, from the first write
+    _webApiTokenCache = None
+
+    def _cachedWebApiAccessToken(self, creds):
+        """An access token for this user's Web API credentials, minted at most
+        once per WEB_API_TOKEN_CACHE_SECONDS.
+
+        Every artist-image lookup used to POST accounts.spotify.com for a
+        fresh token and discard it after one request. The image-status claims
+        already dedup lookups to once per artist ever, but a big import queues
+        hundreds of missing artists at once - hundreds of identical token
+        POSTs for a token that lives an hour.
+
+        Keyed on the refresh token, so rotated credentials miss the cache
+        immediately. No other invalidation on purpose: an already-issued
+        access token stays valid regardless of what is stored, and a REVOKED
+        grant 401s the API call, which falls back to the cookie client like
+        every other Web API failure here. A failed refresh is never cached, so
+        the next lookup retries. Two image threads may race a refresh and
+        both POST; the loser's token overwrites the winner's and both are
+        valid, so the race is left unlocked on purpose."""
+        cached = self._webApiTokenCache
+        if cached is not None:
+            token, mintedFrom, expiresAt = cached
+            if mintedFrom == creds["refresh_token"] and _dbmod.time.monotonic() < expiresAt:
+                return token
+        from Database.Listeners.spotifyListener import _refresh_spotify_access_token
+        token = _refresh_spotify_access_token(
+            creds["client_id"], creds["client_secret"], creds["refresh_token"])
+        if token:
+            self._webApiTokenCache = (token, creds["refresh_token"],
+                                      _dbmod.time.monotonic() + WEB_API_TOKEN_CACHE_SECONDS)
+        return token
+
     def _fetchArtistImageUrl(self, artistId: str) -> str | None:
         """Looks up a real Spotify CDN image URL for an artist, mirroring the
         dual-path fetch _metadataBackfillLoop already uses for albums: the
@@ -187,9 +230,7 @@ class MediaFetchMixin:
         #  refresh call reads client_secret unconditionally, so a two-of-three
         #  row raised KeyError here instead of falling back
         if creds and creds.get("client_id") and creds.get("client_secret") and creds.get("refresh_token"):
-            from Database.Listeners.spotifyListener import _refresh_spotify_access_token
-            access_token = _refresh_spotify_access_token(
-                creds["client_id"], creds["client_secret"], creds["refresh_token"])
+            access_token = self._cachedWebApiAccessToken(creds)
             if access_token:
                 try:
                     headers = {"Authorization": f"Bearer {access_token}"}
