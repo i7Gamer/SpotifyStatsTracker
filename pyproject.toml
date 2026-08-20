@@ -60,3 +60,31 @@ testpaths = ["tests"]
 # can review), but a NEW test file no longer needs one - and a file whose
 # insert is removed keeps working.
 pythonpath = ["."]
+
+# Coverage is measured in CI by its own job (see .github/workflows/tests.yml),
+# never by the gating one: it roughly triples the run, and a coverage bug must
+# not be able to fail a merge. There is deliberately NO fail_under - the
+# residue is migrator __main__ blocks and dual-import fallbacks, and a
+# threshold picked to accommodate those measures nothing.
+#
+# The scope matters more than it looks. `--cov=.` counts the 291 test files,
+# which are ~100% covered by construction, and reports 98% over 65,798
+# statements - a number that cannot move and says nothing. Omitting them gives
+# the real one: 93% over 14,739.
+[tool.coverage.run]
+omit = [
+    "tests/*",
+    ".venv/*",
+    "*/__pycache__/*",
+    # Neither is application code, and both would otherwise sit at 0% and drag
+    # the number down while meaning nothing: a manual smoke script that talks
+    # to real Spotify, and the dev entry point.
+    "Database/Spotify/smoketest.py",
+    "dev.py",
+]
+
+[tool.coverage.report]
+# The uncovered lines are what a reader wants; the fully-covered files are
+# noise in a CI log.
+skip_covered = true
+sort = "miss"

@@ -15,9 +15,21 @@ pytest==9.1.1
 pytest-xdist==3.8.0
 
 # Used to find untested paths - routes/system.py's three polled status
-# endpoints were found this way, at 78% with no test at all. Not needed to
-# RUN the suite, but declared so `coverage run -m pytest` works from a clone.
+# endpoints were found this way, at 78% with no test at all (they are at 100%
+# now). Not needed to RUN the suite, but declared so `coverage run -m pytest`
+# works from a clone.
 coverage==7.15.2
+
+# What lets CI measure coverage without a 7-minute serial run. `coverage run`
+# alone cannot see pytest-xdist's worker SUBPROCESSES - it needs
+# COVERAGE_PROCESS_START plus a coverage.process_startup() hook installed via a
+# .pth file, which is machinery to build and get wrong. pytest-cov does exactly
+# that, so `pytest --cov -n auto` just works and the measured run stays
+# parallel (~2min vs ~7min serial).
+#
+# Pinned like everything else here: a plugin that changes its collection
+# behaviour turns CI red on a push that touched none of it.
+pytest-cov==7.1.0
 
 # A CSS selector engine (soupsieve, which beautifulsoup4 pulls in) so the
 # page-gap guard can ask what the stylesheet's rule ACTUALLY selects instead of

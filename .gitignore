@@ -16,6 +16,10 @@ instance/
 .coverage
 .coverage.*
 htmlcov/
+# --cov-report=json, which the CI coverage job writes to turn the number into a
+# step summary. Written into the working directory, so it needs naming here or
+# the next `git add` sweeps it into a commit.
+coverage.json
 Streaming*.json
 secrets.json
 cookies*.json

@@ -44,3 +44,64 @@ jobs:
 
       - name: Run tests
         run: pytest tests -q --durations=20 -n auto
+
+  # Its own job, not a step in the one above, for two reasons. Coverage roughly
+  # triples the run (~2min vs ~44s), and a separate job costs no wall-clock
+  # because GitHub runs the two concurrently. And it must not be able to fail a
+  # merge: this records a number, it does not judge one - which is also why
+  # there is no fail_under (see pyproject.toml).
+  coverage:
+    runs-on: ubuntu-latest
+    # Informational. A coverage-tooling problem is not a reason to block a PR;
+    # `test` above is the gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   #< same reason as the test job: test_license_headers.py blames every file
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Measure coverage
+        run: pytest tests -q -n auto --cov --cov-report=term --cov-report=json:coverage.json
+
+      - name: Report the number where it can be read without opening the log
+        if: always()
+        run: |
+          if [ -f coverage.json ]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          with open("coverage.json") as f:
+              data = json.load(f)
+          totals = data["totals"]
+          print("## Coverage")
+          print()
+          print(f"**{totals['percent_covered_display']}%** "
+                f"({totals['covered_lines']}/{totals['num_statements']} statements, "
+                f"{totals['missing_lines']} missed)")
+          print()
+          worst = sorted(
+              ((name, f["summary"]) for name, f in data["files"].items()),
+              key=lambda kv: -kv[1]["missing_lines"],
+          )[:10]
+          print("| File | Missed | Covered |")
+          print("|---|---:|---:|")
+          for name, summary in worst:
+              if summary["missing_lines"]:
+                  print(f"| `{name}` | {summary['missing_lines']} | {summary['percent_covered_display']}% |")
+          PY
+          else
+            echo "Coverage did not produce a report." >> "$GITHUB_STEP_SUMMARY"
+          fi
