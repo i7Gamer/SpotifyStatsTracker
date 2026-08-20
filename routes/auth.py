@@ -887,7 +887,17 @@ def register(app, dashboard):
             resp = requests.post(url, data=payload, headers=headers, timeout=10)
             if resp.status_code == 200:
                 resp_data = resp.json()
-                refresh_token = resp_data.get("refresh_token")
+                # Spotify's code exchange includes refresh_token today, but a
+                # 200 without one must not NULL the stored token behind a
+                # success flash (updateUserSpotifyCredentials writes whatever
+                # it is given) - keep the working grant instead.
+                refresh_token = resp_data.get("refresh_token") or creds.get("refresh_token")
+                if not refresh_token:
+                    logger.warning("Spotify token exchange for %s returned no refresh token "
+                                   "and none is stored - leaving credentials untouched", username)
+                    return _profileRedirect(
+                        "profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
+                        error="Spotify did not return a refresh token - please try authorizing again.")
                 db.updateUserSpotifyCredentials(client_id, client_secret, refresh_token)
                 # A fresh authorization always grants the scope /spotify-authorize
                 # requested - clear any stale "needs reauth" flag immediately

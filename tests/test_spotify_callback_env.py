@@ -205,6 +205,67 @@ class TestSpotifyOAuthState(SpotifyEnvTestCase):
 
 
 @patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
+class TestCallbackWithoutRefreshToken(SpotifyEnvTestCase):
+    """Spotify's authorization_code exchange includes a refresh_token today,
+    but a 200 without one must not NULL the stored token behind a success
+    flash: updateUserSpotifyCredentials(None) writes NULL, silently breaking
+    the Web API backfill and the metadata workers while the UI says connected
+    - a wipe-grade outcome off a response-shape assumption."""
+
+    def _makeLoggedInClient(self):
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        self._login(dash, client)
+        return dash, client
+
+    def _callbackWithState(self, client):
+        with client.session_transaction() as sess:
+            sess[SPOTIFY_OAUTH_STATE_SESSION_KEY] = "expected-state"
+        return "/spotify-callback?code=good-code&state=expected-state"
+
+    def _mockDb(self, mock_get_db, creds):
+        mock_db = MagicMock()
+        mock_db.getUserSpotifyCredentials.return_value = creds
+        mock_get_db.return_value = mock_db
+        return mock_db
+
+    def test_an_omitted_refresh_token_keeps_the_stored_one(self):
+        dash, client = self._makeLoggedInClient()
+        url = self._callbackWithState(client)
+        tokenResponse = MagicMock(status_code=200)
+        tokenResponse.json.return_value = {"access_token": "at"}   #< no refresh_token
+        with patch.object(dash, 'get_user_db') as mock_get_db, \
+                patch("requests.post", return_value=tokenResponse):
+            mock_db = self._mockDb(mock_get_db, {
+                "client_id": "my_id", "client_secret": "my_secret",
+                "refresh_token": "old-refresh-token"})
+            resp = client.get(url)
+
+        mock_db.updateUserSpotifyCredentials.assert_called_once_with(
+            "my_id", "my_secret", "old-refresh-token")
+        self.assertIn("success=", resp.headers["Location"])
+
+    def test_no_token_anywhere_is_an_error_not_a_silent_wipe(self):
+        dash, client = self._makeLoggedInClient()
+        url = self._callbackWithState(client)
+        tokenResponse = MagicMock(status_code=200)
+        tokenResponse.json.return_value = {"access_token": "at"}   #< no refresh_token
+        with patch.object(dash, 'get_user_db') as mock_get_db, \
+                patch("requests.post", return_value=tokenResponse):
+            mock_db = self._mockDb(mock_get_db, {
+                "client_id": "my_id", "client_secret": "my_secret"})
+            resp = client.get(url)
+
+        mock_db.updateUserSpotifyCredentials.assert_not_called()
+        mock_db.setSpotifyNeedsReauth.assert_not_called()
+        mock_db.startListener.assert_not_called()
+        location = resp.headers["Location"]
+        self.assertIn("error=", location)
+        self.assertIn("/profile/connections", location)
+        self.assertIn(f"flash_for={PROFILE_FLASH_SPOTIFY}", location)
+
+
+@patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
 class TestSpotifyCallbackErrorDetails(SpotifyEnvTestCase):
     """Token-exchange failures must show the user a generic message - the raw
     Spotify response body / exception text belongs in the server log, not in a
