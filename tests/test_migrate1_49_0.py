@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_49_0 as migrateModule
@@ -15,7 +16,7 @@ from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_49_0(unittest.TestCase):
+class TestMigrate1_49_0(MigratorHelpersMixin, unittest.TestCase):
     """1.49.0 -> 1.50.0 adds track_merge_decisions.against_id: the release a
     "not the same recording" was ruled AGAINST.
 
@@ -72,13 +73,6 @@ class TestMigrate1_49_0(unittest.TestCase):
     #< closed before returning, not via addCleanup: an inspection connection
     #  left open across the migration blocks its database snapshot on Windows,
     #  which reads like a migrator bug and is not one
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        try:
-            return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        finally:
-            conn.close()
-
     def _seedOldDatabase(self, withRejection=False):
         with patch.object(dbModule, "SCHEMA", self._preMigrationSchema()):
             repo = Repository(self.dbPath)

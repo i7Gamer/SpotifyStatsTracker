@@ -53,3 +53,33 @@ class AppTestCase(unittest.TestCase):
         app = makeApp()
         self.addCleanup(app.shutdown)
         return app
+
+    def _loginAs(self, username="alice"):
+        """A test client holding a signed-in session for `username`.
+
+        Requires the subclass to have set up ``self.dash`` (the app) and
+        ``self.dbs`` (a {username: Database} the stubbed ``get_user_db``
+        resolves against) - the shape four route-test files had each written
+        out identically.
+
+        Here rather than copied because the SESSION SHAPE is not local
+        knowledge. Four files each built the cookie by hand, so every change to
+        what a session must carry is four edits that nothing makes you
+        remember - and 1.51.0 added exactly such a key (users.session_version,
+        via SESSION_VERSION_KEY). These sessions still work without it because
+        a missing version reads as 0 by design, which is the good case; the
+        next change to the shape may not be so forgiving.
+
+        Deliberately still hand-built rather than going through POST /login:
+        these tests stub the Spotify-side login entirely, and a real login
+        would drag its cookie verification in with it."""
+        patch.object(self.dash, 'is_user_logged_in', return_value=True).start()
+        patch.object(self.dash, 'get_username_for_email', return_value=username).start()
+        patch.object(self.dash, 'get_user_db', side_effect=lambda u, e: self.dbs[u]).start()
+        self.addCleanup(patch.stopall)
+
+        client = self.dash.app.test_client()
+        with client.session_transaction() as sess:
+            sess['email'] = f"{username}@example.com"
+            sess['username'] = username
+        return client

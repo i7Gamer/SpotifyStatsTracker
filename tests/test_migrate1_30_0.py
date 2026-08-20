@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_30_0 as migrateModule
@@ -15,7 +16,7 @@ from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_30_0(unittest.TestCase):
+class TestMigrate1_30_0(MigratorHelpersMixin, unittest.TestCase):
     """1.30.0 -> 1.31.0 adds users.spotify_needs_reauth: the flag Web API
     backfill sets when the stored refresh token lacks the
     user-read-recently-played scope, so Profile can surface a
@@ -52,11 +53,6 @@ class TestMigrate1_30_0(unittest.TestCase):
         later columns follow it."""
         self.assertIn(self.NEEDS_REAUTH_LINE, dbModule.SCHEMA)
         return dbModule.SCHEMA.replace(self.NEEDS_REAUTH_LINE, "")
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedOldDatabase(self):
         preSchema = self._preColumnSchema()

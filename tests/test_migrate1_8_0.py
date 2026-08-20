@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_8_0 as migrateModule
-from Database.repository import Repository
 
 
-class MigratorTestCase(unittest.TestCase):
+class MigratorTestCase(MigratorHelpersMixin, unittest.TestCase):
     """Builds a temp directory mirroring the real repo-root/Database/{Migrators,Data}/
     layout (resolved relative to base.py's own __file__, which is what
     BaseMigrator.baseDir resolves against) already at 1.8.0, since this
@@ -53,11 +53,6 @@ class MigratorTestCase(unittest.TestCase):
         )
         conn.commit()
         conn.close()
-
-    def _repo(self):
-        repo = Repository(self.dbPath)
-        self.addCleanup(repo.connectionManager.close)
-        return repo
 
 
 class TestMigrate1_8_0(MigratorTestCase):

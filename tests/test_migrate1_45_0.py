@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_45_0 as migrateModule
@@ -15,7 +16,7 @@ from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_45_0(unittest.TestCase):
+class TestMigrate1_45_0(MigratorHelpersMixin, unittest.TestCase):
     """1.45.0 -> 1.46.0 adds users.display_name: the editable label that stands
     in for the immutable username key wherever a person is named. NULL means
     "display as the username", so there is nothing to backfill - the ALTER's own
@@ -49,11 +50,6 @@ class TestMigrate1_45_0(unittest.TestCase):
         migration's ALTER TABLE ever runs."""
         self.assertIn(self.DISPLAY_NAME_LINE, dbModule.SCHEMA)
         return dbModule.SCHEMA.replace(self.DISPLAY_NAME_LINE, "")
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedOldDatabase(self):
         preSchema = self._preColumnSchema()

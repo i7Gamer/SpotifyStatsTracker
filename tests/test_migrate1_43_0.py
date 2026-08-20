@@ -28,6 +28,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_43_0 as migrateModule
 from Database.Migrators import dbversion
@@ -52,7 +53,7 @@ def _track(trackId):
     }
 
 
-class TestMigrate1_43_0(unittest.TestCase):
+class TestMigrate1_43_0(MigratorHelpersMixin, unittest.TestCase):
     USER = "someone"
     # Real 22-character Spotify ids, not readable stand-ins: the migration reads
     # the id's SHAPE to decide whether a placeholder gets a working Spotify link
@@ -103,11 +104,6 @@ class TestMigrate1_43_0(unittest.TestCase):
         conn.execute("PRAGMA foreign_keys = ON")
         repo.connectionManager.close()
         dbversion.writeDbVersion(self.dbPath, version)
-
-    def _repo(self):
-        repo = Repository(self.dbPath)
-        self.addCleanup(repo.connectionManager.close)
-        return repo
 
     def _violations(self):
         return self._repo().checkIntegrity()["foreignKeyViolations"]

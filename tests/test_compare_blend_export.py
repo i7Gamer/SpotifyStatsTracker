@@ -40,17 +40,6 @@ class BlendExportTestCase(AppTestCase):
         shareId = self.dash.repo.getPendingIncomingShares(recipient)[0]["id"]
         self.dash.repo.respondToShareRequest(shareId, recipient, accept=True)
 
-    def _loginAs(self, username):
-        patch.object(self.dash, 'is_user_logged_in', return_value=True).start()
-        patch.object(self.dash, 'get_username_for_email', return_value=username).start()
-        patch.object(self.dash, 'get_user_db',
-                     side_effect=lambda u, e: self.dbs[u]).start()
-        self.addCleanup(patch.stopall)
-        client = self.dash.app.test_client()
-        with client.session_transaction() as sess:
-            sess['email'] = f"{username}@example.com"
-            sess['username'] = username
-        return client
 
     def _seedOverlap(self):
         """alice and bob share S1 and S2; S3 is alice-only. The shared rank

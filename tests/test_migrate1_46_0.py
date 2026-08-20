@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_46_0 as migrateModule
@@ -16,7 +17,7 @@ from Database.repository import Repository
 from config import TOP_LIST_DEFAULT_WINDOW
 
 
-class TestMigrate1_46_0(unittest.TestCase):
+class TestMigrate1_46_0(MigratorHelpersMixin, unittest.TestCase):
     """1.46.0 -> 1.47.0 adds users.default_top_list_window: the Top pages' own
     default time window, split off from default_dashboard_window so a "last
     week" dashboard no longer implies a last-week career ranking.
@@ -52,11 +53,6 @@ class TestMigrate1_46_0(unittest.TestCase):
         the column via SCHEMA's own CREATE TABLE before the ALTER ever runs."""
         self.assertIn(self.COLUMN_LINE, dbModule.SCHEMA)
         return dbModule.SCHEMA.replace(self.COLUMN_LINE, "")
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedOldDatabase(self):
         preSchema = self._preColumnSchema()

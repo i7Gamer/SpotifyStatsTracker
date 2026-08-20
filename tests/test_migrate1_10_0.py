@@ -7,12 +7,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_10_0 as migrateModule
-from Database.repository import Repository
 
 
-class MigratorTestCase(unittest.TestCase):
+class MigratorTestCase(MigratorHelpersMixin, unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -31,11 +31,6 @@ class MigratorTestCase(unittest.TestCase):
         self.addCleanup(self._filePatcher.stop)
 
         self.dbPath = self.dataDir / "spotify_stats.db"
-
-    def _repo(self):
-        repo = Repository(self.dbPath)
-        self.addCleanup(repo.connectionManager.close)
-        return repo
 
 
 class TestMigrate1_10_0(MigratorTestCase):

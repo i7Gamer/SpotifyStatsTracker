@@ -1,6 +1,5 @@
 import sys
 import os
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,13 +7,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_36_0 as migrateModule
 from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_36_0(unittest.TestCase):
+class TestMigrate1_36_0(MigratorHelpersMixin, unittest.TestCase):
     """1.36.0 -> 1.37.0 is a version-only (no-op) migration: the 1.37.0 feature
     (the detail pages' "Play now" Spotify embed) is UI/CSP-only - a template,
     JS, and Content-Security-Policy change, no table or column touched. The
@@ -40,11 +40,6 @@ class TestMigrate1_36_0(unittest.TestCase):
         self.addCleanup(self._filePatcher.stop)
 
         self.dbPath = self.dataDir / "spotify_stats.db"
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedDatabaseAt(self, version):
         repo = Repository(self.dbPath)

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_33_0 as migrateModule
@@ -15,7 +16,7 @@ from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_33_0(unittest.TestCase):
+class TestMigrate1_33_0(MigratorHelpersMixin, unittest.TestCase):
     """1.33.0 -> 1.34.0 adds users.milestones_baseline_at for the achievement-
     milestones feature: the timestamp of a user's first detection pass, so
     everything already achieved by then is seeded as seen (no notification) and
@@ -51,11 +52,6 @@ class TestMigrate1_33_0(unittest.TestCase):
         TABLE runs."""
         self.assertIn(self.MILESTONES_LINE, dbModule.SCHEMA)
         return dbModule.SCHEMA.replace(self.MILESTONES_LINE, "")
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedOldDatabase(self):
         preSchema = self._preColumnSchema()

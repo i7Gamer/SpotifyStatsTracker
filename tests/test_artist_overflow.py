@@ -188,17 +188,6 @@ class TestCompareArtistOverflow(AppTestCase):
         self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
         self.dbs = {u: self._makeStubDb() for u in ("alice", "bob")}
 
-    def _loginAs(self, username):
-        patch.object(self.dash, 'is_user_logged_in', return_value=True).start()
-        patch.object(self.dash, 'get_username_for_email', return_value=username).start()
-        patch.object(self.dash, 'get_user_db', side_effect=lambda u, e: self.dbs[u]).start()
-        self.addCleanup(patch.stopall)
-
-        client = self.dash.app.test_client()
-        with client.session_transaction() as sess:
-            sess['email'] = f"{username}@example.com"
-            sess['username'] = username
-        return client
 
     def test_all_three_render_contexts_collapse(self):
         client = self._loginAs("alice")

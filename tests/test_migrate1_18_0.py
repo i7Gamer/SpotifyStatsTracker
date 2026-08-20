@@ -1,6 +1,5 @@
 import sys
 import os
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_18_0 as migrateModule
@@ -15,7 +15,7 @@ from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_18_0(unittest.TestCase):
+class TestMigrate1_18_0(MigratorHelpersMixin, unittest.TestCase):
     """1.18.0 -> 1.19.0 adds the Last.fm genre-backfill columns:
     users.lastfm_api_key and lastfm_attempted_at on artists/albums/tracks.
     (The genre join tables and app_settings are plain CREATE TABLE IF NOT
@@ -51,11 +51,6 @@ class TestMigrate1_18_0(unittest.TestCase):
         self.assertIn(self.API_KEY_LINE, dbModule.SCHEMA)
         self.assertEqual(dbModule.SCHEMA.count(self.ATTEMPTED_LINE), 3)   #< artists, albums, tracks
         return dbModule.SCHEMA.replace(self.API_KEY_LINE, "").replace(self.ATTEMPTED_LINE, "")
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedOldDatabase(self):
         preSchema = self._preColumnSchema()

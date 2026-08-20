@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_44_0 as migrateModule
 from Database.Migrators import dbversion
@@ -36,7 +37,7 @@ def _wrappedRow():
     }
 
 
-class TestMigrate1_44_0(unittest.TestCase):
+class TestMigrate1_44_0(MigratorHelpersMixin, unittest.TestCase):
     USER = "someone"
     OTHER = "someone_else"
 
@@ -67,11 +68,6 @@ class TestMigrate1_44_0(unittest.TestCase):
                 repo.saveCachedWrapped(username, year, _wrappedRow())
         repo.connectionManager.close()
         dbversion.writeDbVersion(self.dbPath, version)
-
-    def _repo(self):
-        repo = Repository(self.dbPath)
-        self.addCleanup(repo.connectionManager.close)
-        return repo
 
     def _cachedCount(self):
         return self._repo()._conn().execute(

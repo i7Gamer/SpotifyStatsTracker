@@ -1,6 +1,5 @@
 import sys
 import os
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import Database.db as dbModule
 import Database.Migrators.base as baseModule
 import Database.Migrators.migrate1_47_0 as migrateModule
@@ -17,7 +17,7 @@ from Database.repository import Repository
 REAL_ID = "3xMBguKPth2j8YPuhmJHSO"
 
 
-class TestMigrate1_47_0(unittest.TestCase):
+class TestMigrate1_47_0(MigratorHelpersMixin, unittest.TestCase):
     """1.47.0 -> 1.48.0 adds tracks.isrc_attempted_at, the retry stamp the
     Web-API ISRC backfiller needs so tracks Spotify has no ISRC for stop
     re-entering the queue every cycle.
@@ -60,11 +60,6 @@ class TestMigrate1_47_0(unittest.TestCase):
         return dbModule.SCHEMA.replace(
             "    availability_reason TEXT,\n" + self.COLUMN_LINE,
             "    availability_reason TEXT\n")
-
-    def _columnNames(self, table):
-        conn = sqlite3.connect(self.dbPath)
-        self.addCleanup(conn.close)
-        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
     def _seedOldDatabase(self):
         preSchema = self._preColumnSchema()

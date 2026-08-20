@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from _migrator_case import MigratorHelpersMixin
 import sqlite3
 
 import Database.db as dbModule
@@ -16,7 +17,7 @@ from Database.Migrators import dbversion
 from Database.repository import Repository
 
 
-class TestMigrate1_23_0(unittest.TestCase):
+class TestMigrate1_23_0(MigratorHelpersMixin, unittest.TestCase):
     """Relaxes share_links.year from NOT NULL to nullable (NULL = an
     "all years" share link). SQLite can't ALTER a NOT NULL constraint away,
     so migrate1_23_0.py rebuilds the table - these tests focus on the things
@@ -49,11 +50,6 @@ class TestMigrate1_23_0(unittest.TestCase):
         self.addCleanup(self._filePatcher.stop)
 
         self.dbPath = self.dataDir / "spotify_stats.db"
-
-    def _repo(self):
-        repo = Repository(self.dbPath)
-        self.addCleanup(repo.connectionManager.close)
-        return repo
 
     def _rawConn(self):
         conn = sqlite3.connect(self.dbPath)
