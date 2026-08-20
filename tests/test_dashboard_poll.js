@@ -122,6 +122,55 @@ run('a superseded response does not overwrite the newer one', async () => {
                      'the stale response must not win over the one that superseded it');
 });
 
+run('a body that arrives after a newer poll does not overwrite it', async () => {
+  /* The guard the first test cannot reach: fetch resolves on HEADERS, and
+   * resp.json() awaits the BODY - a slow body read spans the next 15s tick,
+   * so a response can pass the first check as the latest and still be
+   * superseded by the time its payload exists. Pins the re-check after
+   * json(). */
+  const page = freshPage();
+  let releaseBody;
+  const slowBody = new Promise((resolve) => { releaseBody = resolve; });
+
+  page.poll();   //< A: headers arrive while it is still the latest...
+  page.pendingFetches[0].resolve({ status: 200, ok: true, json: () => slowBody });
+  await settle();   //< ...so it passes the first check and starts on the body
+
+  page.poll();   //< B: fires mid-download and completes whole
+  page.pendingFetches[1].resolve(okResponse(nowPlaying('Newer')));
+  await settle();
+  assert.strictEqual(page.elements.nowPlayingName.textContent, 'Newer');
+
+  releaseBody(nowPlaying('Older'));   //< A's body finally lands
+  await settle();
+
+  assert.strictEqual(page.elements.nowPlayingName.textContent, 'Newer',
+                     'a response must be re-checked after its body read');
+});
+
+run('a superseded 401 does not stop the live poller', async () => {
+  /* One poll's evidence, one poll's verdict: a 401 that has already been
+   * superseded must not freeze a poller whose LIVE request works (a session
+   * restored in another tab). If the session is genuinely gone, the next
+   * live poll meets its own 401 and stops then. Pins the guard at the top of
+   * the first handler - without it the stale 401 runs the stop branch. */
+  const page = freshPage();
+
+  page.poll();   //< A - will come back 401, but late
+  page.poll();   //< B - the live request, against a session that works
+  page.pendingFetches[0].resolve({ status: 401, ok: false, json: () => Promise.resolve({}) });
+  await settle();
+
+  assert.strictEqual(page.pollHandle.stopped, 0,
+                     'a stale 401 is not evidence about the live request');
+  assert.strictEqual(page.tickHandle.stopped, 0);
+
+  page.pendingFetches[1].resolve(okResponse(nowPlaying('StillHere')));
+  await settle();
+  assert.strictEqual(page.elements.nowPlayingName.textContent, 'StillHere');
+  assert.ok(!page.elements.nowPlayingCard.classList.contains('is-stale'));
+});
+
 run('a slow success cannot un-freeze the card after the 401 stop', async () => {
   const page = freshPage();
   const card = page.elements.nowPlayingCard;
