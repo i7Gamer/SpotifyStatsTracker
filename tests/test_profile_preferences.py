@@ -100,6 +100,57 @@ class TestDefaultTimeWindows(ProfilePreferencesTestCase):
         self.assertEqual(settings["default_top_list_window"], "5years")
 
 
+class TestThemeInitialiserPlacement(ProfilePreferencesTestCase):
+    """ProfilePage.navigate() swaps only the SIBLINGS between .profile-subnav
+    and .profile-logout-row, and _runInlineScripts re-runs only the inline
+    scripts INSIDE those siblings (cur.querySelectorAll('script') finds
+    descendants, never a bare sibling script and never anything outside the
+    region). The theme-selector initialiser used to render in a profileScripts
+    block OUTSIDE .profile-card, so AJAX-navigating to Account inserted a
+    fresh #theme-selector with no change listener and no synced value - theme
+    switching silently did nothing until a full reload. The revival machinery
+    in profile-page.js even names this initialiser as its purpose; its own
+    tests exercise a synthetic DOM, so only this template contract pins the
+    real placement."""
+
+    def test_the_theme_initialiser_is_a_descendant_of_a_swapped_sibling(self):
+        from bs4 import BeautifulSoup
+
+        client = self._loginAs("alice", "alice@example.com")
+        html = client.get("/profile").get_data(as_text=True)
+        soup = BeautifulSoup(html, "html.parser")
+
+        nav = soup.select_one(".profile-subnav")
+        logout = soup.select_one(".profile-logout-row")
+        self.assertIsNotNone(nav)
+        self.assertIsNotNone(logout)
+
+        themeScripts = [s for s in soup.find_all("script")
+                        if "theme-selector" in s.get_text()]
+        self.assertEqual(len(themeScripts), 1,
+                         "expected exactly one theme-selector initialiser script")
+        script = themeScripts[0]
+
+        #< identity (`is`), never equality: bs4 tags compare equal by CONTENT,
+        #  so `in`/== can match a lookalike elsewhere in the page
+        swapSiblings = []
+        for sibling in nav.next_siblings:
+            if sibling is logout:
+                break
+            swapSiblings.append(sibling)
+
+        descendantOfSwappedSibling = any(
+            container is not script and any(found is script for found in container.find_all("script"))
+            for container in swapSiblings if getattr(container, "find_all", None)
+        )
+        self.assertTrue(
+            descendantOfSwappedSibling,
+            "the theme initialiser must be a DESCENDANT of a sibling between "
+            ".profile-subnav and .profile-logout-row - outside that region the "
+            "AJAX swap drops it; as a BARE sibling it is swapped in inert and "
+            "never revived")
+
+
 class TestHideTagsPanelCheckbox(ProfilePreferencesTestCase):
     def test_unchecked_by_default(self):
         client = self._loginAs("alice", "alice@example.com")

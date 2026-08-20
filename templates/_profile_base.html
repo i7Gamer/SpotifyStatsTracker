@@ -32,7 +32,10 @@
   </div>
 </div>
 
-{% block profileScripts %}{% endblock %}
+{#- No page-level script block here on purpose: tab-specific initialisers
+    must live INSIDE the swapped region (between the subnav and the logout
+    row), where profile-page.js re-runs them after an AJAX tab switch. A
+    script out here runs once on a full load and never again. -#}
 <script src="{{ url_for('static', filename='js/profile-page.js') }}"></script>
 <script>
   (function () {

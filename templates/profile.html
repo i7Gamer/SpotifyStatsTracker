@@ -58,6 +58,26 @@
         <option value="theme-red">Crimson</option>
       </select>
     </div>
+    {#- INSIDE this section, not in a page-level script block: the profile tab
+        switcher swaps only the siblings between the subnav and the logout row
+        and re-runs only the inline scripts inside them
+        (static/js/profile-page.js _extractBody/_runInlineScripts), so an
+        initialiser outside that region runs once on a full load and never
+        again - the freshly swapped-in select would render with no listener.
+        tests/test_profile_preferences.py pins this placement. -#}
+    <script>
+      (function(){
+        const themeSelector = document.getElementById('theme-selector');
+        if (!themeSelector) return;
+        const activeTheme = document.documentElement.className || 'theme-rose';
+        themeSelector.value = activeTheme;
+        themeSelector.addEventListener('change', (e) => {
+          const newTheme = e.target.value;
+          document.documentElement.className = newTheme;
+          localStorage.setItem('spotify-stats-theme', newTheme);
+        });
+      })();
+    </script>
 
     {# Two windows, not one, because the pages disagree about what a useful
        default is. These four answer "what have I been listening to lately";
@@ -163,20 +183,4 @@
     <button type="submit" class="primary-button is-danger profile-wide-button">Sign Out Everywhere Else</button>
   </form>
 </section>
-{% endblock %}
-
-{% block profileScripts %}
-<script>
-  (function(){
-    const themeSelector = document.getElementById('theme-selector');
-    if (!themeSelector) return;
-    const activeTheme = document.documentElement.className || 'theme-rose';
-    themeSelector.value = activeTheme;
-    themeSelector.addEventListener('change', (e) => {
-      const newTheme = e.target.value;
-      document.documentElement.className = newTheme;
-      localStorage.setItem('spotify-stats-theme', newTheme);
-    });
-  })();
-</script>
 {% endblock %}
