@@ -41,9 +41,9 @@ function makeEl(id) {
   };
 }
 
-/* Load a FRESH copy of the module (its seq counter, stop flag and `playing`
- * anchor are module state) against a DOM stub carrying the now-playing card,
- * a VisibilityPoll stub that captures the callbacks instead of scheduling
+/* Load a FRESH copy of the module (its seq counter and `playing` anchor are
+ * module state) against a DOM stub carrying the now-playing card, a
+ * VisibilityPoll stub that captures the callbacks instead of scheduling
  * them, and a fetch stub whose settlement the test controls. */
 function freshPage() {
   const elements = {};
