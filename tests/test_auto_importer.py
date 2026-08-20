@@ -107,6 +107,88 @@ class TestAutoImporterLogging(unittest.TestCase):
         self.assertTrue(any("Successfully moved file.txt to DONE/" in record for record in log_capture.output))
 
 
+class TestWatchdogStartupResilience(unittest.TestCase):
+    """The poll loop's per-iteration guard exists because a transient listdir
+    denial (an antivirus scanner or backup tool holding the folder, a network
+    path blipping) must not kill the watcher for the life of the process -
+    nothing restarts a dead watcher. The initial scan and the drop-folder
+    makedirs run BEFORE that guard on the same daemon thread, so the same
+    failure class at startup (docker volume permissions still settling, a
+    CIFS mount coming up) killed auto-import for that user until the next app
+    restart."""
+
+    @patch("Database.Importers.AutoImporter.os.path.getsize")
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    def test_a_denied_initial_scan_does_not_kill_the_watcher(
+            self, mock_listdir, mock_makedirs, mock_exists, mock_getsize):
+        """listdir denied at startup, answering again by the first poll: the
+        watcher must reach the poll loop and deliver the file it could not
+        see initially."""
+        mock_exists.return_value = True
+        mock_getsize.return_value = 100   #< stable between the two sightings
+        listdirResults = [PermissionError(13, "Access is denied"),
+                          ["a.json"], ["a.json"]]
+
+        def scriptedListdir(_path):
+            #< keeps answering the last script entry so an off-by-one loop
+            #  pass can never hang the test on an exhausted side_effect
+            result = listdirResults.pop(0) if len(listdirResults) > 1 else listdirResults[0]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        mock_listdir.side_effect = scriptedListdir
+        wd = Watchdog()
+        calls = []
+
+        def callback(paths):
+            calls.append(paths)
+            wd.run = False
+
+        with patch("Database.Importers.AutoImporter.os.path.isfile", return_value=True), \
+                self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+            wd.watchFolder_blocking("/dummy/path", callback, checkInterval=0.01,
+                                    callbackInitialFiles=True)
+
+        self.assertEqual(calls, [[os.path.join("/dummy/path", "a.json")]])
+
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    def test_a_denied_drop_folder_creation_does_not_kill_the_watcher(
+            self, mock_exists, mock_listdir):
+        mock_exists.return_value = False   #< first run: the folder must be created
+        mock_listdir.return_value = []
+        wd = Watchdog()
+        wd.run = False   #< survival into the loop is the assertion, not the loop itself
+
+        with patch("Database.Importers.AutoImporter.os.makedirs",
+                   side_effect=PermissionError(13, "Access is denied")), \
+                self.assertLogs("Database.Importers.AutoImporter", level="ERROR") as cm:
+            wd.watchFolder_blocking("/dummy/path", lambda x: None, callbackInitialFiles=True)
+
+        self.assertTrue(any("watching anyway" in line for line in cm.output), cm.output)
+
+    @patch("Database.Importers.AutoImporter.os.listdir")
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    def test_a_missing_folder_still_gives_up_quietly(self, mock_exists, mock_listdir):
+        """FileNotFoundError keeps its old meaning - nothing to watch, return
+        without entering the poll loop (whose every pass would re-raise and
+        re-log it). Pinned by the loop's own exit line being absent: the
+        pre-set stop event means reaching the loop at all would log it."""
+        mock_exists.return_value = True   #< the folder vanished between the check and the scan
+        mock_listdir.side_effect = FileNotFoundError(2, "No such file or directory")
+        wd = Watchdog()
+        wd._stop_event.set()
+
+        with self.assertLogs("Database.Importers.AutoImporter", level="INFO") as cm:
+            wd.watchFolder_blocking("/dummy/path", lambda x: None, callbackInitialFiles=True)
+
+        self.assertTrue(any("does not exist" in line for line in cm.output), cm.output)
+        self.assertFalse(any("stopped peacefully" in line for line in cm.output), cm.output)
+
+
 class TestAutoImporterBatching(unittest.TestCase):
     """Files dropped together must go through ONE importCallback call so
     batch-scoped import state (duplicate-claim tracking across file

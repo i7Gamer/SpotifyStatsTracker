@@ -98,15 +98,16 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         if startupDelaySeconds and self._stop_event.wait(startupDelaySeconds):
             return
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
-        if not os.path.exists(pathToWatch):   #< first run for this user
-            # exist_ok: the check and the create are two calls, and anything
-            # that makes the folder in between - another user's watcher
-            # starting at the same moment, a compose mount, the operator -
-            # turned this into a FileExistsError that killed the watch thread
-            # for the life of the process. The post-condition wanted is "the
-            # folder exists"; who created it is not this thread's business.
-            os.makedirs(pathToWatch, exist_ok=True)   #< create the drop folder before the initial scan
+        knownFiles = set()
         try:
+            if not os.path.exists(pathToWatch):   #< first run for this user
+                # exist_ok: the check and the create are two calls, and anything
+                # that makes the folder in between - another user's watcher
+                # starting at the same moment, a compose mount, the operator -
+                # turned this into a FileExistsError that killed the watch thread
+                # for the life of the process. The post-condition wanted is "the
+                # folder exists"; who created it is not this thread's business.
+                os.makedirs(pathToWatch, exist_ok=True)   #< create the drop folder before the initial scan
             knownFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
             if callbackInitialFiles and knownFiles:
                 fullPaths = sorted(os.path.join(pathToWatch, f) for f in knownFiles)
@@ -116,6 +117,16 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
         except FileNotFoundError:
             logger.error(f"Error: The directory {pathToWatch} does not exist.")
             return   #< nothing to watch; startAutoImporter would have to recreate it anyway
+        except Exception as e:
+            # The same failure class the poll loop's per-iteration guard below
+            # was added for (a listdir denied while an antivirus scanner or
+            # backup tool held the folder, docker volume permissions still
+            # settling) - but at startup it escaped BEFORE that guard and
+            # killed the watcher thread, so drop-folder imports stayed
+            # silently dead until the app was restarted. Watch with whatever
+            # the scan managed; the poll loop re-sights anything missed once
+            # the folder answers again.
+            logger.error(f"Initial scan of {pathToWatch} failed, watching anyway: {parseError(e)}")
         pendingSizes = {}   #< name -> size at last poll, for files waiting to stabilize
         while self.run and not self._stop_event.is_set():
             self._stop_event.wait(checkInterval)
