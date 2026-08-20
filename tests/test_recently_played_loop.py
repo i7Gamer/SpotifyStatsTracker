@@ -977,6 +977,79 @@ class TestPlayedDuration(unittest.TestCase):
         self.assertTrue(lpm._lastObservedPlayback[2])
 
 
+class TestNonTrackEntities(unittest.TestCase):
+    """The connect state reports whatever the player is doing - ads
+    (spotify:ad:), podcast episodes (spotify:episode:), local files
+    (spotify:local:) and queue markers (spotify:delimiter, spotify:meta:*) all
+    arrive through the same track field - but only spotify:track: URIs are
+    recordable plays. Anything else handed to the play callback reaches
+    track(), fails the catalog lookup, and is persisted as a fabricated
+    "Unknown Track" play: an ad in the listening history. The import path
+    already drops these rows (droppedNoTrack in StreamingHistoryImporter) and
+    the display path already filters (getNowPlaying, the prev_tracks
+    cross-check); the record path was the one unguarded door."""
+
+    NON_TRACK_URIS = ("spotify:ad:promo", "spotify:episode:abc123",
+                      "spotify:local:artist:album:title:263",
+                      "spotify:delimiter", "spotify:meta:page:1")
+
+    def _observe(self, lpm, state, callback):
+        from Database.Spotify.recentlyPlayed import _applyStateToTracking
+        _applyStateToTracking(lpm, state, callback)
+
+    def test_only_spotify_track_uris_are_recordable(self):
+        from Database.Spotify.recentlyPlayed import _recordableTrackUri
+        self.assertEqual(_recordableTrackUri("spotify:track:aaa"), "spotify:track:aaa")
+        for uri in (*self.NON_TRACK_URIS, None, 123):
+            with self.subTest(uri=uri):
+                self.assertIsNone(_recordableTrackUri(uri))
+
+    def test_an_ad_between_two_tracks_records_only_the_first_track(self):
+        """Without the guard this fired TWICE: once for the real track (right)
+        and once for the ad when the next track replaced it (the fabricated
+        play)."""
+        lpm = _pushLastPlayed(_PushManager([]))
+        callback = MagicMock()
+
+        self._observe(lpm, makePlayingState(uid="uid-1", uri="spotify:track:aaa"), callback)
+        self._observe(lpm, makePlayingState(uid="uid-ad", uri="spotify:ad:promo"), callback)
+        self._observe(lpm, makePlayingState(uid="uid-2", uri="spotify:track:bbb"), callback)
+
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")
+
+    def test_no_non_track_uri_ever_reaches_the_callback(self):
+        for uri in self.NON_TRACK_URIS:
+            with self.subTest(uri=uri):
+                lpm = _pushLastPlayed(_PushManager([]))
+                callback = MagicMock()
+
+                self._observe(lpm, makePlayingState(uid="uid-x", uri=uri), callback)
+                self._observe(lpm, makePlayingState(uid="uid-2", uri="spotify:track:bbb"),
+                              callback)
+
+                callback.assert_not_called()   #< nothing recordable preceded the real track
+
+    def test_a_failed_callback_before_an_ad_is_still_retried(self):
+        """The guard must not disturb the retry-not-drop ordering: the current
+        item - ad or not - is only adopted AFTER the callback returns, so a
+        play whose metadata lookup failed is retried on the next observation
+        rather than dropped (the deliberate design _applyPushedState's
+        docstring describes)."""
+        lpm = _pushLastPlayed(_PushManager([]))
+        failing = MagicMock(side_effect=RuntimeError("track lookup blew up"))
+
+        self._observe(lpm, makePlayingState(uid="uid-1", uri="spotify:track:aaa"), failing)
+        with self.assertRaises(RuntimeError):
+            self._observe(lpm, makePlayingState(uid="uid-ad", uri="spotify:ad:promo"), failing)
+
+        callback = MagicMock()
+        self._observe(lpm, makePlayingState(uid="uid-ad", uri="spotify:ad:promo"), callback)
+
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args[0][0], "spotify:track:aaa")
+
+
 class TestPushLoop(unittest.TestCase):
     """The push loop must record plays through exactly the same code the poll
     loop uses (_applyStateToTracking), and must hand back to polling rather

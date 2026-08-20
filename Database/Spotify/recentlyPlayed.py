@@ -285,13 +285,40 @@ def _playedMsForOutgoingTrack(self, observed) -> int:
     return max(0, int(playedMs))
 
 
+SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"  #< the only URI kind that is a recordable play. The connect
+                                              #  state's track field reports whatever the player is doing -
+                                              #  ads (spotify:ad:), podcast episodes (spotify:episode:),
+                                              #  local files (spotify:local:) and queue markers
+                                              #  (spotify:delimiter, spotify:meta:*) all arrive through it.
+                                              #  (spotifyListener.py filters prev_tracks with its own copy.)
+
+
+def _recordableTrackUri(uri):
+    """`uri` when it names a playable track, else None.
+
+    None is exactly what the track-change branch stores for the current item,
+    so when a non-track item ends, the `lastTrackUri is not None` check skips
+    the callback and nothing downstream ever sees it. Without this, an ad or
+    episode ending went callback -> track() -> failed catalog lookup ->
+    fallbackTrackRecord, and the fabricated "Unknown Track" was persisted as a
+    play. The import path already drops such rows (droppedNoTrack in
+    StreamingHistoryImporter) and the display paths already filter
+    (getNowPlaying, the prev_tracks cross-check); this closes the record
+    path."""
+    if isinstance(uri, str) and uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
+        return uri
+    return None
+
+
 def _applyStateToTracking(self, state, callback) -> None:
     """Turn an observed player state into a recorded play, if the track changed.
 
     Shared by BOTH modes: whatever push does differently, it must not be this.
     The callback contract (previous track's uri, its start time, its context,
     and the played ms since it started) is what _addToRecentlyPlayed and every
-    downstream play row depend on.
+    downstream play row depend on. Non-track items (ads, episodes - see
+    _recordableTrackUri) still advance the change detection so their END is
+    noticed, but are never handed to the callback.
 
     `self` is a RecentlyPlayedManager, taken explicitly rather than bound:
     these helpers sit at module level so they can be tested directly instead of
@@ -309,7 +336,12 @@ def _applyStateToTracking(self, state, callback) -> None:
             # from this one - this state already describes its replacement.
             timePlayed = _playedMsForOutgoingTrack(self, getattr(self, "_lastObservedPlayback", None))
             callback(self.lastTrackUri, self.lastPlayedAtText, self.lastContextUri, timePlayed)
-        self.lastTrackUri = state.track.uri
+        self.lastTrackUri = _recordableTrackUri(state.track.uri)
+        if self.lastTrackUri is None:
+            #< once per non-track item as it becomes current; DEBUG because a
+            #  free account hits an ad break every few tracks, all day
+            logger.debug("Ignoring non-track playback %r - only %s plays are recorded",
+                         state.track.uri, SPOTIFY_TRACK_URI_PREFIX)
         self.lastPlayedAt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
         self.lastPlayedAtText = self.lastPlayedAt.isoformat().replace("+00:00", "Z")
         self.lastContextUri = state.context_uri
