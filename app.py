@@ -210,6 +210,13 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         staleImageClaims = self.repo.deleteStalePendingImages()
         if staleImageClaims:
             logger.info("Cleared %d stale pending image download claim(s) from a previous run", staleImageClaims)
+        # Same reasoning for import progress: no import thread can be running
+        # this early, so a row still claiming 'running' was left by a process
+        # that died mid-import - and tryClaimImportRunning refuses while it
+        # stands, locking that user out of importing anything ever again.
+        staleImports = self.repo.failStaleRunningImports()
+        if staleImports:
+            logger.info("Marked %d import(s) left 'running' by a previous run as failed", staleImports)
         self._logIntegrityProbe()
         self._ensureAdminExists()
 

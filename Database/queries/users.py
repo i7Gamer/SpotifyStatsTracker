@@ -10,6 +10,14 @@ from config import TOP_LIST_DEFAULT_WINDOW
 
 logger = logging.getLogger(__name__)
 
+# What the /import page shows for a 'running' row a dead process left behind
+# (see failStaleRunningImports). Says what happened AND that retrying is safe:
+# a killed import's in-flight file rolled back with its transaction, and
+# already-committed rows are deduped on re-import.
+IMPORT_INTERRUPTED_BY_RESTART_MESSAGE = (
+    "Import interrupted by an app restart - re-import the file(s); "
+    "already imported plays are skipped.")
+
 
 class UserQueries:
     """UserQueries: users data-access methods, mixed into Repository."""
@@ -525,6 +533,28 @@ class UserQueries:
                 (username,),
             )
         return conn.total_changes > before
+
+    def failStaleRunningImports(self) -> int:
+        """Mark every import_progress row still claiming 'running' as failed.
+
+        Startup-only companion to tryClaimImportRunning: the claim refuses
+        while a row says 'running', and only the claiming thread ever writes
+        the terminal row. routes/system.py's _releaseImportSlot covers a
+        THREAD that dies - but a PROCESS that dies mid-import (a deploy,
+        SIGKILL, power loss) skips every finally on its daemon threads, so
+        the row said 'running' forever and every future claim was refused:
+        that user could never import again without manual database surgery.
+        At startup no import can be in flight in this single-process app, so
+        any surviving 'running' row is by definition stale. Mirrors
+        deleteStalePendingImages. Returns the number of rows failed."""
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                "UPDATE import_progress SET status='failed', message=?, error=1 "
+                "WHERE status='running'",
+                (IMPORT_INTERRUPTED_BY_RESTART_MESSAGE,),
+            )
+            return cur.rowcount
 
     def readProgress(self, username: str) -> dict | None:
         conn = self._conn()
