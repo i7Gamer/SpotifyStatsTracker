@@ -437,6 +437,55 @@ class TestConfiguration(BackupWorkerTestCase):
         self.assertEqual(worker.intervalHours, 6)
         self.assertEqual(worker.retentionCount, 3)
 
+    def test_the_backup_directory_can_be_pointed_off_the_data_disk(self):
+        """Snapshots default to Backups/ INSIDE the data directory, which means
+        they share a disk with the database they exist to survive. One failure
+        takes the live file and every snapshot of it together.
+
+        Interval and retention were already env-configurable; the destination
+        was the one knob that needed a code change, so nobody could move it
+        without one. An operator can now point it at another disk, or at a
+        mount of somewhere else entirely."""
+        target = self.root / "elsewhere" / "snapshots"
+
+        with patch.dict(os.environ, {backupModule.BACKUP_DIR_ENV_VAR: str(target)}):
+            worker = self._makeWorker()
+
+        self.assertEqual(target, worker.backupDir)
+
+    def test_the_configured_directory_is_where_a_snapshot_actually_lands(self):
+        """Not just the attribute: the directory has to be created and written
+        to, including when it does not exist yet - the whole point is a path on
+        a disk this app has never touched."""
+        target = self.root / "elsewhere" / "snapshots"
+
+        with patch.dict(os.environ, {backupModule.BACKUP_DIR_ENV_VAR: str(target)}):
+            backupPath = self._makeWorker().runBackup()
+
+        self.assertEqual(target, backupPath.parent)
+        self.assertTrue(backupPath.exists())
+        #< and nothing was written to the default location beside the database
+        self.assertFalse((self.root / "Backups").exists())
+
+    def test_an_explicit_argument_still_wins_over_the_variable(self):
+        """The migrators build their own worker with an explicit path for the
+        pre-migration snapshot. An env var must not redirect that."""
+        explicit = self.root / "explicit"
+
+        with patch.dict(os.environ, {backupModule.BACKUP_DIR_ENV_VAR: str(self.root / "from-env")}):
+            worker = self._makeWorker(backupDir=explicit)
+
+        self.assertEqual(explicit, worker.backupDir)
+
+    def test_a_blank_variable_is_the_default_not_the_working_directory(self):
+        """`BACKUP_DIR=` in a compose file is "I did not set this", not "write
+        snapshots to the process's cwd" - which for the container is /app, a
+        layer that does not survive `docker compose pull`."""
+        with patch.dict(os.environ, {backupModule.BACKUP_DIR_ENV_VAR: "   "}):
+            worker = self._makeWorker()
+
+        self.assertEqual(self.root / "Backups", worker.backupDir)
+
     def test_junk_env_values_fall_back_to_defaults(self):
         env = {
             backupModule.BACKUP_INTERVAL_ENV_VAR: "banana",

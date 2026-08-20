@@ -39,6 +39,17 @@ logger = logging.getLogger(__name__)
 
 BACKUP_INTERVAL_ENV_VAR = "BACKUP_INTERVAL_HOURS"
 BACKUP_RETENTION_ENV_VAR = "BACKUP_RETENTION_COUNT"
+# Where snapshots go. Unset means Backups/ beside the database, which is the
+# right default (it is inside the one directory the compose file already
+# persists) and also the reason this variable exists: the snapshots then share
+# a disk with the file they exist to survive, so one disk failure takes the
+# database and every backup of it in the same moment.
+#
+# Interval and retention have been tunable from the environment all along; the
+# DESTINATION was the one knob that needed a code change, which meant "keep a
+# copy somewhere else" was not something an operator could just do. Point it at
+# another disk, or at a mount of somewhere off the machine entirely.
+BACKUP_DIR_ENV_VAR = "BACKUP_DIR"
 DEFAULT_BACKUP_INTERVAL_HOURS = 24
 DEFAULT_BACKUP_RETENTION_COUNT = 7
 BACKUP_DIR_NAME = "Backups"                 #< created next to the database file, inside the persisted Data/ volume
@@ -119,7 +130,11 @@ class BackupWorker(WorkerTelemetryMixin):
         # monkeypatch db.DEFAULT_DB_PATH are honored - same pattern as
         # Repository.__init__.
         self.dbPath = Path(dbPath if dbPath is not None else db.DEFAULT_DB_PATH)
-        self.backupDir = Path(backupDir) if backupDir is not None else self.dbPath.parent / BACKUP_DIR_NAME
+        # Argument first, then the variable, then beside the database. The
+        # argument has to win: Migrators/migrate.py builds its own worker with
+        # an explicit path for the pre-migration snapshot, and an operator's
+        # BACKUP_DIR must not redirect that.
+        self.backupDir = Path(backupDir) if backupDir is not None else self._configuredBackupDir()
         self.intervalHours = intervalHours if intervalHours is not None else _envInt(
             BACKUP_INTERVAL_ENV_VAR, DEFAULT_BACKUP_INTERVAL_HOURS)
         self.retentionCount = retentionCount if retentionCount is not None else _envInt(
@@ -127,6 +142,19 @@ class BackupWorker(WorkerTelemetryMixin):
         self.thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._initWorkerTelemetry()
+
+    def _configuredBackupDir(self) -> Path:
+        """BACKUP_DIR, or Backups/ beside the database.
+
+        Stripped and tested for emptiness rather than passed to Path()
+        directly: `BACKUP_DIR=` in a compose file means "I did not set this",
+        and Path("") is Path("."), which for the container is /app - a layer
+        that does not survive `docker compose pull`. Snapshots would be written
+        and then thrown away by the next update, silently."""
+        configured = os.environ.get(BACKUP_DIR_ENV_VAR, "").strip()
+        if not configured:
+            return self.dbPath.parent / BACKUP_DIR_NAME
+        return Path(configured)
 
     def getSummary(self) -> dict:
         """{status, consecutive_failures, failure_rate, last_error} for

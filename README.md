@@ -150,9 +150,24 @@ Listening history, tracks, images, and login sessions all live in one SQLite fil
 ```yaml
       # - BACKUP_INTERVAL_HOURS=24   #< how often to snapshot; 0 disables automatic backups
       # - BACKUP_RETENTION_COUNT=7   #< how many snapshots to keep; 0 disables automatic backups
+      # - BACKUP_DIR=/backups        #< where snapshots go; default is Backups/ beside the database
 ```
 
-These snapshots live on the same disk as the database, so they protect against corruption and accidental deletion - copy them somewhere else (a different disk, cloud storage) for real disaster protection.
+By default these snapshots live on the same disk as the database, so they protect against corruption and accidental deletion but not against losing the disk - one failure takes the database and every snapshot of it together.
+
+`BACKUP_DIR` is how you fix that without any scripting of your own: point it at a path on another disk, or at a mount of somewhere off the machine entirely (a NAS, an SMB/NFS share, a cloud-storage mount). Mount that location into the container and name it here:
+
+```yaml
+    volumes:
+      - ./Database/Data:/app/Database/Data
+      - /mnt/nas/spotify-tracker-backups:/backups   #< or a second local disk, or a cloud mount
+    environment:
+      - BACKUP_DIR=/backups
+```
+
+The path is created if it does not exist, and rotation applies there just as it does to the default location. Set it to somewhere that actually survives the machine and this is a real disaster-recovery story rather than a corruption-recovery one.
+
+**Keep `secrets/data_encryption_key.txt` with the backups.** Stored Spotify sessions and API secrets in the database are encrypted with it, so a database restored without its matching key reads as every user being logged out. (The app says so at boot rather than leaving you to guess - but the recovery is finding the key, so back it up alongside.)
 
 You can also export your own play history from the Import & Export page (JSON in Spotify's extended-export format - re-importable through the form on that same page - or CSV).
 
