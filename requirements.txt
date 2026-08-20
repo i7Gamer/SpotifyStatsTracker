@@ -28,7 +28,23 @@ cryptography==50.0.0
 spotapi @ git+https://github.com/TzurSoffer/SpotAPI@d538654574e2fb9511d1d09012aee962d380df8c
 pillow==12.3.0
 requests==2.34.2
-websockets==16.1
+# Sits under the listener, which is this project's most incident-prone
+# subsystem (the 401 reconnect storm, register_device INVALID_USER, the atexit
+# prints), so 16.1 -> 17.0.1 was checked rather than taken:
+#
+# 17.0's backwards-incompatible changes are the `socket` -> `sock` rename on
+# sync.client.connect, several booleans becoming keyword-only, ISO-8859-1
+# header encoding, and the removal of module aliases deprecated back in 9.0.
+# Our whole surface is `connect(uri, user_agent_header=...)` plus the
+# ping_interval/ping_timeout the keepalive patch injects (Database/patches.py),
+# and `isinstance(exc, ConnectionClosed)` - all still present and unrenamed,
+# verified against the installed 17.0.1 signature, and neither we nor spotapi
+# ever passed `socket=`.
+#
+# NOT soak-tested against a live dealer connection - the suite mocks the
+# socket. If reconnect behaviour regresses after a deploy, this is the first
+# thing to suspect and 16.1 is the rollback.
+websockets==17.0.1
 waitress==3.0.2
 tzdata==2026.3
 # Neither of these is used anywhere in this codebase - spotapi/utils/saver.py
