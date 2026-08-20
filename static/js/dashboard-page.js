@@ -435,6 +435,19 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   var pollHandle = null;
   var tickHandle = null;
   var consecutiveFailures = 0;
+  // Two in-flight polls can resolve out of order (a response only has to
+  // outlive the 15s interval), and these handlers used to apply whichever
+  // landed LAST: stale data over newer, a late failure counted against a
+  // healthy feed. Worst was the 401 corner: that branch stops both timers for
+  // good, so a slow success resolving after it un-dimmed the card and cleared
+  // the Stale pill on a poller that will never poll again - frozen content
+  // presented as live until a reload. The same guard closes it: a stopped
+  // poller never issues another seq, so everything still in flight is
+  // superseded by construction. A sequence number rather than an
+  // AbortController, for the reason profile-page.js/admin-page.js give:
+  // aborting REJECTS the superseded promise, which here would land in the
+  // catch and count toward the stale threshold.
+  var pollSeq = 0;
 
   // Both blocks are fed by the one request, so when it stops answering both are
   // equally out of date - and neither said so: the card kept rendering a track
@@ -458,8 +471,10 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   }
 
   function poll() {
+    var seq = ++pollSeq;
     fetch('/api/now-playing')
       .then(function (resp) {
+        if (seq !== pollSeq) return null;   //< superseded: a newer poll owns the panel
         // An expired session used to be treated as a transient blip, so the
         // card and the friends block sat frozen on stale content for as long as
         // the tab stayed open, polling every 15s forever and never redirecting.
@@ -483,12 +498,17 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
       })
       .then(function (data) {
         if (!data) return;   //< the 401 branch above, which has had its say
+        //< re-checked: resp.json() awaited in between, and a newer response
+        //  may have landed inside that window
+        if (seq !== pollSeq) return;
         consecutiveFailures = 0;
         setStale(false);
         render(data.nowPlaying);
         renderFriends(data.friends, data.friendsMoreCount);
       })
       .catch(function () {
+        //< a superseded failure is not news about the LIVE feed
+        if (seq !== pollSeq) return;
         //< one dropped request is not news on a 15s poll; three in a row is
         consecutiveFailures += 1;
         if (pollIsStale(consecutiveFailures)) setStale(true);
