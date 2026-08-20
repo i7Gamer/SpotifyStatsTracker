@@ -421,10 +421,115 @@ class TestAutoImporterOutcomeRouting(unittest.TestCase):
         self.assertIn("DONE", os.path.normpath(destination).split(os.sep))
 
 
+class TestPostImportMoveRetry(unittest.TestCase):
+    """A file that was IMPORTED and then could not be moved to DONE//FAILED/
+    was the one arm of four that did not hand the path back: the watchdog
+    keeps a delivered name in knownFiles, so the file sat in the watch folder
+    for the life of the process and the next restart's initial scan imported
+    it again. Handing it back naively would re-run the whole pipeline,
+    importCallback included - so a failed post-import move is remembered
+    (path + stamp + destination) and a re-delivered path retries ONLY the
+    move."""
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_failed_done_move_is_retried_without_reimporting(
+            self, mock_move, mock_makedirs, mock_exists):
+        mock_exists.return_value = False
+        import_callback = MagicMock()
+        importer = AutoImporter("/dummy/path", import_callback)
+        mock_move.side_effect = [PermissionError(13, "held by a scanner"), None]
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                first = importer._handleImport(["/dummy/path/a.json"])
+            second = importer._handleImport(["/dummy/path/a.json"])
+
+        self.assertEqual(first, ["/dummy/path/a.json"])   #< handed back for re-delivery
+        self.assertEqual(second, [])
+        self.assertEqual(import_callback.call_count, 1)   #< the retry moved; it did not re-import
+        self.assertEqual(mock_move.call_count, 2)
+        self.assertIn("DONE", os.path.normpath(mock_move.call_args[0][1]).split(os.sep))
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_failed_FAILED_move_still_lands_in_FAILED(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The failed-outcome arm owes FAILED/, and the retry must remember
+        that - a retry that defaulted to DONE/ would celebrate a rejected
+        file."""
+        mock_exists.return_value = False
+        import_callback = MagicMock(return_value=["failed"])
+        importer = AutoImporter("/dummy/path", import_callback)
+        mock_move.side_effect = [PermissionError(13, "held by a scanner"), None]
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport(["/dummy/path/corrupt.json"])
+            importer._handleImport(["/dummy/path/corrupt.json"])
+
+        self.assertEqual(import_callback.call_count, 1)
+        self.assertEqual(mock_move.call_count, 2)
+        self.assertIn("FAILED", os.path.normpath(mock_move.call_args[0][1]).split(os.sep))
+
+    @patch("Database.Importers.AutoImporter.os.stat")
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_a_replacement_file_is_imported_not_silently_buried(
+            self, mock_move, mock_makedirs, mock_exists, mock_stat):
+        """The stamp is what stops the shortcut swallowing a DIFFERENT file
+        dropped under the same name after the failed move: matching on path
+        alone would move the new file to DONE/ unimported - data loss with a
+        success line over it. (A mismatch re-importing the OLD file instead is
+        the safe direction: re-imports are deduped.)"""
+        mock_exists.return_value = False
+        import_callback = MagicMock()
+        importer = AutoImporter("/dummy/path", import_callback)
+        stamp = {"size": 100, "mtime": 1.0}
+        mock_stat.side_effect = lambda p: MagicMock(st_size=stamp["size"], st_mtime=stamp["mtime"])
+        mock_move.side_effect = [PermissionError(13, "held by a scanner"), None]
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport(["/dummy/path/a.json"])
+            stamp.update(size=200, mtime=2.0)   #< a new export re-dropped under the same name
+            importer._handleImport(["/dummy/path/a.json"])
+
+        self.assertEqual(import_callback.call_count, 2)   #< the new file ran the full pipeline
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_the_move_retry_is_announced_once_not_every_poll(
+            self, mock_move, mock_makedirs, mock_exists):
+        """The retry is unbounded on purpose (the file recovers the moment the
+        lock clears), so the announcement must not be: loud once, DEBUG after
+        - the same rule the non-matching arm and _quarantine follow."""
+        mock_exists.return_value = False
+        importer = AutoImporter("/dummy/path", MagicMock())
+        mock_move.side_effect = PermissionError(13, "held for good")
+
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="DEBUG") as captured:
+                importer._handleImport(["/dummy/path/a.json"])
+                importer._handleImport(["/dummy/path/a.json"])
+                importer._handleImport(["/dummy/path/a.json"])
+
+        complaints = [r for r in captured.records
+                      if "Could not move the imported file" in r.getMessage()]
+        self.assertEqual([r.levelno for r in complaints],
+                         [logging.ERROR, logging.DEBUG, logging.DEBUG],
+                         [r.getMessage() for r in complaints])
+
+
 class TestDestinationDirectoryCreation(unittest.TestCase):
     """The DONE/ and FAILED/ directories are created on the way to moving a
     file into them, and the file has already been imported by then - a raise
-    here re-delivers it on the next poll and imports it twice."""
+    here re-delivers it on the next poll, where the pending-move memory
+    (see TestPostImportMoveRetry) retries just the move."""
 
     def test_a_directory_that_appears_between_the_check_and_the_create(self):
         """The check-then-create window: os.path.exists said no, and by the

@@ -243,6 +243,14 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         # fail again later with the same stamp (the identical copy re-dropped),
         # and a stale entry would swallow that announcement whole.
         self._failureAnnounced = {}
+        # path -> (the file's stamp when its post-import move failed, the
+        # destination subdir it still owes). The import itself already
+        # happened, so a re-delivered path whose stamp still matches retries
+        # ONLY the move - re-running the pipeline would hand importCallback a
+        # file that already landed. An entry lives exactly as long as the
+        # debt: popped on the successful move, or on a stamp mismatch (a
+        # different file now owns the name - see the top of _handleImport).
+        self._pendingMoves = {}
 
     def _tryClaimAnnouncement(self, path):
         """Take the one loud announcement this particular file - path AND
@@ -315,8 +323,9 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         if not os.path.exists(destinationDirectory):
             # exist_ok, even under the guard: the file being routed here has
             # ALREADY been imported, so a FileExistsError from losing the
-            # check-then-create race hands it back to the watchdog and imports
-            # it a second time. The guard stays only to keep the log line rare.
+            # check-then-create race would hand it back to the watchdog as a
+            # pending move it never needed. The guard stays only to keep the
+            # log line rare.
             os.makedirs(destinationDirectory, exist_ok=True)
             logger.info(f"Created directory: {destinationDirectory}")
         destinationPath = os.path.join(destinationDirectory, fileName)
@@ -345,6 +354,27 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                         #  that failed under a lock): hand back for a later poll
         for path in sorted(paths):
             fileName = os.path.basename(path)
+            pendingMove = self._pendingMoves.get(path)
+            if pendingMove is not None:
+                pendingStamp, subdirName = pendingMove
+                if pendingStamp == self._fileStamp(path):
+                    # This exact file is already imported; only its move is
+                    # outstanding, so retry that alone. Strict stamp equality:
+                    # on any doubt the safe direction is the full pipeline
+                    # below (a re-import is deduped by the importer; moving a
+                    # NEW file unimported would be silent data loss under a
+                    # success line).
+                    try:
+                        shutil.move(path, self._destinationPath(path, subdirName=subdirName))
+                        self._pendingMoves.pop(path, None)
+                        self._failureAnnounced.pop(path, None)
+                    except Exception as moveError:
+                        logger.log(logging.ERROR if self._tryClaimAnnouncement(path) else logging.DEBUG,
+                                   "Could not move the imported file %s to %s/, will try again: %s",
+                                   path, subdirName, moveError)
+                        retryable.append(path)
+                    continue
+                self._pendingMoves.pop(path, None)   #< a different file owns the name now: full pipeline
             if self.keyword is not None and self.keyword not in fileName:
                 # Outside the read try/except on purpose: this file is never
                 # read, so a failure MOVING it is not a read failure. Folded in,
@@ -430,6 +460,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
 
         for (path, _), outcome in zip(toImport, outcomes):
             fileName = os.path.basename(path)
+            subdirName = "FAILED" if outcome == "failed" else "DONE"
             try:
                 if outcome == "failed":
                     # Visible in FAILED/ instead of celebrated in DONE/ - and
@@ -444,7 +475,19 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     shutil.move(path, self._destinationPath(path))
                     logger.info(f"Successfully moved {fileName} to DONE/")
             except Exception as e:
-                logger.error(f"Error moving file {path}: {e}")
+                # This was the one arm of four that did NOT hand the path
+                # back, so the file sat in the watch folder for the life of
+                # the process and the next restart's initial scan imported it
+                # again. Handed back like the other arms - but the import
+                # already happened, so the pending-move memory is what makes
+                # the re-delivery retry ONLY the move (top of this method).
+                # Loud once, DEBUG after: the retry is unbounded and arrives
+                # every poll.
+                self._pendingMoves[path] = (self._fileStamp(path), subdirName)
+                logger.log(logging.ERROR if self._tryClaimAnnouncement(path) else logging.DEBUG,
+                           "Could not move the imported file %s to %s/, will try again "
+                           "without re-importing: %s", path, subdirName, e)
+                retryable.append(path)
 
         return retryable
 
