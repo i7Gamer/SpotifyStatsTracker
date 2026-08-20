@@ -432,7 +432,9 @@ def register(app, dashboard):
             backup_retention_count=dashboard.repo.getBackupRetentionCount(DEFAULT_BACKUP_RETENTION_COUNT),
             backup_interval_min=BACKUP_INTERVAL_HOURS_MIN, backup_interval_max=BACKUP_INTERVAL_HOURS_MAX,
             backup_retention_min=BACKUP_RETENTION_COUNT_MIN, backup_retention_max=BACKUP_RETENTION_COUNT_MAX,
-            smtp_config=get_smtp_config(dashboard.repo),
+            #< masked: the template only checks whether a password EXISTS, so
+            #  the decrypted secret stays out of the render context entirely
+            smtp_config=get_smtp_config(dashboard.repo, include_password=False),
             instance_public_url=get_instance_public_url(dashboard.repo),
             database_integrity=database_integrity,
             dangling_row_total=dangling_row_total,

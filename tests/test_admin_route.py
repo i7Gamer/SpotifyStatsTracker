@@ -954,6 +954,67 @@ class TestAdminEmailSettings(AdminRouteTestBase):
         self.assertEqual(get_smtp_config(dash.repo)["port"], DEFAULT_SMTP_PORT)
 
 
+class TestSmtpPasswordStaysOutOfTemplateContext(AdminRouteTestBase):
+    """admin.html only ever uses the SMTP password as a presence check (the
+    masked placeholder), so the decrypted secret has no business in the render
+    context: it sits one careless value="{{ ... }}" edit away from the wire,
+    and a Werkzeug debug frame would show it. The worker/send paths keep
+    getting the real value - only the template call site asks for the masked
+    shape."""
+
+    def _saveSmtpPassword(self, dash, password):
+        from services.email_service import save_smtp_config
+        save_smtp_config(repo=dash.repo, enabled=True, host="smtp.example.com",
+                         port=587, encryption="tls", user="bot@example.com",
+                         password=password, from_email="noreply@example.com",
+                         from_name="Tracker")
+
+    def test_the_admin_context_carries_no_plaintext_password(self):
+        from flask import template_rendered
+        dash = self._makeApp()
+        self._saveSmtpPassword(dash, "hunter2")
+
+        captured = []
+
+        def record(sender, template, context, **extra):
+            captured.append((template.name, context))
+
+        template_rendered.connect(record, dash.app)
+        try:
+            #< the email card renders on the settings tab
+            resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
+        finally:
+            template_rendered.disconnect(record, dash.app)
+
+        self.assertEqual(resp.status_code, 200)
+        contexts = [ctx for name, ctx in captured if name == "admin.html"]
+        self.assertEqual(len(contexts), 1)
+        smtpConfig = contexts[0]["smtp_config"]
+        self.assertNotIn("hunter2", str(smtpConfig))
+        self.assertTrue(smtpConfig["has_password"])
+        #< the placeholder mask must survive the masking of the value it marks
+        self.assertIn("••••••••", resp.data.decode("utf-8"))
+
+    def test_an_unset_password_reads_as_not_set(self):
+        dash = self._makeApp()
+
+        resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Not set", resp.data)
+
+    def test_the_worker_path_still_gets_the_real_password(self):
+        from services.email_service import get_smtp_config
+        dash = self._makeApp()
+        self._saveSmtpPassword(dash, "hunter2")
+
+        self.assertEqual(get_smtp_config(dash.repo)["password"], "hunter2")
+
+        masked = get_smtp_config(dash.repo, include_password=False)
+        self.assertEqual(masked["password"], "")
+        self.assertTrue(masked["has_password"])
+
+
 class TestAdminSendTestEmail(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

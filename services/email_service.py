@@ -50,8 +50,17 @@ _EVENT_LINK_PATHS = {
 }
 
 
-def get_smtp_config(repo: Repository) -> dict[str, Any]:
-    """Retrieve full SMTP configuration and global email notification toggle from app_settings."""
+def get_smtp_config(repo: Repository, include_password: bool = True) -> dict[str, Any]:
+    """Retrieve full SMTP configuration and global email notification toggle
+    from app_settings.
+
+    `include_password=False` answers "password" as "" while "has_password"
+    still reports whether one is stored - for the /admin template, which only
+    ever uses the password as a presence check (the masked placeholder). The
+    decrypted secret must not ride into a render context it is never shown
+    from: it would sit one careless value="{{ ... }}" edit away from the wire,
+    and a Werkzeug debug frame would display it. The worker/send paths keep
+    the default and get the real value."""
     enabled_val = repo.getAppSetting(SETTING_EMAIL_NOTIF_ENABLED, "0")
     host = repo.getAppSetting(SETTING_SMTP_HOST, "") or ""
     port_str = repo.getAppSetting(SETTING_SMTP_PORT, str(DEFAULT_SMTP_PORT))
@@ -63,7 +72,7 @@ def get_smtp_config(repo: Repository) -> dict[str, Any]:
     encryption = repo.getAppSetting(SETTING_SMTP_ENCRYPTION, DEFAULT_SMTP_ENCRYPTION) or DEFAULT_SMTP_ENCRYPTION
     user = repo.getAppSetting(SETTING_SMTP_USER, "") or ""
     raw_password = repo.getAppSetting(SETTING_SMTP_PASSWORD, "") or ""
-    password = decryptSecret(raw_password) if raw_password else ""
+    password = decryptSecret(raw_password) if (raw_password and include_password) else ""
 
     from_email = repo.getAppSetting(SETTING_SMTP_FROM_EMAIL, "") or ""
     from_name = repo.getAppSetting(SETTING_SMTP_FROM_NAME, DEFAULT_SMTP_FROM_NAME) or DEFAULT_SMTP_FROM_NAME
@@ -75,6 +84,7 @@ def get_smtp_config(repo: Repository) -> dict[str, Any]:
         "encryption": encryption,
         "user": user,
         "password": password,
+        "has_password": bool(raw_password),
         "from_email": from_email,
         "from_name": from_name,
     }

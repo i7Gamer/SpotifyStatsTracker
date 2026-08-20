@@ -680,9 +680,9 @@
               </label>
               <label class="admin-form-row">
                 <span>Password</span>
-                <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.password %}••••••••{% else %}Not set{% endif %}" class="admin-text-input">
+                <input type="password" name="smtp_password" value="" placeholder="{% if smtp_config.has_password %}••••••••{% else %}Not set{% endif %}" class="admin-text-input">
               </label>
-              {% if smtp_config.password %}
+              {% if smtp_config.has_password %}
               <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); padding-left: 0.25rem;">
                 <input type="checkbox" name="clear_password" value="1">
                 <span>Clear saved password</span>
