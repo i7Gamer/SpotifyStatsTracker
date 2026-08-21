@@ -130,10 +130,15 @@ class BackupWorker(WorkerTelemetryMixin):
         # monkeypatch db.DEFAULT_DB_PATH are honored - same pattern as
         # Repository.__init__.
         self.dbPath = Path(dbPath if dbPath is not None else db.DEFAULT_DB_PATH)
-        # Argument first, then the variable, then beside the database. The
-        # argument has to win: Migrators/migrate.py builds its own worker with
-        # an explicit path for the pre-migration snapshot, and an operator's
-        # BACKUP_DIR must not redirect that.
+        # Argument first, then the variable, then beside the database. No
+        # PRODUCTION caller passes the argument - the scheduled worker
+        # (app.py) and the pre-migration snapshot (Migrators/migrate.py) both
+        # leave it unset ON PURPOSE, so an operator's BACKUP_DIR governs every
+        # snapshot alike, the pre-migration one included: off-disk protection
+        # matters most at the riskiest write of the boot
+        # (test_migration_chain pins that call shape). The argument is the
+        # test seam, and it winning over the variable is what lets a test pin
+        # a location the environment can't move.
         self.backupDir = Path(backupDir) if backupDir is not None else self._configuredBackupDir()
         self.intervalHours = intervalHours if intervalHours is not None else _envInt(
             BACKUP_INTERVAL_ENV_VAR, DEFAULT_BACKUP_INTERVAL_HOURS)

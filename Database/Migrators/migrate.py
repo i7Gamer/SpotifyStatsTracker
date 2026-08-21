@@ -116,6 +116,12 @@ def _snapshotBeforeMigrating(runtimeDir: Path) -> None:
     except ModuleNotFoundError:
         from backup import BackupWorker
     try:
+        # No backupDir on purpose: the operator's BACKUP_DIR governs this
+        # snapshot exactly like the scheduled ones - off-disk protection
+        # matters most at the riskiest write of the boot. The trade is that a
+        # BACKUP_DIR mount that is down at boot costs this snapshot (caught
+        # below, startup continues), which the beside-the-db default never
+        # risked. test_migration_chain pins this call shape.
         BackupWorker(dbPath=dbPath).runBackup()
     except Exception as e:
         print(f"Pre-migration snapshot failed (continuing without it): {e}")

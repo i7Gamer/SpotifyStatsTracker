@@ -260,6 +260,11 @@ class TestPreMigrationSnapshot(MigrationChainTestCase):
 
         self._snapshotWith(worker)
 
+        #< the exact kwargs are the contract, not just "it was called": no
+        #  backupDir on purpose, so the operator's BACKUP_DIR redirects the
+        #  pre-migration snapshot exactly like the scheduled ones (off-disk
+        #  protection at the riskiest write of the boot). Passing an explicit
+        #  path here would silently pin it back beside the database.
         worker.assert_called_once_with(dbPath=self.dbPath)
         worker.return_value.runBackup.assert_called_once()
 

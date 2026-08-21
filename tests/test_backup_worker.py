@@ -468,8 +468,10 @@ class TestConfiguration(BackupWorkerTestCase):
         self.assertFalse((self.root / "Backups").exists())
 
     def test_an_explicit_argument_still_wins_over_the_variable(self):
-        """The migrators build their own worker with an explicit path for the
-        pre-migration snapshot. An env var must not redirect that."""
+        """The argument is the test seam - no production caller passes it (the
+        pre-migration snapshot deliberately does NOT, so BACKUP_DIR redirects
+        it too; test_migration_chain pins that call shape). It has to beat the
+        variable so a test can pin a location the environment can't move."""
         explicit = self.root / "explicit"
 
         with patch.dict(os.environ, {backupModule.BACKUP_DIR_ENV_VAR: str(self.root / "from-env")}):
