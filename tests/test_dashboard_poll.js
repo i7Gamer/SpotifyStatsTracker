@@ -148,27 +148,86 @@ run('a body that arrives after a newer poll does not overwrite it', async () => 
                      'a response must be re-checked after its body read');
 });
 
-run('a superseded 401 does not stop the live poller', async () => {
-  /* One poll's evidence, one poll's verdict: a 401 that has already been
-   * superseded must not freeze a poller whose LIVE request works (a session
-   * restored in another tab). If the session is genuinely gone, the next
-   * live poll meets its own 401 and stops then. Pins the guard at the top of
-   * the first handler - without it the stale 401 runs the stop branch. */
+run('a 401 acts while it is still the newest word', async () => {
+  /* The rule is "act unless something NEWER already acted" - not "act only if
+   * no newer request is in flight". An earlier draft used the latter, and it
+   * is what made the sustained-latency cases below freeze: when every response
+   * outlives the next tick, every response is superseded-in-flight forever, so
+   * an expired session never stopped the poll. A 401 is evidence about the
+   * SESSION, which both in-flight requests share, so the first one to speak
+   * gets to stop the poller. */
   const page = freshPage();
 
-  page.poll();   //< A - will come back 401, but late
-  page.poll();   //< B - the live request, against a session that works
+  page.poll();   //< A - comes back 401 first
+  page.poll();   //< B - still in flight, same expired session
+  page.pendingFetches[0].resolve({ status: 401, ok: false, json: () => Promise.resolve({}) });
+  await settle();
+
+  assert.strictEqual(page.pollHandle.stopped, 1, 'the 401 stops the poll');
+  assert.strictEqual(page.tickHandle.stopped, 1);
+  assert.ok(page.elements.nowPlayingCard.classList.contains('is-stale'));
+});
+
+run('a response superseded by an APPLIED newer one still stands down', async () => {
+  /* The other half of the rule, and what keeps the out-of-order protection:
+   * once a newer response has actually been applied, an older one must not
+   * speak - not even a 401. */
+  const page = freshPage();
+
+  page.poll();   //< A - 401, but it arrives last
+  page.poll();   //< B - succeeds first and applies
+  page.pendingFetches[1].resolve(okResponse(nowPlaying('Newer')));
+  await settle();
+  assert.strictEqual(page.elements.nowPlayingName.textContent, 'Newer');
+
   page.pendingFetches[0].resolve({ status: 401, ok: false, json: () => Promise.resolve({}) });
   await settle();
 
   assert.strictEqual(page.pollHandle.stopped, 0,
-                     'a stale 401 is not evidence about the live request');
-  assert.strictEqual(page.tickHandle.stopped, 0);
-
-  page.pendingFetches[1].resolve(okResponse(nowPlaying('StillHere')));
-  await settle();
-  assert.strictEqual(page.elements.nowPlayingName.textContent, 'StillHere');
+                     'an older 401 cannot undo a newer response that already landed');
   assert.ok(!page.elements.nowPlayingCard.classList.contains('is-stale'));
+});
+
+/* VisibilityPoll.start is a bare setInterval with no in-flight guard, so on a
+ * connection where /api/now-playing consistently takes longer than the 15s
+ * interval, EVERY response is superseded before it settles. Guarding on "is
+ * this still the last request issued" dropped all of them: no render, no
+ * failure counted, no Stale pill, and an expired session that never stopped
+ * the poll - the frozen-card defect this block exists to prevent, on exactly
+ * the connections that need it most. Each case below drives poll N+1 before
+ * settling poll N, ten times over. */
+async function runSustainedLatency(settleOne) {
+  const page = freshPage();
+  page.poll();
+  for (let i = 2; i <= 10; i++) {
+    page.poll();
+    settleOne(page.pendingFetches[i - 2], i - 1);
+    await settle();
+  }
+  return page;
+}
+
+run('a feed slower than the poll interval still renders', async () => {
+  const page = await runSustainedLatency((f, n) => f.resolve(okResponse(nowPlaying('Track' + n))));
+
+  assert.strictEqual(page.elements.nowPlayingName.textContent, 'Track9',
+                     'every response was superseded in flight, so none was ever applied');
+});
+
+run('a feed slower than the poll interval still goes Stale', async () => {
+  const page = await runSustainedLatency((f) => f.reject(new Error('dropped')));
+
+  assert.ok(page.elements.nowPlayingCard.classList.contains('is-stale'),
+            'sustained failures under latency must still reach the stale threshold');
+  assert.strictEqual(page.elements.nowPlayingState.textContent, 'Stale');
+});
+
+run('an expired session under latency still stops the poll', async () => {
+  const page = await runSustainedLatency((f) =>
+    f.resolve({ status: 401, ok: false, json: () => Promise.resolve({}) }));
+
+  assert.ok(page.pollHandle.stopped > 0, 'the 401 branch must be reachable under latency');
+  assert.ok(page.tickHandle.stopped > 0);
 });
 
 run('a slow success cannot un-freeze the card after the 401 stop', async () => {

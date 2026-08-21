@@ -438,16 +438,33 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   // Two in-flight polls can resolve out of order (a response only has to
   // outlive the 15s interval), and these handlers used to apply whichever
   // landed LAST: stale data over newer, a late failure counted against a
-  // healthy feed. Worst was the 401 corner: that branch stops both timers for
-  // good, so a slow success resolving after it un-dimmed the card and cleared
-  // the Stale pill on a poller that will never poll again - frozen content
-  // presented as live until a reload. The same guard closes it: a stopped
-  // poller never issues another seq, so everything still in flight is
-  // superseded by construction. A sequence number rather than an
-  // AbortController, for the reason profile-page.js/admin-page.js give:
-  // aborting REJECTS the superseded promise, which here would land in the
-  // catch and count toward the stale threshold.
-  var pollSeq = 0;
+  // healthy feed, and a slow success resolving after the 401 branch stopped
+  // both timers un-dimmed a card that will never poll again.
+  //
+  // The rule is "a response acts unless a NEWER response already acted", so
+  // the counter that matters is the newest one APPLIED, not the last one
+  // ISSUED. Comparing against the last issued request looks equivalent and is
+  // not: VisibilityPoll.start is a bare setInterval with no in-flight guard,
+  // so on a feed slower than NOW_PLAYING_POLL_MS every response is superseded
+  // before it settles, and guarding on `seq !== pollSeq` dropped ALL of them -
+  // no render, no failure counted, no Stale pill, and an expired session that
+  // never stopped the poll. That is the frozen-card defect this whole block
+  // exists to prevent, reintroduced for the slow connections that need it most.
+  //
+  // A sequence number rather than an AbortController, for the reason
+  // profile-page.js/admin-page.js give: aborting REJECTS the superseded
+  // promise, which here would land in the catch and count toward the stale
+  // threshold.
+  var pollSeq = 0;      //< last request issued
+  var appliedSeq = 0;   //< newest response that has already had its say
+
+  //< true when this response is still the newest word and may act; claiming is
+  //  what makes it the newest word, so each response claims at most once
+  function claimPoll(seq) {
+    if (seq <= appliedSeq) return false;
+    appliedSeq = seq;
+    return true;
+  }
 
   // Both blocks are fed by the one request, so when it stops answering both are
   // equally out of date - and neither said so: the card kept rendering a track
@@ -474,7 +491,6 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     var seq = ++pollSeq;
     fetch('/api/now-playing')
       .then(function (resp) {
-        if (seq !== pollSeq) return null;   //< superseded: a newer poll owns the panel
         // An expired session used to be treated as a transient blip, so the
         // card and the friends block sat frozen on stale content for as long as
         // the tab stayed open, polling every 15s forever and never redirecting.
@@ -486,21 +502,34 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
         // Both timers, not just the fetching one: the bar's tick is the leak
         // this whole change closed, reintroduced. stop() is permanent on both.
         if (resp.status === 401) {
-          if (pollHandle) pollHandle.stop();
-          if (tickHandle) tickHandle.stop();
-          setStale(true);
+          //< claimed here rather than at the top of this handler: a 401 is
+          //  evidence about the SESSION, which every in-flight request shares,
+          //  so it acts unless something newer already has. The success path
+          //  below claims later, after its body read. Wrapped rather than an
+          //  early return so this branch keeps ONE exit: the stale/stop pins in
+          //  tests/test_background_polls.py read the source text from the 401
+          //  check to the branch's first return, and an early one hid them.
+          if (claimPoll(seq)) {
+            if (pollHandle) pollHandle.stop();
+            if (tickHandle) tickHandle.stop();
+            setStale(true);
+          }
           return null;
         }
+        //< peeked, not claimed: a superseded response is not worth reading a
+        //  body for, and returning null here keeps a stale non-2xx out of the
+        //  catch (a superseded failure is not news about the live feed)
+        if (seq <= appliedSeq) return null;
         //< thrown, not returned as null: a 500 is a FAILED poll, and the null
         //  branch below cannot tell one from "the session ended" without it
         if (!resp.ok) throw new Error('now-playing poll failed: ' + resp.status);
         return resp.json();
       })
       .then(function (data) {
-        if (!data) return;   //< the 401 branch above, which has had its say
-        //< re-checked: resp.json() awaited in between, and a newer response
-        //  may have landed inside that window
-        if (seq !== pollSeq) return;
+        if (!data) return;   //< the 401/superseded branches above have had their say
+        //< claimed only now: resp.json() was awaited in between, and a newer
+        //  response may have landed - and applied - inside that window
+        if (!claimPoll(seq)) return;
         consecutiveFailures = 0;
         setStale(false);
         render(data.nowPlaying);
@@ -508,7 +537,7 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
       })
       .catch(function () {
         //< a superseded failure is not news about the LIVE feed
-        if (seq !== pollSeq) return;
+        if (!claimPoll(seq)) return;
         //< one dropped request is not news on a 15s poll; three in a row is
         consecutiveFailures += 1;
         if (pollIsStale(consecutiveFailures)) setStale(true);
