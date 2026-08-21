@@ -55,8 +55,9 @@ def get_smtp_config(repo: Repository, include_password: bool = True) -> dict[str
     from app_settings.
 
     `include_password=False` answers "password" as "" while "has_password"
-    still reports whether one is stored - for the /admin template, which only
-    ever uses the password as a presence check (the masked placeholder). The
+    still reports whether a USABLE one is stored (see below) - for the /admin
+    template, which only ever uses the password as a presence check (the
+    masked placeholder). The
     decrypted secret must not ride into a render context it is never shown
     from: it would sit one careless value="{{ ... }}" edit away from the wire,
     and a Werkzeug debug frame would display it. The worker/send paths keep
@@ -72,7 +73,16 @@ def get_smtp_config(repo: Repository, include_password: bool = True) -> dict[str
     encryption = repo.getAppSetting(SETTING_SMTP_ENCRYPTION, DEFAULT_SMTP_ENCRYPTION) or DEFAULT_SMTP_ENCRYPTION
     user = repo.getAppSetting(SETTING_SMTP_USER, "") or ""
     raw_password = repo.getAppSetting(SETTING_SMTP_PASSWORD, "") or ""
-    password = decryptSecret(raw_password) if (raw_password and include_password) else ""
+    # Decrypted whichever way this is called, because BOTH answers depend on
+    # the plaintext: an undecryptable blob is "missing" per
+    # Database/secret_store.py (a database restored without its key, or a
+    # rotated DATA_ENCRYPTION_KEY), and the admin has to see "Not set" for it
+    # rather than a mask over a secret that can never authenticate - which is
+    # what keying has_password off the raw blob would show. The plaintext stays
+    # a local of this function on the masked path; what include_password
+    # governs is whether it escapes into the caller's dict.
+    decrypted = decryptSecret(raw_password) if raw_password else ""
+    password = decrypted if include_password else ""
 
     from_email = repo.getAppSetting(SETTING_SMTP_FROM_EMAIL, "") or ""
     from_name = repo.getAppSetting(SETTING_SMTP_FROM_NAME, DEFAULT_SMTP_FROM_NAME) or DEFAULT_SMTP_FROM_NAME
@@ -84,7 +94,7 @@ def get_smtp_config(repo: Repository, include_password: bool = True) -> dict[str
         "encryption": encryption,
         "user": user,
         "password": password,
-        "has_password": bool(raw_password),
+        "has_password": bool(decrypted),
         "from_email": from_email,
         "from_name": from_name,
     }

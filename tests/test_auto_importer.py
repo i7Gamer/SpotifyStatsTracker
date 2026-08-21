@@ -17,6 +17,18 @@ def _fakeOpenByName(path, *args, **kwargs):
     return io.StringIO(f"data:{os.path.basename(path)}")
 
 
+def _stableStat(size=100, mtime=1.0):
+    """os.stat patched to a real, unchanging (size, mtime).
+
+    The retry tests use paths that do not exist, so without this _fileStamp
+    answers None on BOTH deliveries and the pending-move branch is entered by
+    None == None - pinning nothing about the stamp, and passing even if the
+    stamp were never stored. A stable stamp is what makes them assert the
+    match; the replacement-file test varies it to assert the mismatch."""
+    return patch("Database.Importers.AutoImporter.os.stat",
+                 return_value=MagicMock(st_size=size, st_mtime=mtime))
+
+
 def _raiseFileExists(path):
     """What a real os.makedirs does when someone else won the race."""
     raise FileExistsError(17, "File exists", path)
@@ -441,7 +453,7 @@ class TestPostImportMoveRetry(unittest.TestCase):
         importer = AutoImporter("/dummy/path", import_callback)
         mock_move.side_effect = [PermissionError(13, "held by a scanner"), None]
 
-        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)),                 _stableStat():
             with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
                 first = importer._handleImport(["/dummy/path/a.json"])
             second = importer._handleImport(["/dummy/path/a.json"])
@@ -465,7 +477,7 @@ class TestPostImportMoveRetry(unittest.TestCase):
         importer = AutoImporter("/dummy/path", import_callback)
         mock_move.side_effect = [PermissionError(13, "held by a scanner"), None]
 
-        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)),                 _stableStat():
             with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
                 importer._handleImport(["/dummy/path/corrupt.json"])
             importer._handleImport(["/dummy/path/corrupt.json"])
@@ -503,6 +515,31 @@ class TestPostImportMoveRetry(unittest.TestCase):
     @patch("Database.Importers.AutoImporter.os.path.exists")
     @patch("Database.Importers.AutoImporter.os.makedirs")
     @patch("Database.Importers.AutoImporter.shutil.move")
+    def test_an_unreadable_stamp_never_counts_as_a_match(
+            self, mock_move, mock_makedirs, mock_exists):
+        """_fileStamp answers None for "could not read this file just now",
+        which is a gap in knowledge, not an identity. Two of them must NOT
+        match: the shortcut moves a file WITHOUT importing it, so matching on
+        ignorance can put a replacement export in DONE/ unimported, under a
+        success line. The safe direction is the full pipeline - a redundant
+        re-import is deduped by insertPlay."""
+        mock_exists.return_value = False
+        import_callback = MagicMock()
+        importer = AutoImporter("/dummy/path", import_callback)
+        mock_move.side_effect = [PermissionError(13, "held by a scanner"), None]
+
+        #< no os.stat patch: the path does not exist, so every stamp is None
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+            with self.assertLogs("Database.Importers.AutoImporter", level="ERROR"):
+                importer._handleImport(["/dummy/path/a.json"])
+            importer._handleImport(["/dummy/path/a.json"])
+
+        self.assertEqual(import_callback.call_count, 2,
+                         "an unknown stamp must re-run the full pipeline, not take the move shortcut")
+
+    @patch("Database.Importers.AutoImporter.os.path.exists")
+    @patch("Database.Importers.AutoImporter.os.makedirs")
+    @patch("Database.Importers.AutoImporter.shutil.move")
     def test_the_move_retry_is_announced_once_not_every_poll(
             self, mock_move, mock_makedirs, mock_exists):
         """The retry is unbounded on purpose (the file recovers the moment the
@@ -512,7 +549,7 @@ class TestPostImportMoveRetry(unittest.TestCase):
         importer = AutoImporter("/dummy/path", MagicMock())
         mock_move.side_effect = PermissionError(13, "held for good")
 
-        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)):
+        with patch("Database.Importers.AutoImporter.open", MagicMock(side_effect=_fakeOpenByName)),                 _stableStat():
             with self.assertLogs("Database.Importers.AutoImporter", level="DEBUG") as captured:
                 importer._handleImport(["/dummy/path/a.json"])
                 importer._handleImport(["/dummy/path/a.json"])

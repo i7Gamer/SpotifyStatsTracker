@@ -10,10 +10,20 @@ from config import TOP_LIST_DEFAULT_WINDOW
 
 logger = logging.getLogger(__name__)
 
-# What the /import page shows for a 'running' row a dead process left behind
-# (see failStaleRunningImports). Says what happened AND that retrying is safe:
-# a killed import's in-flight file rolled back with its transaction, and
-# already-committed rows are deduped on re-import.
+# The terminal row failStaleRunningImports leaves behind for an import a dead
+# process abandoned. Says what happened AND that retrying is safe: a killed
+# import's in-flight file rolled back with its transaction, and already
+# committed rows dedupe on re-import (insertPlay keys on username+track+
+# played_at).
+#
+# NOT currently reachable by the user: activation calls Database.resetProgress()
+# unconditionally (dashboard/user_registry.py, pinned by tests/
+# test_read_only_user_db.py), and the boot sequence activates every
+# cookie-holding user synchronously - so this row is back to 'idle' before
+# waitress serves a request, and any other user hits the same reset on their
+# next authenticated request. Making it visible means narrowing that reset to
+# stale 'running' rows, which also makes ordinary import outcomes survive a
+# restart: a product call, not a cleanup.
 IMPORT_INTERRUPTED_BY_RESTART_MESSAGE = (
     "Import interrupted by an app restart - re-import the file(s); "
     "already imported plays are skipped.")
@@ -540,13 +550,21 @@ class UserQueries:
         Startup-only companion to tryClaimImportRunning: the claim refuses
         while a row says 'running', and only the claiming thread ever writes
         the terminal row. routes/system.py's _releaseImportSlot covers a
-        THREAD that dies - but a PROCESS that dies mid-import (a deploy,
-        SIGKILL, power loss) skips every finally on its daemon threads, so
-        the row said 'running' forever and every future claim was refused:
-        that user could never import again without manual database surgery.
-        At startup no import can be in flight in this single-process app, so
+        THREAD that dies; a PROCESS that dies mid-import (a deploy, SIGKILL,
+        power loss) skips every finally on its daemon threads and leaves the
+        row saying 'running'. At startup no import can be in flight in this
+        single-process app (waitress threads, one process - see wsgi.py), so
         any surviving 'running' row is by definition stale. Mirrors
-        deleteStalePendingImages. Returns the number of rows failed."""
+        deleteStalePendingImages. Returns the number of rows failed.
+
+        This is defence in depth, not the only guard: user activation already
+        calls resetProgress() unconditionally, which clears a stale claim (to
+        'idle', saying nothing about why) before the user can be blocked by
+        it. So the lockout this converts is not reachable today - what this
+        adds is that the stale row is resolved once, at boot, as a TERMINAL
+        row rather than depending on an activation side effect that exists
+        for other reasons. See IMPORT_INTERRUPTED_BY_RESTART_MESSAGE for why
+        the message itself does not reach the page yet."""
         conn = self._conn()
         with conn:
             cur = conn.execute(

@@ -1321,10 +1321,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         narrows to songs whose name, artist(s), or album match. `fullPlaysOnly`
         excludes plays that never reached the completion-complete percent of
         the track's duration - defaults False so only the Top Songs page opts in.
-        `firstListenedStart`/`firstListenedEnd` keep only songs whose FIRST-EVER
+        `firstListenedStart`/`firstListenedEnd` keep only songs whose first
         listen falls in that half-open window while counts stay lifetime - the
-        Wrapped discovery lists (see Repository._firstListenClause); not
-        supported by the skip-sort branch, whose query has no discovery caller."""
+        Wrapped discovery lists (see Repository._firstListenClause). "First"
+        and "lifetime" mean over the plays this query SEES, so they mean
+        all-time only when no startDate/endDate narrows it too; the Wrapped
+        caller passes the window alone. Not supported by the skip-sort branch,
+        whose query has no discovery caller."""
         if sortBy == self.SKIP_SORT_BY:
             # Its own query rather than a skips column on getSongsPage: that
             # query's is_skip=0 predicate is load-bearing for its plan (an

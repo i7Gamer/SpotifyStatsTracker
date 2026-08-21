@@ -245,6 +245,28 @@ class TestCallbackWithoutRefreshToken(SpotifyEnvTestCase):
             "my_id", "my_secret", "old-refresh-token")
         self.assertIn("success=", resp.headers["Location"])
 
+    def test_a_returned_refresh_token_wins_over_the_stored_one(self):
+        """The other side of the `or`, and the one that matters most: when
+        Spotify DOES return a token it must REPLACE the stored one. Both other
+        cases in this class send a response with no refresh_token, and the
+        pre-existing success test stores no token to fall back on, so
+        inverting the operands survived the whole suite - a re-authorization
+        would then have kept writing the OLD grant, silently discarding the
+        one the user just approved."""
+        dash, client = self._makeLoggedInClient()
+        url = self._callbackWithState(client)
+        tokenResponse = MagicMock(status_code=200)
+        tokenResponse.json.return_value = {"refresh_token": "new-refresh-token"}
+        with patch.object(dash, 'get_user_db') as mock_get_db,                 patch("requests.post", return_value=tokenResponse):
+            mock_db = self._mockDb(mock_get_db, {
+                "client_id": "my_id", "client_secret": "my_secret",
+                "refresh_token": "old-refresh-token"})
+            resp = client.get(url)
+
+        mock_db.updateUserSpotifyCredentials.assert_called_once_with(
+            "my_id", "my_secret", "new-refresh-token")
+        self.assertIn("success=", resp.headers["Location"])
+
     def test_no_token_anywhere_is_an_error_not_a_silent_wipe(self):
         dash, client = self._makeLoggedInClient()
         url = self._callbackWithState(client)

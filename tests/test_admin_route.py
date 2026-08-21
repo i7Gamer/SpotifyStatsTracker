@@ -1003,6 +1003,25 @@ class TestSmtpPasswordStaysOutOfTemplateContext(AdminRouteTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Not set", resp.data)
 
+    def test_an_undecryptable_password_reads_as_not_set(self):
+        """decryptSecret treats a value it cannot read as MISSING (a database
+        restored without its key, a rotated DATA_ENCRYPTION_KEY). The admin
+        page has to agree: masking it as present would promise working email
+        from a secret that can never authenticate, and offer to "clear" a
+        password the page cannot see. Keying the flag off the raw blob rather
+        than the plaintext is exactly that mistake."""
+        from services.email_service import get_smtp_config
+        dash = self._makeApp()
+        self._saveSmtpPassword(dash, "hunter2")
+
+        with patch("services.email_service.decryptSecret", return_value=None):
+            config = get_smtp_config(dash.repo, include_password=False)
+            self.assertFalse(config["has_password"])
+
+            resp = self._getAdmin(dash, isAdmin=True, path="/admin?tab=settings")
+
+        self.assertIn(b"Not set", resp.data)
+
     def test_the_worker_path_still_gets_the_real_password(self):
         from services.email_service import get_smtp_config
         dash = self._makeApp()

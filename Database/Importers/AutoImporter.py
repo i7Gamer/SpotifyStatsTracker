@@ -357,7 +357,14 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
             pendingMove = self._pendingMoves.get(path)
             if pendingMove is not None:
                 pendingStamp, subdirName = pendingMove
-                if pendingStamp == self._fileStamp(path):
+                #< `is not None` first: _fileStamp answers None for "could not
+                #  read this file just now", which is a gap in knowledge, not
+                #  an identity - and two of them compared EQUAL, taking the
+                #  move-only shortcut on a file this importer may never have
+                #  read. That is the one outcome worse than a redundant
+                #  re-import (which insertPlay dedupes): a replacement export
+                #  moved to DONE/ unimported, under a success line.
+                if pendingStamp is not None and pendingStamp == self._fileStamp(path):
                     # This exact file is already imported; only its move is
                     # outstanding, so retry that alone. Strict stamp equality:
                     # on any doubt the safe direction is the full pipeline
