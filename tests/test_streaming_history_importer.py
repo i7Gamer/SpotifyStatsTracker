@@ -1656,20 +1656,20 @@ class TestMusicoletExpansionCeiling(unittest.TestCase):
 
         self.assertEqual(len(expanded), 5)
 
-    def test_the_refusal_happens_before_the_allocation_it_prevents(self):
-        """The whole point of the guard, and the one property a "does it raise"
-        test cannot show: the ceiling is checked BEFORE `range(playCount)` runs,
-        not after the list is already built.
+    def test_an_absurd_single_row_is_refused_without_being_expanded(self):
+        """A million-play row against a ceiling of ten. Bounded on purpose: an
+        earlier draft used a billion, which proves the check runs BEFORE
+        `range(playCount)` by returning instantly - but turns any regression
+        into the whole suite hanging instead of one test failing, and a guard
+        that can hang CI is worse than the narrower assertion.
 
-        A billion-play row is what makes that observable. Checked first, this
-        returns immediately; checked afterwards it would try to materialise a
-        billion tuples. Note the failure mode if that ever regresses is the
-        suite HANGING here rather than reporting a clean failure - which is
-        itself the defect this guards, so it is the honest signal."""
+        So this pins the behaviour (refused, nothing returned) and accepts that
+        a check moved after the loop would still pass, just slowly. The running
+        -total test above is what actually pins WHERE the check reads from."""
         importer = self._mockedImporter()
         with patch.object(Importer, "MUSICOLET_MAX_EXPANDED_PLAYS", 10):
             with self.assertRaises(MusicoletExpansionTooLargeError):
-                importer._expandMusicoletRows([self._row(10 ** 9)], stats={})
+                importer._expandMusicoletRows([self._row(10 ** 6)], stats={})
 
     def test_the_refusal_carries_no_user_data(self):
         """Import failure text reaches the user's progress line and the app log
