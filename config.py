@@ -85,6 +85,16 @@ WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturd
 MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
 MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
+# Unit conversions, named so the ladders that format a byte count or split
+# an hour total into days read as units rather than as bare powers of two.
+# Binary (1024), not decimal: what they format is an on-disk size, which is
+# what every filesystem tool reports this way. Deliberately NOT imported by
+# Database/ - that package does not depend on config.py (see the module
+# docstring), so its own byte caps keep spelling the multiplication out.
+BYTES_PER_KB = 1024
+BYTES_PER_MB = BYTES_PER_KB * 1024
+BYTES_PER_GB = BYTES_PER_MB * 1024
+HOURS_PER_DAY = 24
 # The port app.run() binds. The container publishes it and the compose file
 # maps it, so changing this alone doesn't move a Docker deployment's port.
 DEFAULT_PORT = 5444
@@ -179,6 +189,11 @@ DISPLAY_NAME_ALLOWED_PATTERN = r"^[A-Za-z0-9 _-]+$"
 # account.
 SPOTIFY_OAUTH_STATE_SESSION_KEY = "spotify_oauth_state"
 
+# How long a "remember me" session cookie stays valid (Flask's
+# permanent_session_lifetime). It is also the window a stolen cookie is good
+# for, which is what the session_version below exists to cut short.
+PERMANENT_SESSION_LIFETIME_DAYS = 30
+
 # The session cookie's copy of users.session_version. Sessions here are signed
 # COOKIES with no server-side store, so there is nothing to delete when someone
 # wants their other devices signed out - instead every cookie carries this
@@ -192,11 +207,21 @@ SPOTIFY_OAUTH_STATE_SESSION_KEY = "spotify_oauth_state"
 # exactly that.
 SESSION_VERSION_KEY = "sv"
 SPOTIFY_OAUTH_STATE_NUM_BYTES = 32   #< entropy fed to secrets.token_urlsafe
+# Ceiling on the /spotify-callback code-for-token exchange. It runs on the
+# request thread while the user waits on a redirect, so requests' default (no
+# timeout at all) would pin a Waitress thread on an unresponsive Spotify -
+# the same reason VERSION_CHECK_TIMEOUT_SECONDS exists.
+SPOTIFY_AUTH_TIMEOUT_SECONDS = 10
 RATE_LIMIT_MAX_ATTEMPTS = 10     #< max POSTs allowed per window, per source IP, per route
 RATE_LIMIT_WINDOW_SECONDS = 300  #< 5 minutes
 RATE_LIMIT_ERROR_MESSAGE = "Too many attempts. Please wait a few minutes and try again."
 EXPORT_FORMATS = ("json", "csv")
 PLAYLIST_EXPORT_FORMATS = ("csv", "m3u", "xspf")
+# How deep "export this Wrapped year as a playlist" reaches. Independent of
+# WRAPPED_LIST_SIZE/WRAPPED_LIMIT_OPTIONS, which size what the PAGE shows: a
+# playlist is a file the user keeps, so it takes the whole top-100 rather
+# than however many rows happened to be on screen.
+WRAPPED_TOP_SONGS_EXPORT_LIMIT = 100
 
 # Dashboard Trend Insights thresholds
 TREND_OBSESSION_DAYS = 7

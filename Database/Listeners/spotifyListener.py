@@ -188,6 +188,17 @@ RATE_LIMIT_REASON_LISTENER_POLL = "listener poll"  #< label for the shared limit
 #  recently-played read (see _fetch_recently_played_from_web_api). Labelled
 #  apart from the poll so /admin's card says WHICH endpoint was refused.
 RATE_LIMIT_REASON_WEB_API_BACKFILL = "web API backfill"
+#< and the third: /v1/me, read to confirm a refreshed token belongs to the
+#  account it was stored under (see _get_current_user_from_web_api). Same
+#  host and same budget as the backfill read above, labelled apart for the
+#  same reason.
+RATE_LIMIT_REASON_WEB_API_USER = "web API user info"
+
+# Ceiling on every Web API request made from this module. requests' own
+# default is NO timeout, and all three of these run on a worker thread (the
+# poll loop, the backfill check), so one unresponsive Spotify would park that
+# thread for the life of the process rather than for one cycle.
+SPOTIFY_WEB_API_TIMEOUT_SECONDS = 10
 
 # Ceiling on a Retry-After from the recently-played endpoint. Far above
 # anything Spotify actually sends (seconds to a couple of minutes), because its
@@ -486,9 +497,30 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
         "Content-Type": "application/x-www-form-urlencoded"
     }
     try:
-        resp = requests.post(url, data=payload, headers=headers, timeout=10)
+        resp = requests.post(url, data=payload, headers=headers,
+                             timeout=SPOTIFY_WEB_API_TIMEOUT_SECONDS)
         if resp.status_code == 200:
             return resp.json().get("access_token")
+        elif resp.status_code == 429:
+            # Split out of the error line below, NOT because there is anything to
+            # act on but because a rate limit and a broken grant are different
+            # news: both used to read as "failed to refresh", which sends an
+            # operator looking at the client secret for something that clears
+            # itself.
+            #
+            # Deliberately does NOT stand SPOTIFY_LIMITER down, unlike the two
+            # api.spotify.com readers. This is accounts.spotify.com - a separate
+            # service with its own budget - so a stand-down would pause catalog
+            # lookups for a limit that was never theirs, while doing nothing at
+            # all to the offending call, which never consults the limiter.
+            # Pacing this host would need a budget of its own; there is no
+            # evidence yet that it needs one.
+            standDown = retryAfterSeconds(resp,
+                                          default=SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+                                          maximum=WEB_API_MAX_BACKOFF_SECONDS)
+            logger.warning(
+                "Spotify rate-limited the access-token refresh for user %s - it asked for %.0fs",
+                logUser, standDown)
         else:
             logger.error("Failed to refresh Spotify access token for user %s: %s %s", logUser, resp.status_code, resp.text)
     except Exception as e:
@@ -509,7 +541,7 @@ def _fetch_recently_played_from_web_api(access_token: str, logUser: str | None =
         "Authorization": f"Bearer {access_token}"
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=SPOTIFY_WEB_API_TIMEOUT_SECONDS)
         if resp.status_code == 200:
             return resp.json().get("items", [])
         if resp.status_code == 403 and "insufficient" in resp.text.lower():
@@ -550,9 +582,24 @@ def _get_current_user_from_web_api(access_token: str, logUser: str | None = None
         "Authorization": f"Bearer {access_token}"
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=SPOTIFY_WEB_API_TIMEOUT_SECONDS)
         if resp.status_code == 200:
             return resp.json()
+        elif resp.status_code == 429:
+            # Same host, same budget and same bare-requests problem as
+            # _fetch_recently_played_from_web_api, so the same answer: stand the
+            # SHARED limiter down, because the limit is per-caller and every
+            # other api.spotify.com call in this process is inside the window
+            # Spotify just announced. This one is called on every token refresh
+            # in the backfill path, so left unpaced it walked back into that
+            # window as often as the poll did.
+            standDown = retryAfterSeconds(resp,
+                                          default=SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
+                                          maximum=WEB_API_MAX_BACKOFF_SECONDS)
+            SPOTIFY_LIMITER.applyBackoff(standDown, reason=RATE_LIMIT_REASON_WEB_API_USER)
+            logger.warning(
+                "Spotify Web API rate-limited the user-info read for user %s - "
+                "standing down for %.0fs", logUser, standDown)
         else:
             logger.error("Failed to fetch current user from Web API for user %s: %s %s", logUser, resp.status_code, resp.text)
     except Exception as e:

@@ -188,6 +188,62 @@ const LISTENER_STATUS_POLL_MS = 10 * 1000;
   });
 })();
 
+// Nav dropdown state, for screen readers. The menus are opened by CSS alone -
+// .nav-item-dropdown:hover and :focus-within in style.css - so nothing here
+// controls them, and aria-expanded is DERIVED from what the stylesheet resolved
+// to rather than tracked from the events. That is the only way it stays true
+// under all three of the rules that can open one: hover, focus-within, and the
+// <=1024px block that flattens the whole menu open with display: block
+// !important.
+//
+// A static aria-expanded="false" in the template would be worse than having no
+// attribute at all - it announces "collapsed" for the life of the page,
+// including while the menu is open, and on mobile where it never closes.
+//
+// Escape adds a class the stylesheet uses to override :focus-within, so the
+// menu closes with focus left where it was; blurring the trigger instead would
+// drop the user at the top of the tab order. The dismissal is one-shot, cleared
+// as soon as focus or the pointer moves, so the next Tab or hover opens it
+// again.
+const DROPDOWN_DISMISSED_CLASS = 'dropdown-dismissed';
+
+(function () {
+  const containers = document.querySelectorAll('.nav-item-dropdown');
+  if (!containers || !containers.length) return;
+
+  containers.forEach((container) => {
+    const trigger = container.querySelector('.dropdown-trigger');
+    const content = container.querySelector('.dropdown-content');
+    if (!trigger || !content) return;   //< skip it rather than throw past the rest
+
+    const sync = () => {
+      const open = window.getComputedStyle(content).display !== 'none';
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+
+    // One handler for arriving and leaving alike: both end any dismissal, and
+    // both have to re-read the state. focusin is what re-syncs when focus moves
+    // BETWEEN the trigger and a link inside it - focusout fires first and would
+    // otherwise leave the menu announced as closed while it is still open.
+    const visit = () => {
+      container.classList.remove(DROPDOWN_DISMISSED_CLASS);
+      sync();
+    };
+    container.addEventListener('mouseenter', visit);
+    container.addEventListener('mouseleave', visit);
+    container.addEventListener('focusin', visit);
+    container.addEventListener('focusout', visit);
+
+    container.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      container.classList.add(DROPDOWN_DISMISSED_CLASS);
+      sync();
+    });
+
+    sync();
+  });
+})();
+
 // The track-cover fade-in and the scroll-to-top progress ring live in
 // chrome-common.js: they're byte-identical on the public (share-link)
 // layout, and the two copies are exactly the fix-lands-in-one hazard.

@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import logging
-import math
 import os
-import json
 import random
 import tempfile
 import threading
@@ -178,7 +176,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             self.app.wsgi_app = ProxyFix(self.app.wsgi_app, x_for=proxyHops, x_proto=proxyHops, x_host=proxyHops)
         self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
-        self.app.permanent_session_lifetime = timedelta(days=30)
+        self.app.permanent_session_lifetime = timedelta(days=PERMANENT_SESSION_LIFETIME_DAYS)
         # Session cookie hardening. HttpOnly (Flask's default) keeps JS off the
         # cookie; SameSite=Lax stops it riding cross-site POSTs. Secure is gated
         # on the same TLS signal as HSTS - left off on the plain-HTTP default
@@ -191,7 +189,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # every file in a multi-file upload) - without this, an oversized/
         # accidental upload is read fully into memory before anything can reject
         # it.
-        self.app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+        self.app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * BYTES_PER_MB
         self.app.config["WTF_CSRF_TIME_LIMIT"] = None
         if os.environ.get("PYTEST_CURRENT_TEST") or self.app.config.get("TESTING"):
             self.app.config["WTF_CSRF_ENABLED"] = False

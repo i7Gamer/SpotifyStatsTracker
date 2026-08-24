@@ -23,6 +23,7 @@ from config import (
     PASSWORD_MIN_LENGTH, RATE_LIMIT_ERROR_MESSAGE, SPOTIFY_OAUTH_STATE_NUM_BYTES,
     SPOTIFY_OAUTH_STATE_SESSION_KEY, DISPLAY_NAME_MIN_LENGTH,
     DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN, TOP_LIST_DEFAULT_WINDOW,
+    SPOTIFY_AUTH_TIMEOUT_SECONDS,
 )
 from Database.Spotify.cookies import parseCookieString
 from Database.lastfm import LastfmClient
@@ -884,7 +885,8 @@ def register(app, dashboard):
         }
 
         try:
-            resp = requests.post(url, data=payload, headers=headers, timeout=10)
+            resp = requests.post(url, data=payload, headers=headers,
+                                 timeout=SPOTIFY_AUTH_TIMEOUT_SECONDS)
             if resp.status_code == 200:
                 resp_data = resp.json()
                 # Spotify's code exchange includes refresh_token today, but a

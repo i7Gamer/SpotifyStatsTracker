@@ -100,14 +100,31 @@ class ImportMixin:
     def appendMetadata(self, meta: dict, created_reason: str | None = None) -> bool:
         self.saveImagesFromTrack(meta)
         entry, track = self._splitEntryAndTrack(meta)
-        self.repo.upsertTrack(track, created_reason=created_reason)
-        # Classify against the current threshold + the track's duration (percent
-        # mode needs it); a sub-threshold event now lands as is_skip=1 in plays
-        # rather than in a separate table.
-        is_skip = self.repo.computeIsSkip(entry["timePlayed"], track.get("duration"))
-        was_inserted = self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
-                              created_reason=created_reason, is_skip=is_skip)
-        self.repo.commit()
+        # These two are ONE transaction that this method owns: neither commits
+        # (see their docstrings), so a failure between them - or partway through
+        # upsertTrack's five write statements, which include a DELETE of
+        # track_artists followed by re-INSERTing them - leaves real rows staged
+        # on this thread's long-lived connection. Staged, they hold the WAL
+        # write lock, and then whatever commits next persists them. The listener
+        # is what makes that reachable rather than theoretical: it catches per
+        # item and moves to the next one (see _addToDatabaseFromListener), so
+        # item N's half-written catalog rows were committed by item N+1.
+        #
+        # updatePlaylists stays OUTSIDE this: it commits its own write (via
+        # upsertPlaylistName's `with conn:`) and runs only once the play is
+        # durably committed, so it has no part in this transaction.
+        try:
+            self.repo.upsertTrack(track, created_reason=created_reason)
+            # Classify against the current threshold + the track's duration (percent
+            # mode needs it); a sub-threshold event now lands as is_skip=1 in plays
+            # rather than in a separate table.
+            is_skip = self.repo.computeIsSkip(entry["timePlayed"], track.get("duration"))
+            was_inserted = self.repo.insertPlay(self.user, entry["id"], entry["playedAt"], entry["timePlayed"], entry.get("playedFrom"),
+                                  created_reason=created_reason, is_skip=is_skip)
+            self.repo.commit()
+        except Exception:
+            self.repo.rollback()
+            raise
         self.updatePlaylists(entry.get("playedFrom"))
         return was_inserted
 

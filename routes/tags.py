@@ -7,7 +7,7 @@ import logging
 import re
 from flask import render_template, redirect, request, url_for, jsonify, Response, stream_with_context, abort
 
-from config import PLAYLIST_EXPORT_FORMATS
+from config import PLAYLIST_EXPORT_FORMATS, WRAPPED_TOP_SONGS_EXPORT_LIMIT
 from routes._auth import makeRequiresUser
 from services.export import resolvePlaylistFormat
 
@@ -207,7 +207,7 @@ def register(app, dashboard):
             if year not in dashboard._computeAvailableYears(db):
                 abort(400)
 
-            ctx = dashboard._buildWrappedContext(db, year, groupBy="week", limit=100, sortBy="plays",
+            ctx = dashboard._buildWrappedContext(db, year, groupBy="week", limit=WRAPPED_TOP_SONGS_EXPORT_LIMIT, sortBy="plays",
                                                   includeGenres=False)
             tracks = ctx["topSongs"]
             filename = f"wrapped_top100_{year}.{fmt}"

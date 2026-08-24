@@ -19,7 +19,7 @@ from config import (
     MOVEMENT_MAX_PAGE, ON_THIS_DAY_YEARS_LIMIT,
     LISTEN_TIME_HIDE_SECONDS_ABOVE_HOURS, RECOMMENDATION_ARTIST_LIMIT,
     RECOMMENDATION_GENRE_POOL, RECOMMENDATION_EXCLUDE_TOP_N,
-    TOP_LIST_DEFAULT_WINDOW,
+    TOP_LIST_DEFAULT_WINDOW, HOURS_PER_DAY, BYTES_PER_KB, BYTES_PER_MB, BYTES_PER_GB,
 )
 from routes._htmx import isHtmxSwap
 from routes._auth import makeRequiresUser
@@ -404,21 +404,21 @@ def register(app, dashboard):
         global_stats = dashboard.repo.getGlobalDatabaseStats()
 
         total_time_ms = global_stats.get("total_time_ms", 0)
-        total_hours = total_time_ms // (1000 * 60 * 60)
-        if total_hours >= 24:
-            days = total_hours // 24
-            hours = total_hours % 24
+        total_hours = total_time_ms // MS_PER_HOUR
+        if total_hours >= HOURS_PER_DAY:
+            days = total_hours // HOURS_PER_DAY
+            hours = total_hours % HOURS_PER_DAY
             global_time_text = f"{days}d {hours}h"
         else:
             global_time_text = f"{total_hours}h"
 
         db_size_bytes = global_stats.get("db_size_bytes", 0)
-        if db_size_bytes >= 1024 * 1024 * 1024:
-            global_size_text = f"{db_size_bytes / (1024 * 1024 * 1024):.2f} GB"
-        elif db_size_bytes >= 1024 * 1024:
-            global_size_text = f"{db_size_bytes / (1024 * 1024):.2f} MB"
+        if db_size_bytes >= BYTES_PER_GB:
+            global_size_text = f"{db_size_bytes / BYTES_PER_GB:.2f} GB"
+        elif db_size_bytes >= BYTES_PER_MB:
+            global_size_text = f"{db_size_bytes / BYTES_PER_MB:.2f} MB"
         else:
-            global_size_text = f"{db_size_bytes / 1024:.1f} KB"
+            global_size_text = f"{db_size_bytes / BYTES_PER_KB:.1f} KB"
 
         email = session.get("email")
         is_logged_in = email is not None and dashboard.is_user_logged_in(email)

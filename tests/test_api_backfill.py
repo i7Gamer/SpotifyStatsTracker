@@ -17,6 +17,7 @@ from Database.Listeners.spotifyListener import (
     _fetch_recently_played_from_web_api,
     _get_current_user_from_web_api,
     _SCOPE_ERROR,
+    SPOTIFY_WEB_API_TIMEOUT_SECONDS,
 )
 from Database.rate_limit import SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS
 from Database.utils import timeToInt
@@ -1267,3 +1268,126 @@ class TestBackfillSourceTagIsOneConstant(unittest.TestCase):
                     offenders.append(f"{path.name}:{number}")
 
         self.assertEqual(offenders, [], "spell it via Database.db.WEB_API_BACKFILL_SOURCE instead")
+
+
+class WebApiRateLimitTestCase(unittest.TestCase):
+    """The two sibling Web API helpers that had no 429 branch at all.
+
+    _fetch_recently_played_from_web_api already stands the shared limiter down
+    (see the tests above). Its two neighbours are made with the same bare
+    requests calls and were equally unpaced, but they are NOT the same case,
+    and the difference is the host: /v1/me is api.spotify.com, the very traffic
+    SPOTIFY_LIMITER paces, while the token refresh is accounts.spotify.com,
+    a separate service with a separate budget.
+    """
+
+    def _response(self, status, headers=None, text=""):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.headers = headers or {}
+        resp.text = text
+        return resp
+
+    # ---- /v1/me: same host as everything else the limiter paces ------------
+    @patch("requests.get")
+    def test_a_429_on_the_user_lookup_applies_the_backoff_spotify_asked_for(self, mock_get):
+        mock_get.return_value = self._response(429, {"Retry-After": "23"}, "rate limited")
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            result = _get_current_user_from_web_api("token123")
+
+        self.assertIsNone(result)
+        applyBackoff.assert_called_once()
+        self.assertEqual(applyBackoff.call_args.args[0], 23.0)
+
+    @patch("requests.get")
+    def test_a_429_on_the_user_lookup_without_a_retry_after_still_stands_down(self, mock_get):
+        mock_get.return_value = self._response(429, {}, "rate limited")
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            _get_current_user_from_web_api("token123")
+
+        self.assertEqual(applyBackoff.call_args.args[0], SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS)
+
+    @patch("requests.get")
+    def test_the_user_lookup_backoff_is_labelled_for_the_admin_card(self, mock_get):
+        mock_get.return_value = self._response(429, {"Retry-After": "5"}, "rate limited")
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            _get_current_user_from_web_api("token123")
+
+        self.assertTrue(applyBackoff.call_args.kwargs.get("reason"))
+
+    @patch("requests.get")
+    def test_an_ordinary_user_lookup_failure_does_not_stand_the_process_down(self, mock_get):
+        mock_get.return_value = self._response(500, {}, "Internal Server Error")
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            self.assertIsNone(_get_current_user_from_web_api("token123"))
+
+        applyBackoff.assert_not_called()
+
+    # ---- accounts.spotify.com: a different budget, so no shared stand-down --
+    @patch("requests.post")
+    def test_a_429_on_the_token_refresh_does_not_brake_the_shared_limiter(self, mock_post):
+        """Standing SPOTIFY_LIMITER down here would pause api.spotify.com
+        catalog lookups for a limit that was never theirs - and would not slow
+        the offending call one bit, since the refresh never consults the
+        limiter. It brakes the wrong traffic, so it must not happen."""
+        mock_post.return_value = self._response(429, {"Retry-After": "31"}, "rate limited")
+
+        with patch.object(SPOTIFY_LIMITER, "applyBackoff") as applyBackoff:
+            result = _refresh_spotify_access_token("rt", "cid", "secret")
+
+        self.assertIsNone(result)
+        applyBackoff.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener.logger")
+    @patch("requests.post")
+    def test_a_429_on_the_token_refresh_is_reported_as_rate_limiting(self, mock_post, mock_logger):
+        """It used to land in the generic "failed to refresh" error line, next
+        to genuinely broken credentials. A rate limit is transient and expected;
+        reading it as a bad client secret sends an operator the wrong way."""
+        mock_post.return_value = self._response(429, {"Retry-After": "31"}, "rate limited")
+
+        _refresh_spotify_access_token("rt", "cid", "secret")
+
+        self.assertTrue(mock_logger.warning.called)
+        mock_logger.error.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener.logger")
+    @patch("requests.post")
+    def test_a_genuine_token_refresh_failure_is_still_an_error(self, mock_post, mock_logger):
+        """The other half of the split above: a 400 really is a broken grant."""
+        mock_post.return_value = self._response(400, {}, "invalid_grant")
+
+        self.assertIsNone(_refresh_spotify_access_token("rt", "cid", "secret"))
+
+        self.assertTrue(mock_logger.error.called)
+
+
+class WebApiTimeoutTestCase(unittest.TestCase):
+    """Every Web API call here is on a worker thread, and requests' default is
+    no timeout at all - one unresponsive Spotify would pin the thread for good.
+    All three helpers share one named ceiling rather than three bare 10s."""
+
+    @patch("requests.post")
+    def test_the_token_refresh_passes_the_named_timeout(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200,
+                                           json=MagicMock(return_value={"access_token": "at"}))
+        _refresh_spotify_access_token("rt", "cid", "secret")
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], SPOTIFY_WEB_API_TIMEOUT_SECONDS)
+
+    @patch("requests.get")
+    def test_the_recently_played_read_passes_the_named_timeout(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200,
+                                          json=MagicMock(return_value={"items": []}))
+        _fetch_recently_played_from_web_api("token123")
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], SPOTIFY_WEB_API_TIMEOUT_SECONDS)
+
+    @patch("requests.get")
+    def test_the_user_lookup_passes_the_named_timeout(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200,
+                                          json=MagicMock(return_value={"id": "u"}))
+        _get_current_user_from_web_api("token123")
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], SPOTIFY_WEB_API_TIMEOUT_SECONDS)

@@ -50,8 +50,16 @@ function makeElement() {
       toggle(name) { if (classes.has(name)) { classes.delete(name); } else { classes.add(name); } },
       contains(name) { return classes.has(name); },
     },
+    //< what getComputedStyle answers below - the display the STYLESHEET
+    //  resolved to, which is the only thing the dropdown sync may read (see
+    //  layout-chrome.js: :hover, :focus-within and the mobile !important all
+    //  land here and none of them are visible as an inline style)
+    computedDisplay: 'none',
+    children: {},
     setAttribute(name, value) { this.attributes[name] = value; },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null; },
     addEventListener(type, fn) { (this.handlers = this.handlers || {})[type] = fn; },
+    querySelector(selector) { return this.children[selector] || null; },
     querySelectorAll() { return this.links; },
     contains(node) { return node === this || this.links.indexOf(node) !== -1; },
     focus() { this.focused += 1; },
@@ -74,6 +82,7 @@ function loadChrome(options) {
     clearTimeout(id) { calls.clearedTimeouts.push(id); },
     setTimeout(fn, ms) { calls.timeouts.push({ fn, ms }); return calls.timeouts.length; },
     addEventListener(type, fn) { calls.windowListeners[type] = fn; },
+    getComputedStyle(element) { return { display: element.computedDisplay }; },
   };
   global.document = {
     hidden: !!options.hidden,
@@ -81,6 +90,7 @@ function loadChrome(options) {
     documentElement: { style: { setProperty(name, value) { calls.cssVars[name] = value; } } },
     getElementById(id) { return elements[id] || null; },
     querySelector(selector) { return selectors[selector] || null; },
+    querySelectorAll(selector) { return (options.selectorsAll || {})[selector] || []; },
     addEventListener(type, fn) { calls.listeners[type] = fn; },
   };
   calls.body = body;
@@ -455,6 +465,116 @@ run('a page without a topbar still opens its menu', () => {
   navToggle.handlers.click();
 
   assert.strictEqual(navMenu.classList.contains('active'), true);
+});
+
+// ------------------------------------------------------- nav dropdown a11y
+
+// The dropdowns are opened by CSS alone - :hover and :focus-within - so
+// aria-expanded has to be DERIVED from what the stylesheet resolved to. A
+// static aria-expanded="false" in the template is worse than none at all: it
+// announces "collapsed" for the whole life of the page, including while the
+// menu is open.
+function makeDropdown(display) {
+  const container = makeElement();
+  const trigger = makeElement();
+  const content = makeElement();
+  content.computedDisplay = display || 'none';
+  container.children['.dropdown-trigger'] = trigger;
+  container.children['.dropdown-content'] = content;
+  return { container, trigger, content };
+}
+
+function loadWithDropdowns(dropdowns) {
+  return loadChrome({
+    selectorsAll: { '.nav-item-dropdown': dropdowns.map((d) => d.container) },
+  });
+}
+
+run('a closed dropdown is announced as collapsed at load', () => {
+  const d = makeDropdown('none');
+  loadWithDropdowns([d]);
+
+  assert.strictEqual(d.trigger.getAttribute('aria-expanded'), 'false');
+});
+
+run('a dropdown the stylesheet has opened is announced as expanded', () => {
+  const d = makeDropdown('none');
+  loadWithDropdowns([d]);
+
+  //< what :focus-within does when Tab reaches the trigger
+  d.content.computedDisplay = 'block';
+  d.container.handlers.focusin();
+
+  assert.strictEqual(d.trigger.getAttribute('aria-expanded'), 'true');
+});
+
+run('the flattened mobile menu is never announced as collapsed', () => {
+  //< at <=1024px the stylesheet flattens the menu with display: block
+  //  !important and the trigger becomes an inert section label. Deriving the
+  //  state is what keeps that honest; assuming "closed until focused" would
+  //  announce every one of those permanently-open sections as collapsed.
+  const d = makeDropdown('block');
+  loadWithDropdowns([d]);
+
+  assert.strictEqual(d.trigger.getAttribute('aria-expanded'), 'true');
+});
+
+run('Escape dismisses an open dropdown without moving focus', () => {
+  const d = makeDropdown('block');
+  loadWithDropdowns([d]);
+
+  //< the CSS class is what closes it, so the stub follows the stylesheet
+  d.container.handlers.keydown({ key: 'Escape' });
+  d.content.computedDisplay = d.container.classList.contains('dropdown-dismissed') ? 'none' : 'block';
+  d.container.handlers.keydown({ key: 'Escape' });
+
+  assert.strictEqual(d.container.classList.contains('dropdown-dismissed'), true);
+  assert.strictEqual(d.trigger.getAttribute('aria-expanded'), 'false');
+  assert.strictEqual(d.trigger.focused, 0, 'blurring would drop the user at the top of the tab order');
+});
+
+run('a key that is not Escape leaves the dropdown open', () => {
+  const d = makeDropdown('block');
+  loadWithDropdowns([d]);
+
+  d.container.handlers.keydown({ key: 'ArrowDown' });
+
+  assert.strictEqual(d.container.classList.contains('dropdown-dismissed'), false);
+  assert.strictEqual(d.trigger.getAttribute('aria-expanded'), 'true');
+});
+
+run('leaving and returning clears a dismissal, so the menu opens again', () => {
+  const d = makeDropdown('block');
+  loadWithDropdowns([d]);
+  d.container.handlers.keydown({ key: 'Escape' });
+
+  d.container.handlers.mouseenter();
+
+  assert.strictEqual(d.container.classList.contains('dropdown-dismissed'), false,
+                     'a one-shot dismissal must not outlive the visit that made it');
+  assert.strictEqual(d.trigger.getAttribute('aria-expanded'), 'true');
+});
+
+run('every dropdown on the page gets its own state', () => {
+  const open = makeDropdown('block');
+  const closed = makeDropdown('none');
+  loadWithDropdowns([open, closed]);
+
+  assert.strictEqual(open.trigger.getAttribute('aria-expanded'), 'true');
+  assert.strictEqual(closed.trigger.getAttribute('aria-expanded'), 'false');
+});
+
+run('a malformed dropdown is skipped rather than throwing past the rest', () => {
+  const broken = { container: makeElement() };   //< no trigger, no content
+  const good = makeDropdown('block');
+  loadWithDropdowns([broken, good]);
+
+  assert.strictEqual(good.trigger.getAttribute('aria-expanded'), 'true');
+});
+
+run('a page with no dropdowns at all is a no-op', () => {
+  //< the public share layout has no nav dropdowns
+  assert.doesNotThrow(() => loadChrome({}));
 });
 
 (async () => {

@@ -4051,6 +4051,17 @@ html.theme-red {
   display: block;
 }
 
+/* Escape closes a menu the two rules above are holding open, without moving
+   focus out of it (layout-chrome.js adds the class and clears it again the
+   moment focus or the pointer moves). Same specificity as those two - three
+   classes either way - so it only wins by coming AFTER them; do not hoist it.
+   The mobile block below stays authoritative through its own !important, which
+   is correct: there the menu is flattened permanently open and there is
+   nothing to dismiss. */
+.nav-item-dropdown.dropdown-dismissed .dropdown-content {
+  display: none;
+}
+
 /* Mobile Media Query Adaptations for Dropdown */
 @media (max-width: 1024px) {
   .nav-item-dropdown {
