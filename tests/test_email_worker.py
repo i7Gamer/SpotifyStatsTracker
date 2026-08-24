@@ -4,10 +4,12 @@
 import threading
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from Database.repository import Repository
-from services.email_worker import EmailWorker, queue_email_notification
+from services.email_worker import (
+    EmailWorker, queue_email_notification, EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS,
+)
 from Database.queries.email_queries import EVENT_INVALID_COOKIES, EVENT_SHARE_REQUEST
 
 # A failure deadline for the cross-thread waits below, not a pace: each wait
@@ -32,9 +34,12 @@ def test_the_idle_loop_notices_the_stop_flag_instead_of_sleeping_through_it():
                _LONG_IDLE_INTERVAL_SECONDS):
         worker.start()
         assert idling.wait(_DEADLINE_SECONDS), "the worker thread never polled"
+        #< captured BEFORE stop(), which releases the worker's own reference
+        #  (see test_a_thread_that_outlived_the_join_does_not_block_a_restart)
+        thread = worker._thread
         worker.stop()
 
-    assert not worker._thread.is_alive()
+    assert not thread.is_alive()
 
 
 def test_each_run_gets_its_own_stop_event():
@@ -196,3 +201,115 @@ def test_email_worker_get_summary_non_string_host_repro(mock_get_config):
     assert summary["smtp_configured"] is True
 
 
+
+
+def _stillRunningThread():
+    """A stand-in for the case stop() cannot rule out: its join is BOUNDED
+    (EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS), so a worker part-way through an
+    SMTP send is still alive when stop() returns.
+
+    Stood in for rather than built out of a real slow send, so these tests have
+    no clock in them - the race is the point, not the timing."""
+    thread = MagicMock()
+    thread.is_alive.return_value = True
+    return thread
+
+
+def test_a_thread_that_outlived_the_join_does_not_block_a_restart():
+    """start() declines when a thread is already alive - and that thread was
+    already on its way out, watching a stop event that is SET. So stop() then
+    start() could leave the worker with nothing running while start() believed
+    otherwise, and every later enqueue() would queue behind no consumer.
+
+    stop() releasing its reference is what closes that: a thread it no longer
+    owns cannot answer for whether a new one is needed."""
+    worker = EmailWorker()
+    worker._thread = _stillRunningThread()
+    idling = threading.Event()
+    worker.process_one = lambda: (idling.set(), False)[1]
+
+    worker.stop()
+    worker.start()
+
+    assert idling.wait(_DEADLINE_SECONDS), "start() declined to replace a thread that was exiting"
+    thread = worker._thread
+    worker.stop()
+    assert not thread.is_alive()
+
+
+def test_stop_still_joins_the_thread_it_releases():
+    """The trap in the fix above: clearing the reference before joining, with
+    no local kept, would make stop() return without waiting at all. Shutdown
+    would stop covering the in-flight SMTP send that
+    tests/test_compose_shutdown_budget.py sizes stop_grace_period against."""
+    worker = EmailWorker()
+    thread = _stillRunningThread()
+    worker._thread = thread
+
+    worker.stop()
+
+    thread.join.assert_called_once_with(timeout=EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
+    assert worker._thread is None
+
+
+def test_stop_sets_the_flag_before_joining():
+    """Ordering, not just presence: joining a thread that has not been told to
+    stop waits out the whole timeout for nothing."""
+    worker = EmailWorker()
+    thread = _stillRunningThread()
+    flagAtJoin = []
+    thread.join.side_effect = lambda timeout=None: flagAtJoin.append(worker._stop_event.is_set())
+    worker._thread = thread
+
+    worker.stop()
+
+    assert flagAtJoin == [True]
+
+
+def test_a_clean_stop_and_restart_gives_a_running_worker():
+    """The ordinary path, end to end with real threads - no stand-in."""
+    worker = EmailWorker()
+    firstIdle = threading.Event()
+    worker.process_one = lambda: (firstIdle.set(), False)[1]
+    worker.start()
+    assert firstIdle.wait(_DEADLINE_SECONDS)
+    first = worker._thread
+    worker.stop()
+
+    secondIdle = threading.Event()
+    worker.process_one = lambda: (secondIdle.set(), False)[1]
+    worker.start()
+
+    assert worker._thread is not first
+    assert secondIdle.wait(_DEADLINE_SECONDS), "the restarted worker never polled"
+    second = worker._thread
+    worker.stop()
+    assert not second.is_alive()
+
+
+def test_a_stopped_worker_does_not_report_itself_as_running():
+    """The deliberate consequence of releasing the reference: a thread still
+    draining its last send is no longer what /admin reports on. It has been
+    told to stop, so "RUNNING" would be the wrong answer - and the queue_size
+    beside it is what shows anything left behind."""
+    worker = EmailWorker()
+    worker._thread = _stillRunningThread()
+
+    worker.stop()
+
+    with patch("services.email_worker.get_smtp_config",
+               return_value={"enabled": True, "host": "smtp.example.com"}):
+        assert worker.get_summary()["status"] == "INACTIVE"
+
+
+def test_a_double_stop_is_harmless():
+    """stop() reaches this from two places that do not coordinate - wsgi.py's
+    finally and the admin restart's threading.Timer - so it has to tolerate
+    arriving twice."""
+    worker = EmailWorker()
+    worker._thread = _stillRunningThread()
+
+    worker.stop()
+    worker.stop()
+
+    assert worker._thread is None

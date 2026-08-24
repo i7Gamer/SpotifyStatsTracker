@@ -98,8 +98,10 @@ class EmailWorker:
         # self - the invariant PeriodicWorkerMixin documents. stop() joins with
         # a timeout, so a worker inside a slow SMTP send can outlive it;
         # reusing and clearing one event would hand that thread a cleared flag
-        # and revive it. Today start()'s is_alive check happens to prevent
-        # that, which is a subtle thing to depend on.
+        # and revive it. This is now the ONLY thing keeping an outliving thread
+        # on its way out: stop() releases its reference, so the is_alive check
+        # above no longer stands between the two (and used to be what made
+        # stop()+start() leave nothing running at all - see stop()).
         stopEvent = threading.Event()
         self._stop_event = stopEvent
         self._thread = threading.Thread(target=self._run, args=(stopEvent,),
@@ -150,8 +152,23 @@ class EmailWorker:
         (The cooldown never stands in the way of a retry either: it is stamped
         on a SUCCESSFUL send only, see email_service.)"""
         self._stop_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
+        # Released here, and joined through the local. start() declines while a
+        # thread is alive, and the join below is BOUNDED - so a worker part-way
+        # through an SMTP send outlives stop() while already exiting on the
+        # event just set. Holding the reference let that thread block its own
+        # replacement: stop() then start() returned with nothing running and
+        # start() believing otherwise, and every later enqueue() queued behind
+        # no consumer. A thread this worker no longer owns cannot answer for
+        # whether a new one is needed.
+        #
+        # The join itself stays, on the local, because it is what covers that
+        # in-flight send - the budget tests/test_compose_shutdown_budget.py
+        # sizes the compose stop_grace_period against. Clearing the reference
+        # WITHOUT it would make shutdown return instantly and that budget a
+        # statement about nothing.
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS)
         counts = self._pendingByEvent()
         if counts:
             breakdown = ", ".join(f"{eventType}={count}" for eventType, count in sorted(counts.items()))
