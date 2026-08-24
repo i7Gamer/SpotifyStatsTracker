@@ -12,6 +12,7 @@ exactly once, when an entry point asks for them.
 """
 import os
 import sys
+import threading
 import unittest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -357,3 +358,48 @@ class TestEverySharedPoolIsRegisteredForRetirement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestShutdownJoinBudgetReporting(unittest.TestCase):
+    """Phase 2's join budget is SHARED across users, not per user, so the second
+    and later users can be joined with almost none of it left - that is the
+    whole point of the shared deadline. The warning named the CONSTANT
+    regardless, so a user actually given 0s was reported as "did not stop within
+    30s". Read during a shutdown hang, that says every user got the full budget
+    and none of them used it, which is the opposite of what happened."""
+
+    def test_the_warning_names_the_wait_it_actually_gave(self):
+        with _appWithStubbedWorkers() as (dashboard, _seams):
+            release = threading.Event()
+            slow = MagicMock()
+            slow.user = "slowuser"
+            slow.stop.side_effect = lambda *a, **k: release.wait(5)
+            quick = MagicMock()
+            quick.user = "quickuser"
+
+            # A scripted clock, not a real one: what is under test is the SECOND
+            # join landing after the shared deadline is spent, and reaching that
+            # honestly would put USER_STOP_JOIN_TIMEOUT_SECONDS of real waiting
+            # into the suite. Three reads - the deadline, then one per user.
+            ticks = iter([0.0, 0.0, 30.0])
+
+            def clock():
+                try:
+                    return next(ticks)
+                except StopIteration:
+                    return 30.0
+
+            try:
+                with patch("app.time.monotonic", side_effect=clock),                      patch("app.USER_STOP_JOIN_TIMEOUT_SECONDS", 30),                      self.assertLogs("app", level="WARNING") as logs:
+                    dashboard._stopDatabasesConcurrently([quick, slow])
+            finally:
+                release.set()   #< or the stopper thread outlives the test
+
+        warning = str(logs.output)   #< the list repr carries every record
+        self.assertIn("slowuser", warning)
+        self.assertNotIn("quickuser", warning,
+                         "a user that stopped inside its allowance must not be reported")
+        self.assertIn("0.0s", warning,
+                      "the warning still claims a wait it never gave")
+        self.assertIn("budget", warning,
+                      "the line has to say the shared budget was spent, or 0s reads as a bug")

@@ -2931,5 +2931,45 @@ class TestImportProgressClaim(RepositoryTestCase):
         self.assertFalse(self.repo.tryClaimImportRunning("alice"))
 
 
+class TestRollbackQuietly(RepositoryTestCase):
+    """A rollback in an `except` must never replace the failure that caused it.
+
+    Every caller sits inside an except that goes on to re-raise or report the
+    ORIGINAL exception, and Database.utils.parseError reads only the exception
+    it is handed - it never walks __context__. So a rollback that raised took
+    the real cause's place in the log, in the user-facing import progress line
+    and in listener_last_error, precisely when the database is unhealthy, which
+    is when rollback is most likely to fail in the first place.
+
+    Swallowed but NOT silent: a failed rollback leaves the transaction open,
+    which is the very state the call was trying to get out of."""
+
+    def test_a_successful_rollback_discards_the_staged_write(self):
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.commit()
+        self.repo.upsertTrack(makeTrack(trackId="staged"))
+
+        self.assertTrue(self.repo.rollbackQuietly())
+
+        self.assertIsNone(self.repo.getTrack("staged"))
+        self.assertFalse(self.repo._conn().in_transaction)
+
+    def test_a_failing_rollback_does_not_raise(self):
+        with patch.object(self.repo, "rollback",
+                          side_effect=RuntimeError("cannot operate on a closed database")):
+            self.assertFalse(self.repo.rollbackQuietly())   #< must not raise
+
+    def test_a_failing_rollback_is_reported(self):
+        """The transaction is still open at this point. Dropping that on the
+        floor would leave staged writes for an unrelated later commit to adopt
+        with nothing in the log to explain it."""
+        with patch.object(self.repo, "rollback",
+                          side_effect=RuntimeError("cannot operate on a closed database")):
+            with self.assertLogs("Database.repository", level="ERROR") as logs:
+                self.repo.rollbackQuietly()
+
+        self.assertIn("cannot operate on a closed database", str(logs.output))
+
+
 if __name__ == "__main__":
     unittest.main()

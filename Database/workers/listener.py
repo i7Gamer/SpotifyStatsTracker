@@ -599,7 +599,7 @@ class ListenerMixin:
                     deletedCount, self.user,
                 )
         except Exception as e:
-            self.repo.rollback()
+            self.repo.rollbackQuietly()
             _dbmod.logger.warning(
                 "Web API reconciliation aborted for user %s; staged deletes rolled back: %s",
                 self.user, _dbmod.parseError(e),

@@ -11,6 +11,7 @@ The listener is what makes that reachable rather than theoretical - it catches
 per item and moves to the next one (see _addToDatabaseFromListener), so item
 N's half-written catalog rows were committed by item N+1.
 """
+import sqlite3
 import sys
 import os
 from unittest.mock import patch
@@ -97,3 +98,21 @@ class TestAppendMetadataTransaction(DatabaseTestCase):
         self.assertTrue(self.db.appendMetadata(_meta("t-good", 600)))
         self.assertFalse(self.db.repo.connection().in_transaction)
         self.assertIsNotNone(self.db.repo.getTrack("t-good"))
+
+    def test_a_failing_rollback_does_not_replace_the_error_that_caused_it(self):
+        """The masking case. parseError reads only the exception handed to it,
+        never __context__, so whatever reaches the listener's log line and
+        listener_last_error IS the whole report. A rollback that raised put
+        itself there instead of the insert failure - and a rollback is most
+        likely to fail exactly when the database is in the trouble you need the
+        original error to describe."""
+        insertFailed = patch.object(self.db.repo, "insertPlay",
+                                    side_effect=RuntimeError("database is locked"))
+        rollbackFailed = patch.object(self.db.repo, "rollback",
+                                      side_effect=sqlite3.ProgrammingError("closed database"))
+        with insertFailed, rollbackFailed:
+            with self.assertRaises(RuntimeError) as caught:
+                self.db.appendMetadata(_meta("t-doomed", 500))
+
+        self.assertIn("database is locked", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, sqlite3.ProgrammingError)

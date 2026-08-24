@@ -149,6 +149,26 @@ def migrateIfNeeded() -> None:
     # migrator file that can never satisfy a minor-only comparison.
     needsMigration = BaseMigrator.getMajorMinor(databaseVersion) != BaseMigrator.getMajorMinor(appVersion)
     if needsMigration:
+        # The rollback direction, and the mirror of the floor check below.
+        # The chain only ever steps FORWARD, so an app older than its database
+        # sent the loop hunting for a migrator that steps further away from the
+        # app - one that by definition does not exist yet. What the operator got
+        # was `FileNotFoundError: .../migrate1_51_0.py`, which reads as a broken
+        # build rather than "you rolled back onto a newer database", and under
+        # Docker repeats as a crash loop. Nothing is damaged either way - no
+        # migrator runs - but the message has to name the actual situation.
+        #
+        # Before _snapshotBeforeMigrating: the snapshot is for a migration that
+        # is about to happen, and taking one here would copy the whole database
+        # on every restart of that crash loop.
+        if BaseMigrator.getMajorMinor(databaseVersion) > BaseMigrator.getMajorMinor(appVersion):
+            raise RuntimeError(
+                f"This database is at version {databaseVersion}, newer than this release "
+                f"({appVersion}) - it was written by a later version and migrations only "
+                f"run forwards. Start the newer release again, or restore a backup taken "
+                f"before the upgrade."
+            )
+
         # The floor only matters when there is something to migrate: an ancient
         # install whose app and database AGREE has nothing to run and keeps
         # working (its own release still carries whatever it needs).

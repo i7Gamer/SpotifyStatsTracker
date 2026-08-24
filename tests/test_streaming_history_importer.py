@@ -7,7 +7,9 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Database.Importers.StreamingHistoryImporter import Importer, _knownNameKey
+from Database.Importers.StreamingHistoryImporter import (
+    Importer, _knownNameKey, MusicoletExpansionTooLargeError,
+)
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON, SKIP_THRESHOLD_MS
 from Database.utils import convertToDatetime, getTimezone
 
@@ -1608,3 +1610,93 @@ class TestSyntheticIdWhitespaceNormalization(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class TestMusicoletExpansionCeiling(unittest.TestCase):
+    """A Musicolet row is expanded into PLAY_COUNT synthetic plays, one tuple
+    each, materialised into a list before anything downstream sees it. Only the
+    LOWER bound (`playCount < 1`) was checked, so the field is an amplifier: a
+    ~60-byte row claiming 50 million plays is ~4GB, and this runs in the process
+    every user's listener, the backup worker and the email worker live in.
+
+    The ceiling is on the TOTAL, not per row - a per-row cap leaves the same
+    hole open to a file of many rows each just under it."""
+
+    def _mockedImporter(self):
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        return importer
+
+    def _row(self, playCount, name="Song One"):
+        return f"/music/a.mp3,{name},Artist One,Album One,Artist One,,Pop,2020,200000,{playCount}"
+
+    def test_one_row_claiming_more_plays_than_the_ceiling_is_refused(self):
+        importer = self._mockedImporter()
+        with patch.object(Importer, "MUSICOLET_MAX_EXPANDED_PLAYS", 5):
+            with self.assertRaises(MusicoletExpansionTooLargeError):
+                importer._expandMusicoletRows([self._row(6)], stats={})
+
+    def test_rows_that_only_together_exceed_the_ceiling_are_refused(self):
+        """The case a per-row cap cannot see, and the reason the ceiling counts
+        the running total instead."""
+        importer = self._mockedImporter()
+        with patch.object(Importer, "MUSICOLET_MAX_EXPANDED_PLAYS", 5):
+            rows = [self._row(3, "One"), self._row(3, "Two")]
+            with self.assertRaises(MusicoletExpansionTooLargeError):
+                importer._expandMusicoletRows(rows, stats={})
+
+    def test_a_file_exactly_at_the_ceiling_still_imports(self):
+        """Inclusive: the ceiling exists to bound corruption, not to ration a
+        real library."""
+        importer = self._mockedImporter()
+        with patch.object(Importer, "MUSICOLET_MAX_EXPANDED_PLAYS", 5):
+            expanded = importer._expandMusicoletRows(
+                [self._row(2, "One"), self._row(3, "Two")], stats={})
+
+        self.assertEqual(len(expanded), 5)
+
+    def test_the_refusal_happens_before_the_allocation_it_prevents(self):
+        """The whole point of the guard, and the one property a "does it raise"
+        test cannot show: the ceiling is checked BEFORE `range(playCount)` runs,
+        not after the list is already built.
+
+        A billion-play row is what makes that observable. Checked first, this
+        returns immediately; checked afterwards it would try to materialise a
+        billion tuples. Note the failure mode if that ever regresses is the
+        suite HANGING here rather than reporting a clean failure - which is
+        itself the defect this guards, so it is the honest signal."""
+        importer = self._mockedImporter()
+        with patch.object(Importer, "MUSICOLET_MAX_EXPANDED_PLAYS", 10):
+            with self.assertRaises(MusicoletExpansionTooLargeError):
+                importer._expandMusicoletRows([self._row(10 ** 9)], stats={})
+
+    def test_the_refusal_carries_no_user_data(self):
+        """Import failure text reaches the user's progress line and the app log
+        (see import_service's writeProgress). Track titles, artists and file
+        paths from the CSV must not ride along - the same rule
+        AMBIGUOUS_MATCH_ABORT_MESSAGE follows."""
+        importer = self._mockedImporter()
+        with patch.object(Importer, "MUSICOLET_MAX_EXPANDED_PLAYS", 5):
+            with self.assertRaises(MusicoletExpansionTooLargeError) as caught:
+                importer._expandMusicoletRows(
+                    [self._row(9, "Private Song Title")], stats={})
+
+        message = str(caught.exception)
+        for leaked in ("Private Song Title", "Artist One", "Album One", "/music/a.mp3"):
+            self.assertNotIn(leaked, message)
+
+    def test_the_shipped_ceiling_is_far_above_any_real_library(self):
+        """Sized against this instance's own users (tens of thousands of plays
+        each), with room to spare - a ceiling that a real import could reach
+        would be a bug of its own."""
+        self.assertGreaterEqual(Importer.MUSICOLET_MAX_EXPANDED_PLAYS, 1_000_000)
+        self.assertLessEqual(Importer.MUSICOLET_MAX_EXPANDED_PLAYS, 10_000_000)
+
+    def test_a_normal_library_is_untouched_by_the_ceiling(self):
+        importer = self._mockedImporter()
+        stats = {}
+        expanded = importer._expandMusicoletRows([self._row(3)], stats=stats)
+
+        self.assertEqual(len(expanded), 3)
+        self.assertEqual(stats.get("droppedMalformed", 0), 0)

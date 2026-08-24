@@ -1214,10 +1214,19 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             # Bounded even though stop() is: a wedged user must not hold the
             # process past the grace period it is racing, and the threads are
             # daemons, so one that outlives this dies with the interpreter.
-            thread.join(timeout=max(0, deadline - time.monotonic()))
+            allowance = max(0, deadline - time.monotonic())
+            thread.join(timeout=allowance)
             if thread.is_alive():
-                logger.warning("Database for %s did not stop within %ss - continuing shutdown",
-                               db.user, USER_STOP_JOIN_TIMEOUT_SECONDS)
+                # The ALLOWANCE, not the constant. The budget is shared, so a
+                # user reached after it is spent is joined for ~0s - reporting
+                # the constant said it had been given the full 30 and used all
+                # of it, which during a shutdown hang points the investigation
+                # at the wrong user entirely. The budget rides along so a 0.0s
+                # allowance reads as "this queued behind others" rather than as
+                # a bug in the timeout itself.
+                logger.warning("Database for %s did not stop within its %.1fs of the shared "
+                               "%ss shutdown budget - continuing shutdown",
+                               db.user, allowance, USER_STOP_JOIN_TIMEOUT_SECONDS)
 
     def run(self) -> None:
         try:

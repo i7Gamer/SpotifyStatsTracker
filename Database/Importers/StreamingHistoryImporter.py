@@ -32,6 +32,15 @@ def _knownNameKey(name: str, artist: str) -> str:
     return f"{name}::{artist}"
 
 
+class MusicoletExpansionTooLargeError(Exception):
+    """A Musicolet CSV describes more plays than the importer will expand.
+
+    Its own type, not ValueError: _expandMusicoletRows' per-row handler catches
+    (IndexError, ValueError) and turns them into a dropped row, which is exactly
+    the wrong answer here - this is a statement about the FILE, and it has to
+    reach the caller rather than be counted as one bad line."""
+
+
 class Importer:  #< one export file -> plays + track metadata, via cache, URI lookup, or name search
     # 1000 allows for frequent progress bar updates in the UI and batches API pre-fetches
     # to avoid rate limits/network blocking without long delays.
@@ -728,6 +737,15 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
     # of fake plays every time. An updated file with a higher play count for a
     # track only adds the new tail of plays.
     MUSICOLET_SYNTHETIC_TIME_ANCHOR = datetime.datetime(2000, 1, 1)
+    # Ceiling on how many synthetic plays ONE Musicolet file may expand into.
+    # PLAY_COUNT is an amplifier - one tuple is materialised per play - so a
+    # ~60-byte row claiming 50 million plays costs ~4GB, in the process every
+    # user's listener and the backup/email workers share. Sized far above any
+    # real library: the heaviest accounts on this instance carry tens of
+    # thousands of plays in TOTAL, so a legitimate import cannot reach this.
+    # A total rather than a per-row cap, because a per-row one leaves the same
+    # hole open to a file of many rows each sitting just under it.
+    MUSICOLET_MAX_EXPANDED_PLAYS = 2_000_000
 
     def _expandMusicoletRows(self, rows, stats=None):
         """One CSV row per track, expanded into `PLAY_COUNT` synthetic plays.
@@ -779,6 +797,24 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                     # Counted, but NOT as a drop: the row was perfectly readable.
                     self._bumpStat(stats, "entriesSeen")
                     continue
+
+                # BEFORE the loop, and against the RUNNING total: checked
+                # afterwards it would report the problem having already spent
+                # the memory, which is the whole failure.
+                #
+                # Refused outright rather than clamped. Clamping silently drops
+                # real plays, and every Musicolet row is anchored at the same
+                # MUSICOLET_SYNTHETIC_TIME_ANCHOR - so the surviving rows'
+                # covered range still spans the discarded ones, and an overwrite
+                # import would delete plays nothing re-inserts (the hazard this
+                # function's docstring describes). A file this importer cannot
+                # represent should say so, not import a subset of itself.
+                if len(formatedData) + playCount > self.MUSICOLET_MAX_EXPANDED_PLAYS:
+                    raise MusicoletExpansionTooLargeError(
+                        f"this file expands to more than {self.MUSICOLET_MAX_EXPANDED_PLAYS} "
+                        f"plays, which is more than one import can hold - check the "
+                        f"PLAY_COUNT column for an implausible value"
+                    )
 
                 trackTime = self.MUSICOLET_SYNTHETIC_TIME_ANCHOR
                 for _ in range(playCount):

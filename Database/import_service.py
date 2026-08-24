@@ -123,7 +123,7 @@ class ImportMixin:
                                   created_reason=created_reason, is_skip=is_skip)
             self.repo.commit()
         except Exception:
-            self.repo.rollback()
+            self.repo.rollbackQuietly()
             raise
         self.updatePlaylists(entry.get("playedFrom"))
         return was_inserted
@@ -224,7 +224,7 @@ class ImportMixin:
                 # Staging (parse / Spotify metadata fetch) failed before any DB
                 # write. Report it and restore the batch-shared run state, matching
                 # the apply path's failure handling.
-                self.repo.rollback()
+                self.repo.rollbackQuietly()
                 runState.claimedRowIds = claimedRowIdsBefore
                 runState.insertedPlayKeys = insertedPlayKeysBefore
                 self.writeProgress("failed", 0, 0, f"{progressPrefix}Import failed: {_dbmod.parseError(e)}", error=True)
@@ -591,7 +591,7 @@ class ImportMixin:
             status = "complete" if isFinalFile else "running"
             reportProgress(status, total, total, f"{progressPrefix}Import complete: {summary}", error=hasPriorError)
         except Exception as e:
-            self.repo.rollback()
+            self.repo.rollbackQuietly()
             runState.claimedRowIds = claimedRowIdsBefore
             runState.insertedPlayKeys = insertedPlayKeysBefore
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {_dbmod.parseError(e)}", error=True)
@@ -816,7 +816,7 @@ class ImportMixin:
             # transaction (the delete plus every prior file's staged writes)
             # when the failure came from an apply; call it again defensively
             # (a no-op if nothing is pending) in case it came from the delete.
-            self.repo.rollback()
+            self.repo.rollbackQuietly()
             _dbmod.logger.error("Overwrite import aborted after a failure - no changes were applied, "
                         "original data is intact: %s", _dbmod.parseError(e))
             self.writeProgress("failed", 0, total,

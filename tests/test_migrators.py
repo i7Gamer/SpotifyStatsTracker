@@ -424,5 +424,127 @@ class TestDatabaseVersionMarker(unittest.TestCase):
             self.assertEqual(dbversion.readDbVersion(dbPath), "1.19.0")
 
 
+class TestDatabaseNewerThanApp(unittest.TestCase):
+    """Rolling back to an older release with the newer database still in place.
+
+    The version comparison is `!=` on (major, minor), so an app OLDER than its
+    database entered the migration path and the loop stepped FORWARD - looking
+    for a migrator that steps away from the target and, by definition, does not
+    exist yet. The operator got
+
+        FileNotFoundError: .../Database/Migrators/migrate1_51_0.py
+
+    which reads as a broken build rather than "you rolled back onto a newer
+    database", and under Docker repeats as a crash loop. The too-OLD direction
+    already answers this properly (MIGRATION_FLOOR_VERSION); this is the
+    missing mirror of it."""
+
+    @staticmethod
+    def _mustNotRun(*args, **kwargs):
+        """Stand-in for migrate() in the rollback cases.
+
+        Deliberately NOT a bare MagicMock: a mock returns without advancing the
+        version marker, so an unguarded `while versions differ` loop calls it
+        forever and the suite hangs instead of reporting. Raising turns that
+        regression into a fast, named failure."""
+        raise AssertionError("migrate() must not run for a database newer than the app")
+
+    def _layout(self, tmpdir, appVersion, databaseVersion):
+        base = Path(tmpdir)
+        migratorsDir = base / "Migrators"
+        migratorsDir.mkdir()
+        (base / "VERSION").write_text(appVersion, encoding="utf-8")
+        dataDir = base / "Data"
+        dataDir.mkdir()
+        (dataDir / "VERSION").write_text(databaseVersion, encoding="utf-8")
+        return migratorsDir
+
+    def test_a_database_from_a_later_release_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            migratorsDir = self._layout(tmpdir, appVersion="1.50.0", databaseVersion="1.51.0")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")),                  patch.object(migrateModule, "migrate",
+                              side_effect=self._mustNotRun) as mockMigrate:
+                with self.assertRaises(RuntimeError) as caught:
+                    migrateModule.migrateIfNeeded()
+
+            mockMigrate.assert_not_called()
+            message = str(caught.exception)
+            self.assertIn("1.51.0", message)
+            self.assertIn("1.50.0", message)
+
+    def test_the_refusal_says_which_way_round_it_is(self):
+        """The old failure named a missing FILE, which sends someone looking at
+        the build. The whole value here is naming the actual situation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            migratorsDir = self._layout(tmpdir, appVersion="1.50.0", databaseVersion="1.51.0")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")):
+                with self.assertRaises(RuntimeError) as caught:
+                    migrateModule.migrateIfNeeded()
+
+            message = str(caught.exception).lower()
+            self.assertTrue("newer" in message or "later" in message,
+                            f"the error does not say the database is ahead: {message}")
+            self.assertNotIn("no such file", message)
+
+    def test_nothing_is_snapshotted_for_a_migration_that_cannot_run(self):
+        """The snapshot is for a migration about to happen. Taken before the
+        refusal it would copy the whole database on every restart of a
+        crash-looping container."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            migratorsDir = self._layout(tmpdir, appVersion="1.50.0", databaseVersion="1.51.0")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")),                  patch.object(migrateModule, "_snapshotBeforeMigrating") as mockSnapshot:
+                with self.assertRaises(RuntimeError):
+                    migrateModule.migrateIfNeeded()
+
+            mockSnapshot.assert_not_called()
+
+    def test_a_major_version_rollback_is_refused_too(self):
+        """The comparison is on the (major, minor) pair, so the guard has to be
+        as well - a 2.x database under a 1.x app is the same situation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            migratorsDir = self._layout(tmpdir, appVersion="1.51.0", databaseVersion="2.0.0")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")),                  patch.object(migrateModule, "migrate",
+                              side_effect=self._mustNotRun) as mockMigrate:
+                with self.assertRaises(RuntimeError):
+                    migrateModule.migrateIfNeeded()
+
+            mockMigrate.assert_not_called()
+
+    def test_a_newer_PATCH_release_is_not_a_rollback(self):
+        """Patch versions are below the granularity the chain steps at, and the
+        function already stamps them itself. A 1.51.3 database under a 1.51.0
+        app is the ordinary case, not a downgrade - refusing it would break
+        every patch-level rollback, which is the common one."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            migratorsDir = self._layout(tmpdir, appVersion="1.51.0", databaseVersion="1.51.3")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")),                  patch.object(migrateModule, "migrate") as mockMigrate:
+                migrateModule.migrateIfNeeded()   #< must not raise
+
+            mockMigrate.assert_not_called()
+
+    def test_an_older_database_still_migrates(self):
+        """The guard must not swallow the direction it was always for."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            migratorsDir = self._layout(tmpdir, appVersion="1.8.0", databaseVersion="1.7.0")
+
+            def advance(major, minor, baseDir):
+                (Path(tmpdir) / "Data" / "VERSION").write_text("1.8.0", encoding="utf-8")
+
+            with patch.object(migrateModule, "__file__", str(migratorsDir / "migrate.py")),                  patch.object(migrateModule, "_snapshotBeforeMigrating"),                  patch.object(migrateModule, "migrate", side_effect=advance) as mockMigrate:
+                migrateModule.migrateIfNeeded()
+
+            #< the (major, minor) it steps FROM is the assertion; the path is
+            #  compared loosely because Windows hands tempfile a short 8.3 form
+            #  ("ADMINI~1") that never equals the long one
+            self.assertEqual(mockMigrate.call_count, 1)
+            self.assertEqual(mockMigrate.call_args.args[:2], (1, 7))
+            self.assertEqual(Path(mockMigrate.call_args.args[2]).name, "Migrators")
+
+
 if __name__ == "__main__":
     unittest.main()

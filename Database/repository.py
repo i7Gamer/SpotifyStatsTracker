@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+
 # The Repository data-access layer is split into domain mixins under
 # Database/queries/. This module composes them and keeps the connection/
 # transaction primitives. `import *` re-exports the shared module constants
@@ -22,6 +24,9 @@ from Database.queries.milestones import MilestoneQueries
 from Database.queries.tags import TagQueries
 from Database.queries.trends import TrendQueries
 from Database.queries.email_queries import EmailQueries, VALID_NOTIFICATION_EVENTS, EVENT_INVALID_COOKIES, EVENT_API_KEY_FAILED, EVENT_SHARE_REQUEST
+
+
+logger = logging.getLogger(__name__)
 
 
 class Repository(SqlFragments, TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries, EmailQueries):
@@ -55,3 +60,27 @@ class Repository(SqlFragments, TrackQueries, PlayQueries, UserQueries, ShareQuer
 
     def rollback(self):
         self._conn().rollback()
+
+    def rollbackQuietly(self) -> bool:
+        """rollback(), never raising. Returns whether it actually rolled back.
+
+        For the `except` blocks that roll back and then re-raise or report the
+        ORIGINAL failure. Database.utils.parseError reads only the exception it
+        is handed - it never walks __context__ - so whatever reaches it IS the
+        whole report, and a rollback that raised took the real cause's place in
+        the log, in the import progress line the user reads, and in
+        listener_last_error. A rollback is most likely to fail exactly when the
+        database is in the trouble the original error describes, which is when
+        losing it costs the most.
+
+        Swallowed but NOT silent: a rollback that failed leaves the transaction
+        OPEN - the very state the caller was trying to leave - so the next
+        commit on this connection adopts whatever was staged. That is worth a
+        line of its own even though it cannot be the exception."""
+        try:
+            self.rollback()
+            return True
+        except Exception as e:
+            logger.error("Rollback failed - staged writes may still be pending on this "
+                         "connection and could be adopted by the next commit: %s", e)
+            return False
