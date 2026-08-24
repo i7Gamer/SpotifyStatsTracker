@@ -108,6 +108,7 @@ def register(app, dashboard):
             return redirect(url_for("importPage"))
 
         contents = []
+        unreadableCount = 0
         for upload in uploads:
             try:
                 contents.append(upload.read().decode("utf-8"))
@@ -116,9 +117,21 @@ def register(app, dashboard):
                 # (see its try/except around open(..., encoding="utf-8"))
                 # - one unreadable file must not 500 the whole request and
                 # drop every other file in the same upload.
+                #
+                # COUNTED, not merely logged. The drop happens here, above
+                # every guard the batch has for unreadable input, so the batch
+                # cannot see it: it reported "Imported 1/1 files" for a
+                # two-file upload, and in overwrite mode it deleted the covered
+                # range of the survivors - which can bracket the dropped file's
+                # plays - with nothing left to re-insert them (see
+                # importHistoryBatch's unreadableFileCount).
+                unreadableCount += 1
                 logger.warning("Skipping upload %r for user %s: not valid UTF-8 text", upload.filename, username)
         if not contents:
-            return redirect(url_for("importPage"))
+            #< the one arm the batch never hears about at all, so the message
+            #  has to come from here: an unannounced bounce back to /import
+            #  looks exactly like a click that did nothing
+            return redirect(url_for("importPage", error="unreadable_upload"))
 
         # Captured before the thread starts - no request context inside it.
         overwriteRange = request.form.get("overwrite_range") is not None
@@ -156,7 +169,8 @@ def register(app, dashboard):
 
         def _runImportBatch():
             try:
-                db.importHistoryBatch(contents, overwriteRange=overwriteRange)
+                db.importHistoryBatch(contents, overwriteRange=overwriteRange,
+                                      unreadableFileCount=unreadableCount)
             except Exception:
                 logger.exception("Import thread failed for user %s", username)
             finally:
@@ -183,6 +197,7 @@ def register(app, dashboard):
             importProgress=db.readProgress(),
             maxUploadMb=MAX_UPLOAD_MB,
             uploadTooLarge=request.args.get("error") == "upload_too_large",
+            unreadableUpload=request.args.get("error") == "unreadable_upload",
             section="import",
         )
     app.add_url_rule("/import", "importPage", importPage, methods=["GET"])

@@ -362,6 +362,54 @@ class TestImportHistoryBatch(DatabaseTestCase):
         self.db.importHistoryBatch([])
         self.assertEqual(self._ids(), [])
 
+    def test_a_file_the_caller_could_not_read_is_named_in_the_summary(self):
+        """`total` counts what reached the batch, so a file the route dropped
+        (routes/system.py refuses an upload that is not valid UTF-8) is absent
+        from every count in this line. Left alone it read "Imported 1/1 files"
+        to someone who had selected two, and the one that vanished appeared
+        nowhere the user looks."""
+        def gen():
+            yield _meta("f1i1", 100)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            self.db.importHistoryBatch(["good export"], unreadableFileCount=1)
+
+        progress = self.db.readProgress()
+        self.assertIn("1 file(s) could not be read", progress["message"])
+        self.assertIn("UTF-8", progress["message"])
+        #< red: a file that did not land is not a clean run, whatever the
+        #  others did. Still "complete" - the import itself finished.
+        self.assertTrue(progress["error"])
+        self.assertEqual(progress["status"], "complete")
+
+    def test_the_summary_is_byte_identical_when_every_file_arrived(self):
+        """The negative control for the note above - it must not creep into the
+        ordinary line."""
+        def gen():
+            yield _meta("f1i1", 100)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            self.db.importHistoryBatch(["good export"])
+
+        progress = self.db.readProgress()
+        self.assertEqual(progress["message"], "Imported 1/1 files (0 skipped)")
+        self.assertFalse(progress["error"])
+
+    def test_an_all_skipped_batch_still_reports_the_unreadable_file(self):
+        """The one summary arm with no counts in it at all, so it is the arm
+        where a dropped file is easiest to lose."""
+        def gen():
+            yield _meta("i1", 100)
+
+        with patch("Database.database.Importer", return_value=self._mockImporter(gen)):
+            self.db.importHistoryBatch(["same content"])
+            self.db.importHistoryBatch(["same content"], unreadableFileCount=2)
+
+        progress = self.db.readProgress()
+        self.assertTrue(progress["message"].startswith("All files were already imported"))
+        self.assertIn("2 file(s) could not be read", progress["message"])
+        self.assertTrue(progress["error"])
+
     def test_batch_returns_per_file_outcomes(self):
         """AutoImporter routes each file to DONE/ or FAILED/ based on the
         outcome importHistoryBatch reports for it."""

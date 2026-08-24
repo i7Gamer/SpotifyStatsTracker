@@ -15,6 +15,13 @@
     {% if uploadTooLarge %}
       <p class="error">That upload is too large (max {{ maxUploadMb }} MB total per request). Try uploading fewer files at once.</p>
     {% endif %}
+    {% if unreadableUpload %}
+      {# Reached only when NOTHING readable was uploaded, so no import starts
+         and the progress panel below has nothing to say - without this the
+         page simply reloads and the click looks like it did nothing. A mixed
+         upload is reported in the import's own summary line instead. #}
+      <p class="error">None of those files could be read as text (they are not valid UTF-8). Re-export them, or re-save them as UTF-8, and try again.</p>
+    {% endif %}
     <form id="import-form" action="{{ url_for('importHistory') }}" method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <h2 class="import-card-heading">Import your history</h2>

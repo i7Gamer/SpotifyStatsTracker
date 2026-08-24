@@ -597,7 +597,8 @@ class ImportMixin:
             self.writeProgress("failed", index, total, f"{progressPrefix}Import failed: {_dbmod.parseError(e)}", error=True)
             raise
 
-    def importHistoryBatch(self, fileContents: list[str], overwriteRange: bool = False) -> list[str]:
+    def importHistoryBatch(self, fileContents: list[str], overwriteRange: bool = False,
+                           unreadableFileCount: int = 0) -> list[str]:
         """Import multiple export files sequentially - cached up front by the
         caller (app.py reads every upload before starting this thread) and then
         processed one after another, mirroring AutoImporter's existing
@@ -617,12 +618,22 @@ class ImportMixin:
         whole batch and rolls back everything, so either every file's data
         lands or none of it does; the returned outcomes are all "imported" or
         all "failed" accordingly. Also bypasses the already-imported hash gate
-        so unchanged files re-import fresh."""
+        so unchanged files re-import fresh.
+
+        `unreadableFileCount`: how many uploaded files never made it into
+        `fileContents` because the caller could not read them at all (see
+        routes/system.py, which drops an upload that is not valid UTF-8). It has
+        to be passed rather than inferred: by the time the batch runs there is
+        no content left to count, and the batch would otherwise report "1/1
+        files imported" to someone who selected two. Overwrite mode does more
+        than report it - see _importHistoryBatchOverwriteLocked. Always 0 from
+        AutoImporter, which quarantines an unreadable file to FAILED/ itself and
+        never hands one on."""
         with self._importLock:
             if overwriteRange:
-                outcomes = self._importHistoryBatchOverwriteLocked(fileContents)
+                outcomes = self._importHistoryBatchOverwriteLocked(fileContents, unreadableFileCount)
             else:
-                outcomes = self._importHistoryBatchLocked(fileContents)
+                outcomes = self._importHistoryBatchLocked(fileContents, unreadableFileCount)
         if "imported" in outcomes:
             # Milestone achieved_at dates derive from play history, which this
             # batch just changed - raise the marker the periodic milestone pass
@@ -631,7 +642,7 @@ class ImportMixin:
             self.raiseMilestoneRecalcFlag()
         return outcomes
 
-    def _importHistoryBatchLocked(self, fileContents: list[str]) -> list[str]:
+    def _importHistoryBatchLocked(self, fileContents: list[str], unreadableFileCount: int = 0) -> list[str]:
         if not fileContents:
             return []
 
@@ -689,19 +700,30 @@ class ImportMixin:
         failedCount = outcomes.count("failed")
         skippedCount = outcomes.count("skipped")
         succeededCount = total - failedCount - skippedCount
-        if failedCount == 0:
-            if skippedCount == total:
-                self.writeProgress("complete", total, total, "All files were already imported")
-            else:
-                self.writeProgress("complete", total, total, f"Imported {succeededCount}/{total} files ({skippedCount} skipped)")
+        # `total` counts only the files that reached this batch, so a file the
+        # caller could not read is invisible in every count above - the summary
+        # said "Imported 1/1 files" to someone who selected two, and the one
+        # that vanished was never mentioned anywhere the user looks. Appended
+        # rather than folded into the counts, which describe what the IMPORTER
+        # saw; and it makes the line an error, because a file that did not land
+        # is not a clean run whatever the others did.
+        unreadableNote = (f" {unreadableFileCount} file(s) could not be read (not valid UTF-8 text) "
+                          "and were skipped." if unreadableFileCount else "")
+        if failedCount == 0 and skippedCount == total:
+            status, message = "complete", "All files were already imported"
+        elif failedCount == 0:
+            status, message = "complete", f"Imported {succeededCount}/{total} files ({skippedCount} skipped)"
         elif succeededCount == 0 and skippedCount == 0:
-            self.writeProgress("failed", total, total, f"Imported 0/{total} files (all failed)", error=True)
+            status, message = "failed", f"Imported 0/{total} files (all failed)"
         else:
-            self.writeProgress("complete", total, total,
-                                f"Imported {succeededCount}/{total} files ({skippedCount} skipped, {failedCount} failed)", error=True)
+            status, message = "complete", (f"Imported {succeededCount}/{total} files "
+                                           f"({skippedCount} skipped, {failedCount} failed)")
+        self.writeProgress(status, total, total, message + unreadableNote,
+                           error=bool(failedCount or unreadableFileCount))
         return outcomes
 
-    def _importHistoryBatchOverwriteLocked(self, fileContents: list[str]) -> list[str]:
+    def _importHistoryBatchOverwriteLocked(self, fileContents: list[str],
+                                           unreadableFileCount: int = 0) -> list[str]:
         """Atomic overwrite in two phases. Phase 1 stages every file (parse +
         Spotify metadata fetch) into memory holding NO write transaction; Phase 2
         then runs the covered-range delete and every file's apply in ONE short
@@ -715,6 +737,29 @@ class ImportMixin:
             return []
 
         total = len(fileContents)
+
+        # An uploaded file the caller could not read at all is the same failure
+        # as UNREADABLE_DROP_STAT_KEYS one layer up, and the more dangerous
+        # half: those guards count ENTRIES, and only entries that reached this
+        # batch. A whole file that never arrived leaves the covered range to be
+        # computed from the survivors, which happily bracket it - upload the
+        # three part-files Spotify splits a year into with the MIDDLE one
+        # undecodable and its plays are deleted with nothing to put them back,
+        # under a completion line naming the two that did arrive.
+        #
+        # Ahead of _computeCoveredRange rather than merely ahead of the delete:
+        # the answer is already known, and parsing every file (and logging an
+        # Importer into Spotify to do it) is work spent on a batch that cannot
+        # run.
+        if unreadableFileCount:
+            self.writeProgress("failed", 0, total,
+                               f"Overwrite import aborted: {unreadableFileCount} uploaded file(s) "
+                               "could not be read (not valid UTF-8 text), so the plays they hold "
+                               "cannot be restored - nothing was deleted, your data is unchanged. "
+                               "Re-export or re-save those file(s) as UTF-8, or import without the "
+                               "overwrite option to add what is readable.",
+                               error=True)
+            return ["failed"] * total
 
         # Phase 0 - covered range (parse only, no DB, no lock). Detects an
         # unrecognized/corrupt file before anything is deleted.

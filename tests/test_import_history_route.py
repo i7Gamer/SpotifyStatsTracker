@@ -49,6 +49,15 @@ class TestImportHistoryRoute(AppTestCase):
                 sess['email'] = 'alice@example.com'
             return client.post('/import-history', data=files, content_type='multipart/form-data')
 
+    def _getImportPage(self, dash, db, query):
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=db):
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            return client.get('/import' + query).get_data(as_text=True)
+
     def test_non_utf8_upload_does_not_crash_the_request(self):
         """A file that isn't valid UTF-8 text used to raise UnicodeDecodeError
         straight out of the route handler (an unhandled 500) instead of being
@@ -80,6 +89,38 @@ class TestImportHistoryRoute(AppTestCase):
         importedContents = db.importHistoryBatch.call_args.args[0]
         self.assertEqual(importedContents, ['{"msPlayed": 1}'])
 
+    def test_the_batch_is_told_how_many_files_it_never_received(self):
+        """The count is the whole fix for the overwrite case: the drop happens
+        HERE, above every guard importHistoryBatch has for unreadable input, so
+        the batch cannot see it. Without it the covered-range delete runs on
+        the survivors' span - which can bracket the dropped file's plays -
+        and nothing re-inserts them."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        started = self._importStarted(db)
+        garbageBytes = b'\xff\xfe\x00\x01 not valid utf-8 \xfa\xfb'
+
+        self._postImport(dash, db, {
+            'history_file': [
+                (io.BytesIO(garbageBytes), 'bad.json'),
+                (io.BytesIO(b'{"msPlayed": 1}'), 'good.json'),
+            ],
+            'overwrite_range': 'on',
+        })
+
+        self._awaitImport(started)
+        self.assertEqual(db.importHistoryBatch.call_args.kwargs.get("unreadableFileCount"), 1)
+
+    def test_an_upload_that_read_cleanly_reports_nothing_dropped(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        started = self._importStarted(db)
+
+        self._postImport(dash, db, {'history_file': (io.BytesIO(b'{"msPlayed": 1}'), 'good.json')})
+
+        self._awaitImport(started)
+        self.assertEqual(db.importHistoryBatch.call_args.kwargs.get("unreadableFileCount"), 0)
+
     def test_all_files_failing_to_decode_redirects_without_starting_an_import(self):
         dash = self._makeApp()
         db = self._makeDb()
@@ -89,6 +130,26 @@ class TestImportHistoryRoute(AppTestCase):
 
         self.assertEqual(resp.status_code, 302)
         db.importHistoryBatch.assert_not_called()
+
+    def test_all_files_failing_to_decode_says_so_on_the_import_page(self):
+        """No import starts, so the progress panel has nothing to report - an
+        unannounced bounce back to /import is indistinguishable from a click
+        that did nothing at all."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        garbageBytes = b'\xff\xfe\x00\x01 not valid utf-8 \xfa\xfb'
+
+        resp = self._postImport(dash, db, {'history_file': (io.BytesIO(garbageBytes), 'bad.json')})
+
+        self.assertIn("error=unreadable_upload", resp.headers["Location"])
+        page = self._getImportPage(dash, db, "?error=unreadable_upload")
+        self.assertIn("not valid UTF-8", page)
+
+    def test_the_import_page_says_nothing_without_that_marker(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+
+        self.assertNotIn("not valid UTF-8", self._getImportPage(dash, db, ""))
 
     def test_overwrite_checkbox_flag_is_passed_to_the_batch(self):
         dash = self._makeApp()

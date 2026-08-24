@@ -604,6 +604,93 @@ class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
         self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019)])   #< ordered by played_at
 
 
+
+class TestOverwriteAbortsOnAnUnreadableUpload(_OverwriteTestBase):
+    """The same hole one layer up. Every guard in TestOverwriteAbortsOnRetryableDrops
+    counts ENTRIES, and only entries that reached the batch at all: a whole FILE
+    the route could not decode (routes/system.py drops a non-UTF-8 upload) never
+    arrives, so the covered range is computed from the survivors and nothing here
+    can see that anything is missing.
+
+    It is not hypothetical arithmetic. Spotify splits an extended export into
+    numbered part-files; upload three for one year with the MIDDLE one
+    undecodable and the survivors' [minStart, maxEnd] brackets it, its year is
+    covered, and its plays are deleted with nothing to put them back - under
+    "Overwrite import complete: 2/2 files imported".
+
+    The count comes in as a parameter rather than being inferred, because by the
+    time the batch runs the evidence is gone: an undecodable upload leaves no
+    content to count."""
+
+    def _runBatch(self, db, fileSpecs, unreadableFileCount):
+        with patch("Database.database.Importer", return_value=self._mockImporter(fileSpecs)):
+            return db.importHistoryBatch(list(fileSpecs.keys()), overwriteRange=True,
+                                         unreadableFileCount=unreadableFileCount)
+
+    def _threePartYear(self):
+        """2024 already imported in three parts; parts 1 and 3 are re-uploaded
+        and part 2 is the one the route could not read."""
+        return self._makeDb({}, [
+            {"id": "p1", "playedAt": _ts(2024, 1, 10), "timePlayed": 60000},
+            {"id": "p2", "playedAt": _ts(2024, 5, 10), "timePlayed": 60000},
+            {"id": "p3", "playedAt": _ts(2024, 9, 10), "timePlayed": 60000},
+        ])
+
+    def _survivingSpecs(self):
+        return {
+            "part1": ((_ts(2024, 1, 10), _ts(2024, 1, 10), {2024}),
+                      lambda: iter([_meta("p1", _ts(2024, 1, 10))])),
+            "part3": ((_ts(2024, 9, 10), _ts(2024, 9, 10), {2024}),
+                      lambda: iter([_meta("p3", _ts(2024, 9, 10))])),
+        }
+
+    def test_the_bracketed_play_of_a_dropped_file_is_not_deleted(self):
+        db = self._threePartYear()
+
+        outcomes = self._runBatch(db, self._survivingSpecs(), unreadableFileCount=1)
+
+        self.assertEqual(outcomes, ["failed", "failed"])
+        self.assertEqual(self._playedAts(db),
+                         [_ts(2024, 1, 10), _ts(2024, 5, 10), _ts(2024, 9, 10)])
+        self.assertEqual(db.readProgress()["status"], "failed")
+
+    def test_the_abort_message_says_nothing_was_deleted_and_names_the_count(self):
+        db = self._threePartYear()
+
+        self._runBatch(db, self._survivingSpecs(), unreadableFileCount=2)
+
+        message = db.readProgress()["message"]
+        self.assertIn("2", message)
+        self.assertIn("nothing was deleted", message)
+        #< the same advice split the entry-level guard makes: re-running changes
+        #  nothing, so it names the two things that do
+        self.assertIn("UTF-8", message)
+        self.assertIn("without the overwrite option", message)
+
+    def test_it_aborts_before_the_files_are_even_parsed(self):
+        """Placed ahead of _computeCoveredRange, not merely ahead of the delete.
+        Nothing has been deleted either way, but the answer is already known -
+        parsing every file and logging an Importer into Spotify first is work
+        spent on a batch that cannot run."""
+        db = self._threePartYear()
+        importer = self._mockImporter(self._survivingSpecs())
+
+        with patch("Database.database.Importer", return_value=importer):
+            db.importHistoryBatch(["part1", "part3"], overwriteRange=True, unreadableFileCount=1)
+
+        importer._convertToList.assert_not_called()
+
+    def test_a_batch_with_nothing_dropped_still_runs(self):
+        """The negative control: this guard must not be a switch that turns
+        overwrite import off."""
+        db = self._threePartYear()
+
+        outcomes = self._runBatch(db, self._survivingSpecs(), unreadableFileCount=0)
+
+        self.assertEqual(outcomes, ["imported", "imported"])
+        self.assertEqual(db.readProgress()["status"], "complete")
+
+
 class TestOverwriteClosesSessions(_OverwriteTestBase):
     def test_the_batch_closes_every_importer_session_it_built(self):
         """The overwrite batch builds one Importer for the coverage pre-pass
