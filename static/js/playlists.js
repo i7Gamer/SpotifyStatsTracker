@@ -61,8 +61,21 @@
                 '&match=' + encodeURIComponent(matchMode.value);
 
       fetch(url)
-        .then(function(res) { return res.json(); })
+        .then(function(res) {
+          //< peeled off before the body, and BEFORE the token check below: a
+          //  401 is news about the SESSION, which every in-flight preview
+          //  shares, so whichever one notices acts on it. Read straight
+          //  through, the route's `{"error": "Not logged in"}` PARSES and
+          //  `data.track_count || 0` reads 0 - so an expired session printed
+          //  "0 tracks match selection", a false statement about the user's
+          //  own library, and disabled Download with no way back.
+          if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res)) {
+            return null;
+          }
+          return res.json();
+        })
         .then(function(data) {
+          if (!data) return;                    //< navigating to /login
           if (token !== previewToken) return;   //< superseded by a newer selection
           var cnt = data.track_count || 0;
           if (previewCount) {
@@ -106,8 +119,17 @@
           },
           body: JSON.stringify({ old_tag: oldTag, new_tag: newTag.trim() })
         })
-        .then(function(res) { return res.json(); })
+        //< the shared login redirect, not the alert below: a 401 body carries
+        //  "Not logged in" in the same `error` field a rejected rename uses,
+        //  so reading it as one left the user staring at an alert on a page
+        //  every later click would bounce off. tags.js does this for the same
+        //  endpoint; the alert stays for verdicts the server actually made.
+        .then(function(res) {
+          return (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res))
+            ? null : res.json();
+        })
         .then(function(data) {
+          if (!data) return;   //< navigating to /login
           if (data.success) {
             window.location.reload();
             return;
@@ -136,8 +158,14 @@
             'X-CSRFToken': getCsrfToken()
           }
         })
-        .then(function(res) { return res.json(); })
+        //< the shared login redirect - see the rename handler above for why a
+        //  401 must not reach the alert
+        .then(function(res) {
+          return (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res))
+            ? null : res.json();
+        })
         .then(function(data) {
+          if (!data) return;   //< navigating to /login
           if (data.success) {
             window.location.reload();
             return;

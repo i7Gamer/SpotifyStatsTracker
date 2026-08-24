@@ -49,7 +49,8 @@ function deferred() {
 
 function loadPlaylists(options) {
   options = options || {};
-  const calls = { fetched: [], prompts: [], confirms: [], alerts: [], errors: [], reloads: 0 };
+  const calls = { fetched: [], prompts: [], confirms: [], alerts: [], errors: [], reloads: 0,
+                  loginRedirects: 0 };
   const elements = options.elements || {};
   const selectors = Object.assign(
     { '.playlist-tag-chip': [], '.btn-rename-tag': [], '.btn-delete-tag': [] },
@@ -58,6 +59,17 @@ function loadPlaylists(options) {
   let ready = null;
   global.window = {
     location: { href: '', reload() { calls.reloads += 1; } },
+    //< the same stub shape tests/test_wrapped_page.js uses: the real helper's
+    //  navigation is pinned in tests/test_ajax_status.js, so what these tests
+    //  have to prove is that this page DELEGATES a 401 to it rather than
+    //  reading the body as if it described the user's tags
+    AjaxStatus: options.noAjaxStatus ? undefined : {
+      redirectIfUnauthorized(response) {
+        if (!response || response.status !== 401) return false;
+        calls.loginRedirects += 1;
+        return true;
+      },
+    },
   };
   global.document = {
     addEventListener(type, fn) { if (type === 'DOMContentLoaded') ready = fn; },
@@ -86,6 +98,17 @@ function loadPlaylists(options) {
 
 function jsonOnce(body) {
   return () => Promise.resolve({ json: () => Promise.resolve(body) });
+}
+
+// What every endpoint on this page answers once the session has expired:
+// @requiresUser(api=True) sends 401 with a JSON body. The body is the trap -
+// it PARSES, so a handler that goes straight to .json() reads a real payload
+// whose keys are all absent.
+function unauthorizedOnce() {
+  return () => Promise.resolve({
+    status: 401, ok: false,
+    json: () => Promise.resolve({ error: 'Not logged in' }),
+  });
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -211,6 +234,20 @@ run('a failed preview says the count is unknown rather than lying', async () => 
   assert.strictEqual(dom.calls.errors.length, 1);
 });
 
+run('an expired session sends the user to log in rather than claiming zero matches', async () => {
+  const dom = previewSetup({ respond: unauthorizedOnce() });
+
+  dom.chipA.click();
+  await tick(); await tick();
+
+  assert.strictEqual(dom.calls.loginRedirects, 1);
+  //< the whole point: `data.track_count || 0` on a 401 body reads 0, and the
+  //  line below is then a statement about the user's library that is false.
+  //  Nothing may be written over the count while the browser is leaving.
+  assert.strictEqual(dom.previewCount.textContent, '');
+  assert.notStrictEqual(dom.previewCount.textContent, '0 tracks match selection');
+});
+
 // ---------------------------------------------------------------- download
 
 run('Download builds an export URL carrying every control', async () => {
@@ -301,6 +338,20 @@ run('a refused rename says so instead of no-opping silently', async () => {
   assert.strictEqual(calls.reloads, 0, 'nothing changed, so nothing to reload');
 });
 
+run('an expired session sends the user to log in rather than alerting the 401 body', async () => {
+  const { calls, btn } = renameSetup({ promptAnswer: 'jazzy', respond: unauthorizedOnce() });
+
+  btn.click();
+  await tick(); await tick();
+
+  assert.strictEqual(calls.loginRedirects, 1);
+  //< "Not logged in" in an alert() is the route's error field read as if it
+  //  were a rejected rename: it leaves the user on a dead page with no way
+  //  back. tags.js redirects for the same endpoint; so does this.
+  assert.deepStrictEqual(calls.alerts, []);
+  assert.strictEqual(calls.reloads, 0);
+});
+
 run('a rename that never reaches the server still tells the user', async () => {
   const { calls, btn } = renameSetup({ promptAnswer: 'jazzy', respond: () => Promise.reject(new Error('offline')) });
 
@@ -349,6 +400,17 @@ run('a refused delete says so instead of no-opping silently', async () => {
   await tick(); await tick();
 
   assert.deepStrictEqual(calls.alerts, ['Session expired.']);
+  assert.strictEqual(calls.reloads, 0);
+});
+
+run('an expired session sends the user to log in rather than alerting a failed delete', async () => {
+  const { calls, btn } = deleteSetup({ confirmAnswer: true, respond: unauthorizedOnce() });
+
+  btn.click();
+  await tick(); await tick();
+
+  assert.strictEqual(calls.loginRedirects, 1);
+  assert.deepStrictEqual(calls.alerts, []);
   assert.strictEqual(calls.reloads, 0);
 });
 

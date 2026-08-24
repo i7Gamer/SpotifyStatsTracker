@@ -111,6 +111,33 @@ CARD_ENDPOINT_FETCHES = ()
 #  reach the next fetch in the file
 HANDLER_WINDOW_LINES = 14
 
+# The OTHER family of fetches a 401 reaches, and the one PAGE_LOADER_FETCH above
+# was never looking at: a call to a `/api/` endpoint. Those routes are
+# @requiresUser(api=True), so an expired session answers 401 with a JSON body -
+# the same parses-fine trap, one endpoint family over. It is how
+# static/js/playlists.js's preview came to print "0 tracks match selection" at a
+# logged-out user (`data.track_count || 0` on the 401 body), and how its rename
+# and delete came to alert() the route's "Not logged in" as if it were a
+# rejected edit.
+#
+# Matched on the URL LITERAL rather than on `fetch(`, because the preview builds
+# its URL in a variable first - which is exactly why a `fetch('/api/` pattern
+# would have kept missing the one site that was actually broken.
+API_URL_LITERAL = re.compile(r"""['"`]/api/""")
+
+# What counts as handling it: the shared helper (which redirects), the redirect
+# itself, or an inline status test. All three appear in the codebase today and
+# all three are correct - what must not appear is none of them.
+UNAUTHORIZED_GUARD = re.compile(r"readJsonOrThrow|redirectIfUnauthorized|status\s*[!=]==\s*401")
+
+# htmx issues its own requests and an expired session is answered with
+# HX-Redirect rather than a body (see app.py's unauthenticatedResponse), so
+# there is no client-side payload read to guard - dashboard-page.js's
+# `htmx.ajax('GET', '/api/dashboard-trends', ...)` is not this rule's business.
+# Whole-line, so a URL wrapped onto the NEXT line is still counted: this rule
+# should fail loudly rather than exempt something quietly.
+_HTMX_AJAX_LINE = re.compile(r"^.*htmx\.ajax\(.*$", re.MULTILINE)
+
 
 def _jsFiles():
     return {path.name: path.read_text(encoding="utf-8", errors="replace")
@@ -203,6 +230,36 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
                                  "apart from an empty-but-valid answer. Throw instead, so the "
                                  "AjaxStatus banner and its Retry appear - or add it to "
                                  "DELIBERATE_SWALLOWS with the recovery path that justifies it.")
+
+    def test_every_api_fetch_handles_an_expired_session(self):
+        """Counted, not merely present, so a SECOND api call added to a file
+        that already guards its first still fails.
+
+        That counting is the whole point here. playlists.js held three `/api/`
+        calls and zero guards, and no rule in this file had anything to say
+        about it: PAGE_LOADER_FETCH only ever looked at fetches of the current
+        page. "The file mentions redirectIfUnauthorized somewhere" would have
+        passed the day one of the three was fixed and left the other two.
+
+        Scope worth naming rather than implying: this sees `/api/` URLs written
+        as literals. An endpoint reached through a variable set elsewhere
+        (import-page.js's window.IMPORT_PROGRESS_URL) is outside it - that one
+        checks its own 401, and a template-supplied URL cannot be read from
+        here at all."""
+        for name in sorted(self.files):
+            code = _HTMX_AJAX_LINE.sub("", _code(self.files[name]))
+            apiCalls = len(API_URL_LITERAL.findall(code))
+            if not apiCalls:
+                continue
+            with self.subTest(js=name):
+                guards = len(UNAUTHORIZED_GUARD.findall(code))
+
+                self.assertGreaterEqual(
+                    guards, apiCalls,
+                    f"{name} makes {apiCalls} /api/ call(s) but carries only {guards} 401 "
+                    "guard(s). A 401's JSON body PARSES, so the payload key is simply absent "
+                    "and the page states something false about the user's data instead of "
+                    "sending them to log in. Use AjaxStatus.redirectIfUnauthorized.")
 
     def test_every_dashboard_card_endpoint_checks_the_status(self):
         for fileName, endpoint in CARD_ENDPOINT_FETCHES:
