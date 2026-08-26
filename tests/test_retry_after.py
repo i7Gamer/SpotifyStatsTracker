@@ -85,6 +85,40 @@ class TestHttpDate(unittest.TestCase):
 
         self.assertAlmostEqual(parsed, 90, delta=2)
 
+    def test_the_wait_is_measured_against_the_response_date_header(self):
+        """Retry-After and Date come from the same server clock, so their
+        difference is the wait regardless of what the local clock says.
+        Pinned with stamps far in the past: measured against the local clock
+        instead, this date reads as long gone, the wait collapses to 0, and
+        the retry lands inside the very window the header announced - which
+        is what a host a few seconds behind the server saw."""
+        base = datetime.datetime(2020, 5, 17, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        resp = _Response({
+            "Retry-After": email.utils.format_datetime(
+                base + datetime.timedelta(seconds=30), usegmt=True),
+            "Date": email.utils.format_datetime(base, usegmt=True),
+        })
+
+        self.assertEqual(retryAfterSeconds(resp, default=DEFAULT, maximum=MAXIMUM), 30.0)
+
+    def test_an_unparseable_date_header_falls_back_to_the_local_clock(self):
+        resp = _Response({"Retry-After": _httpDate(120), "Date": "not a date"})
+
+        self.assertAlmostEqual(
+            retryAfterSeconds(resp, default=DEFAULT, maximum=MAXIMUM), 120, delta=2)
+
+    def test_a_date_before_the_response_date_is_still_zero(self):
+        """The genuinely-past case keeps its documented answer under the
+        server-clock reference too."""
+        base = datetime.datetime(2020, 5, 17, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        resp = _Response({
+            "Retry-After": email.utils.format_datetime(
+                base - datetime.timedelta(seconds=300), usegmt=True),
+            "Date": email.utils.format_datetime(base, usegmt=True),
+        })
+
+        self.assertEqual(retryAfterSeconds(resp, default=DEFAULT, maximum=MAXIMUM), 0.0)
+
 
 class TestBounds(unittest.TestCase):
     def test_a_missing_header_falls_back_to_the_default(self):

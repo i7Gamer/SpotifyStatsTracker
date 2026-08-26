@@ -186,10 +186,11 @@ def retryAfterSeconds(resp, default: float, maximum: float) -> float:
     A date in the past is 0, not a negative wait. And NaN is refused rather
     than clamped: min/max propagate it silently, and a NaN deadline compares
     False against every clock reading, so the window would never end."""
-    header = (getattr(resp, "headers", None) or {}).get("Retry-After")
+    headers = getattr(resp, "headers", None) or {}
+    header = headers.get("Retry-After")
     seconds = _deltaSeconds(header)
     if seconds is None:
-        seconds = _httpDateSeconds(header)
+        seconds = _httpDateSeconds(header, headers.get("Date"))
     if seconds is None:
         return default
     return max(0.0, min(seconds, maximum))
@@ -205,12 +206,12 @@ def _deltaSeconds(header) -> float | None:
     return None if math.isnan(seconds) else seconds
 
 
-def _httpDateSeconds(header) -> float | None:
-    """The HTTP-date form as seconds from now, or None if it isn't one."""
-    if not isinstance(header, str):
+def _parseHttpDate(value):
+    """An aware datetime out of an RFC 9110 HTTP-date, or None if it isn't one."""
+    if not isinstance(value, str):
         return None
     try:
-        when = email.utils.parsedate_to_datetime(header)
+        when = email.utils.parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
     if when is None:
@@ -219,7 +220,25 @@ def _httpDateSeconds(header) -> float | None:
     #  a naive datetime raises on comparison with an aware one
     if when.tzinfo is None:
         when = when.replace(tzinfo=datetime.timezone.utc)
-    return (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    return when
+
+
+def _httpDateSeconds(header, dateHeader=None) -> float | None:
+    """The HTTP-date form as seconds of wait, or None if it isn't one.
+
+    Measured against the response's own Date header when it carries a usable
+    one: both stamps come from the server's clock, so the wait survives local
+    clock skew. Measured against the local clock instead, a host a few seconds
+    behind the server read a near-future date as already past, collapsed the
+    wait to 0, and retried straight into the window the header announced. The
+    local clock stays the fallback for a response without a parseable Date."""
+    when = _parseHttpDate(header)
+    if when is None:
+        return None
+    reference = _parseHttpDate(dateHeader)
+    if reference is None:
+        reference = datetime.datetime.now(datetime.timezone.utc)
+    return (when - reference).total_seconds()
 
 
 # Shared by the Spotify call sites that acquire it - which is NOT all of them.

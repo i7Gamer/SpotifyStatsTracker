@@ -220,6 +220,8 @@ class TestJsonApisAnswerOneUnauthorizedShape(UnauthenticatedAjaxTestCase):
         ("POST", "/api/tags/rename"),
         ("DELETE", "/api/tags/rock"),
         ("GET", "/api/playlists/preview"),
+        ("GET", "/api/listener-status"),
+        ("GET", "/api/now-playing"),
     )
 
     def test_every_json_api_answers_the_same_401_body(self):

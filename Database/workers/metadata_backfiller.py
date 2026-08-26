@@ -815,28 +815,29 @@ class MetadataBackfillMixin:
                             self.user, updated_count
                         )
 
-                    # 7. Release lock on the processed IDs
-                    with _dbmod.Database._backfill_lock:
-                        for album_id in target_ids:
-                            _dbmod.Database._active_backfills.discard(album_id)
-
                 except Exception as e:
                     self._recordWorkerCycle("spotify_api", success=False, error=_dbmod.parseError(e))
                     _dbmod.logger.error("[Backfiller-%s] Error in metadata backfiller loop: %s", self.user, e)
-                    # Cleanup registry if error occurred mid-process
+                else:
+                    self._recordWorkerCycle("spotify_api", success=True)
+                finally:
+                    # 7. Release the claimed ids on EVERY exit - success, an
+                    # Exception, and the BaseExceptions nothing above catches
+                    # (a SystemExit tearing the thread down). This used to live
+                    # on the success and except paths only, as two copies. A
+                    # leaked id makes every later cycle skip that album as
+                    # "already in flight" for the life of the process - a
+                    # backfill that quietly stops making progress on it.
+                    # target_ids is bound (empty) before the try, so this can
+                    # always run; guarded so a failing release cannot REPLACE
+                    # an in-flight exception (the masking rule).
                     try:
                         with _dbmod.Database._backfill_lock:
                             for album_id in target_ids:
                                 _dbmod.Database._active_backfills.discard(album_id)
-                    except Exception as cleanupError:
-                        # Losing this cleanup leaks the ids in _active_backfills
-                        # for the life of the process, and every later cycle
-                        # skips those albums as "already in flight" - a backfill
-                        # that quietly stops making progress on them.
+                    except Exception as cleanupError:  # noqa: BLE001 - must not mask the in-flight error
                         _dbmod.logger.warning("[Backfiller-%s] Failed to release %d in-flight album ids: %s",
                                                self.user, len(target_ids), cleanupError)
-                else:
-                    self._recordWorkerCycle("spotify_api", success=True)
 
                 if stop_event.wait(self.BACKFILLER_IDLE_WAIT_SECONDS):
                     break

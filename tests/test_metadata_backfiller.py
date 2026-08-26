@@ -315,6 +315,35 @@ class TestMetadataBackfiller(DatabaseTestCase):
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
+    def test_a_base_exception_still_releases_the_in_flight_ids(self, mock_get, mock_refresh):
+        """KeyboardInterrupt/SystemExit skip `except Exception`, and the
+        release used to live only on the success and Exception paths - an
+        interrupted cycle leaked its claimed ids, and every later cycle
+        skipped those albums as "already in flight" for the life of the
+        process. The first requests.get here IS the album fetch (no tracks
+        exist, so the ISRC step asks for nothing), which lands after the
+        claim - exactly the window that leaked."""
+        mock_get.side_effect = KeyboardInterrupt()
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        runsOneCycle(db, db.backfiller_stop_event)
+
+        with self.assertRaises(KeyboardInterrupt):
+            db._metadataBackfillLoop()
+
+        self.assertEqual(Database._active_backfills, set(),
+                         "an interrupted cycle must not leave its albums claimed")
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
     def test_backfiller_loop_fetches_and_deduplicates(self, mock_get, mock_refresh):
         # 1. Setup mock HTTP response for Spotify v1/albums
         mock_get.side_effect = perIdResponder([
