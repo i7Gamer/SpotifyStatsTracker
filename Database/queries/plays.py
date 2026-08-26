@@ -167,7 +167,7 @@ class PlayQueries:
         if not trackIds:
             return set()
         conn = self._conn()
-        placeholders = ",".join("?" * len(trackIds))
+        placeholders = ",".join("?" for _ in trackIds)
         rows = conn.execute(
             f"SELECT DISTINCT track_id FROM plays "
             f"WHERE username=? AND played_at >= ? AND track_id IN ({placeholders})",

@@ -600,6 +600,12 @@ class UserQueries:
         return row is not None
 
     def markFileImported(self, username: str, file_hash: str) -> None:
+        """Records `file_hash` as imported for `username`.
+
+        Does NOT commit - see upsertTrack()'s docstring: overwrite batches
+        (deferCommit=True) compose this with the batch's deletes and inserts so
+        everything commits or rolls back together, and non-deferred import
+        paths commit right after (import_service)."""
         conn = self._conn()
         conn.execute(
             "INSERT OR IGNORE INTO imported_files (username, file_hash) VALUES (?, ?)",

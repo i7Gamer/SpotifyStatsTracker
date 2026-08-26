@@ -777,7 +777,14 @@ class ListenerMixin:
                 listener.signalStop()
             except Exception as e:
                 _dbmod.logger.error("Error signaling listener stop for %s: %s", self.user, _dbmod.parseError(e))
-        wd = getattr(self.autoImporter, "wd", None)
+        #< two-step like getAutoImporterWorkerStatus: on a partially built
+        #  instance even the autoImporter attribute may be missing, and a raise
+        #  here would skip setting the worker stop events below
+        #< two-step like getAutoImporterWorkerStatus: on a partially built
+        #  instance even the autoImporter attribute may be missing, and a raise
+        #  here would skip setting the worker stop events below
+        auto_imp = getattr(self, "autoImporter", None)
+        wd = getattr(auto_imp, "wd", None) if auto_imp is not None else None
         if wd is not None:
             wd.signalStop()
         for eventName in self.WORKER_STOP_EVENT_NAMES:
@@ -801,7 +808,13 @@ class ListenerMixin:
         finally:
             if acquired:
                 self._listener_lock.release()
-        self.autoImporter.wd.stop()
+        # Same two-step guard as signalStop/getAutoImporterWorkerStatus: a
+        # raise here would skip the five worker stops below, leaving their
+        # threads signaled but never joined.
+        auto_imp = getattr(self, "autoImporter", None)
+        wd = getattr(auto_imp, "wd", None) if auto_imp is not None else None
+        if wd is not None:
+            wd.stop()
         self.stopMetadataBackfiller()
         self.stopWrappedCalculationsWorker()
         self.stopLastfmGenreBackfiller()

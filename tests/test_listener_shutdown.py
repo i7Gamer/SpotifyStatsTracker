@@ -214,6 +214,28 @@ class TestDatabaseStop(unittest.TestCase):
 
         db.autoImporter.wd.stop.assert_called_once()
 
+    def test_stop_survives_a_missing_auto_importer_and_still_stops_the_workers(self):
+        """stop()'s auto-importer line was the one unguarded access (signalStop
+        and getAutoImporterWorkerStatus both guard the same attributes) - and a
+        raise there skips the five worker stops behind it, leaving their
+        threads signaled but never joined."""
+        db = _bareDatabase()
+        del db.autoImporter   #< a partially built instance never assigned it
+        db.stopMetadataBackfiller = MagicMock()
+
+        db.stop()  # must not raise
+
+        db.stopMetadataBackfiller.assert_called_once()
+
+    def test_stop_survives_an_auto_importer_without_a_watchdog(self):
+        db = _bareDatabase()
+        db.autoImporter = MagicMock(spec=[])   #< importer built, no .wd on it
+        db.stopMetadataBackfiller = MagicMock()
+
+        db.stop()  # must not raise
+
+        db.stopMetadataBackfiller.assert_called_once()
+
     def test_startListener_stops_existing_listener(self):
         db = _bareDatabase()
         db.cookiesFile = "test_cookies.json"
