@@ -242,6 +242,12 @@
       }
 
       nav.addEventListener('click', function (e) {
+        /* A modified or non-primary click asks for the browser's own handling
+           (new tab/window, download) - intercepting it swallowed ctrl+click on
+           every tab link. `button > 0` rather than `!== 0`: harness events and
+           keyboard-activated clicks carry no button at all. */
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button > 0) return;
+
         var link = e.target.closest('a[href]');
         if (!link) return;
 

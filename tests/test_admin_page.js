@@ -207,6 +207,61 @@ run('init sets initial history state if null', () => {
   assert.strictEqual(win.history.state.adminTab, 'http://localhost/admin?tab=overview');
 });
 
+run('modifier clicks on the subnav pass through to the browser', () => {
+  // Ctrl/Cmd+click means "open in a new tab", Shift "new window", Alt
+  // "download" - the handler used to preventDefault them all, so the only way
+  // to open an admin tab beside the current one was the address bar.
+  const win = setupMockWindow('http://localhost/admin?tab=overview');
+  global.window = win;
+  global.document = win.document;
+  global.history = win.history;
+  global.location = win.location;
+  delete require.cache[require.resolve('../static/js/admin-page.js')];
+  const AdminPage = require('../static/js/admin-page.js');
+  AdminPage.init();
+  const seededState = win.history.state;
+
+  const link = { getAttribute: () => '/admin?tab=users' };
+  let prevented = 0;
+  const modifiers = [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true },
+                     { altKey: true }, { button: 1 }];
+  for (const mod of modifiers) {
+    win.listeners.click(Object.assign({
+      target: { closest: () => link },
+      preventDefault() { prevented += 1; },
+    }, mod));
+  }
+
+  assert.strictEqual(prevented, 0, 'a modified click must reach the browser untouched');
+  assert.strictEqual(win.history.state, seededState, 'and must push no history entry');
+});
+
+run('a plain subnav click is still intercepted', () => {
+  const win = setupMockWindow('http://localhost/admin?tab=overview');
+  global.window = win;
+  global.document = win.document;
+  global.history = win.history;
+  global.location = win.location;
+  const priorFetch = global.fetch;
+  global.fetch = () => new Promise(() => {});   //< navigate() fires one; hold it open
+  try {
+    delete require.cache[require.resolve('../static/js/admin-page.js')];
+    const AdminPage = require('../static/js/admin-page.js');
+    AdminPage.init();
+
+    let prevented = 0;
+    win.listeners.click({
+      target: { closest: () => ({ getAttribute: () => '/admin?tab=users' }) },
+      preventDefault() { prevented += 1; },
+      ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, button: 0,
+    });
+
+    assert.strictEqual(prevented, 1, 'the passthrough must not over-return on plain clicks');
+  } finally {
+    global.fetch = priorFetch;
+  }
+});
+
 //< runs last on purpose: it checks what the tests above left behind
 run('no navigate stub outlived its test', () => {
   assert.strictEqual(global.fetch, BASELINE_FETCH, 'a fetch stub is still installed');

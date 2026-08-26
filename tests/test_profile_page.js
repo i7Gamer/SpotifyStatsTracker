@@ -225,6 +225,54 @@ run('LOADING_CLASS constant is correct', () => {
   assert.strictEqual(ProfilePage.LOADING_CLASS, 'profile-tab-loading');
 });
 
+run('modifier clicks on the subnav pass through to the browser', () => {
+  /* Same defect shape as admin-page.js: preventDefault on a Ctrl/Cmd/Shift/Alt
+     or middle click swallowed "open in new tab" for every profile tab link. */
+  const dom = installProfileDom();
+  let clickHandler = null;
+  dom.nav.addEventListener = (type, fn) => { if (type === 'click') clickHandler = fn; };
+
+  ProfilePage.init();
+  assert.ok(clickHandler, 'init wired the subnav click handler');
+
+  const link = { getAttribute: () => '/profile/sharing' };
+  let prevented = 0;
+  const modifiers = [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true },
+                     { altKey: true }, { button: 1 }];
+  for (const mod of modifiers) {
+    clickHandler(Object.assign({
+      target: { closest: () => link },
+      preventDefault() { prevented += 1; },
+    }, mod));
+  }
+
+  assert.strictEqual(prevented, 0, 'a modified click must reach the browser untouched');
+  assert.strictEqual(global.history._pushed.length, 0, 'and must push no history entry');
+});
+
+run('a plain subnav click is still intercepted', () => {
+  const dom = installProfileDom();
+  let clickHandler = null;
+  dom.nav.addEventListener = (type, fn) => { if (type === 'click') clickHandler = fn; };
+  const priorFetch = global.fetch;
+  global.fetch = () => new Promise(() => {});   //< navigate() fires one; hold it open
+  try {
+    ProfilePage.init();
+
+    let prevented = 0;
+    clickHandler({
+      target: { closest: () => ({ getAttribute: () => '/profile/sharing' }) },
+      preventDefault() { prevented += 1; },
+      ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, button: 0,
+    });
+
+    assert.strictEqual(prevented, 1, 'the passthrough must not over-return on plain clicks');
+    assert.strictEqual(global.history._pushed.length, 1, 'the tab switch still pushes its entry');
+  } finally {
+    global.fetch = priorFetch;
+  }
+});
+
 run('_parse returns a queryable document', () => {
   if (typeof DOMParser === 'undefined') {
     console.log('# _parse: DOMParser not available in node - skipped');
