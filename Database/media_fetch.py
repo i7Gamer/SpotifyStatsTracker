@@ -40,6 +40,11 @@ MEDIA_FETCH_HTTP_TIMEOUT_SECONDS = 10
 WEB_API_TOKEN_CACHE_SECONDS = 50 * 60
 
 
+# The one status that is a verdict on the TOKEN rather than on the request or
+# the image: the artist lookup reacts to it by evicting the token cache (see
+# _fetchArtistImageUrl), which no other failure may do.
+HTTP_STATUS_UNAUTHORIZED = 401
+
 # The 4xx that ask us back rather than turning us away: Request Timeout, Too
 # Early, Too Many Requests. They sit on the client side of the number and the
 # server side of the meaning, so the "a 4xx is a verdict" rule below has to step
@@ -192,13 +197,16 @@ class MediaFetchMixin:
         POSTs for a token that lives an hour.
 
         Keyed on the refresh token, so rotated credentials miss the cache
-        immediately. No other invalidation on purpose: an already-issued
-        access token stays valid regardless of what is stored, and a REVOKED
-        grant 401s the API call, which falls back to the cookie client like
-        every other Web API failure here. A failed refresh is never cached, so
-        the next lookup retries. Two image threads may race a refresh and
-        both POST; the loser's token overwrites the winner's and both are
-        valid, so the race is left unlocked on purpose."""
+        immediately. The one other invalidation is a 401 from the API itself:
+        _fetchArtistImageUrl evicts the cache and retries once on a fresh
+        mint, so a token dying mid-TTL costs one doomed request instead of
+        pairing every lookup for the rest of the window with one. A failed
+        refresh is never cached, so the next lookup retries - which also
+        bounds a truly revoked grant at one refused POST per lookup. Two image
+        threads may race a refresh and both POST; the loser's token overwrites
+        the winner's and both are valid - and an eviction racing a mint at
+        worst discards a still-valid token and forces one extra POST - so the
+        whole cache is left unlocked on purpose."""
         cached = self._webApiTokenCache
         if cached is not None:
             token, mintedFrom, expiresAt = cached
@@ -206,7 +214,8 @@ class MediaFetchMixin:
                 return token
         from Database.Listeners.spotifyListener import _refresh_spotify_access_token
         token = _refresh_spotify_access_token(
-            creds["client_id"], creds["client_secret"], creds["refresh_token"])
+            creds["client_id"], creds["client_secret"], creds["refresh_token"],
+            logUser=self.user)
         if token:
             self._webApiTokenCache = (token, creds["refresh_token"],
                                       _dbmod.time.monotonic() + WEB_API_TOKEN_CACHE_SECONDS)
@@ -233,9 +242,27 @@ class MediaFetchMixin:
             access_token = self._cachedWebApiAccessToken(creds)
             if access_token:
                 try:
-                    headers = {"Authorization": f"Bearer {access_token}"}
-                    resp = _dbmod.requests.get(f"https://api.spotify.com/v1/artists/{artistId}", headers=headers,
+                    artistUrl = f"https://api.spotify.com/v1/artists/{artistId}"
+                    resp = _dbmod.requests.get(artistUrl,
+                                               headers={"Authorization": f"Bearer {access_token}"},
                                                timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
+                    if resp.status_code == HTTP_STATUS_UNAUTHORIZED:
+                        # The cached token died before its TTL (grant revoked,
+                        # or the token invalidated server-side). Evict rather
+                        # than pair every lookup for the rest of the cache
+                        # window with a doomed request, and retry ONCE on a
+                        # fresh mint; a failed refresh is never cached, so a
+                        # truly revoked grant costs one refused POST here and
+                        # falls back below like every other Web API failure.
+                        _dbmod.logger.warning(
+                            "Web API rejected the cached access token (401) for artist %s (user %s) - "
+                            "evicting the token cache and retrying once.", artistId, self.user)
+                        self._webApiTokenCache = None
+                        access_token = self._cachedWebApiAccessToken(creds)
+                        if access_token:
+                            resp = _dbmod.requests.get(artistUrl,
+                                                       headers={"Authorization": f"Bearer {access_token}"},
+                                                       timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
                     if resp.status_code == 200:
                         images = resp.json().get("images") or []
                         return images[0]["url"] if images else None

@@ -992,6 +992,99 @@ class TestWebApiTokenCache(unittest.TestCase):
         #< None must not be remembered as a token - the next lookup retries
         self.assertEqual(refresh.call_count, 2)
 
+    def _cookieFallbackClient(self):
+        mock_sp = MagicMock()
+        mock_sp.artist.return_value = {"images": [{"url": "https://cookie.example/fallback"}]}
+        return mock_sp
+
+    def _unauthorizedResponse(self):
+        resp = MagicMock()
+        resp.status_code = 401
+        return resp
+
+    def test_a_401_evicts_the_cache_and_a_retry_succeeds(self):
+        """A token dying mid-TTL (revoked, or invalidated server-side) used to
+        pin every lookup for the rest of the 50-minute cache window to one
+        doomed request each - a 401 now evicts the cache and retries once on a
+        fresh mint."""
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   side_effect=["tok1", "tok2"]) as refresh, \
+                patch("Database.database.requests.get",
+                      side_effect=[self._unauthorizedResponse(), self._artistResponse()]) as get, \
+                patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()):
+            url = db._fetchArtistImageUrl("a1")
+
+        self.assertEqual(url, "https://i.scdn.co/image/abc",
+                         "the retried Web API answer, not the cookie fallback")
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer tok2",
+                         "the retry must carry the fresh mint, not the evicted token")
+        token, _mintedFrom, _expiresAt = db._webApiTokenCache
+        self.assertEqual(token, "tok2")
+
+    def test_a_persistent_401_falls_back_after_one_retry(self):
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   side_effect=["tok1", "tok2"]) as refresh, \
+                patch("Database.database.requests.get",
+                      side_effect=[self._unauthorizedResponse(), self._unauthorizedResponse()]) as get, \
+                patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()), \
+                self.assertLogs("Database.database", level="WARNING"):
+            #< the assertLogs pins the other half of the fix: today's 401 is
+            #  SILENT (only exceptions log), so 50 degraded minutes left no trace
+            url = db._fetchArtistImageUrl("a1")
+
+        self.assertEqual(url, "https://cookie.example/fallback")
+        self.assertEqual(get.call_count, 2, "one retry, never a loop")
+        self.assertEqual(refresh.call_count, 2)
+
+    def test_a_401_with_a_dead_grant_falls_back_without_a_retry(self):
+        """After the evict, a refused mint (revoked grant) leaves nothing to
+        retry with - one refused POST, then the cookie client."""
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   side_effect=["tok1", None]), \
+                patch("Database.database.requests.get",
+                      side_effect=[self._unauthorizedResponse()]) as get, \
+                patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()):
+            url = db._fetchArtistImageUrl("a1")
+
+        self.assertEqual(url, "https://cookie.example/fallback")
+        self.assertEqual(get.call_count, 1)
+        self.assertIsNone(db._webApiTokenCache,
+                          "a failed refresh is never cached - the next lookup retries")
+
+    def test_a_non_401_failure_does_not_evict_the_cache(self):
+        """A 5xx (or 403/429) is not a verdict on the token - only a 401 may
+        pay the eviction's extra mint."""
+        db = self._dbWithCreds()
+        serverError = MagicMock()
+        serverError.status_code = 500
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="tok1") as refresh, \
+                patch("Database.database.requests.get", side_effect=[serverError]), \
+                patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()):
+            url = db._fetchArtistImageUrl("a1")
+
+        self.assertEqual(url, "https://cookie.example/fallback")
+        self.assertEqual(refresh.call_count, 1)
+        token, _mintedFrom, _expiresAt = db._webApiTokenCache
+        self.assertEqual(token, "tok1", "a 5xx must not cost the cache its still-valid token")
+
+    def test_the_token_mint_names_the_user_it_logs_for(self):
+        """_refresh_spotify_access_token's failure lines carry logUser to say
+        WHOSE worker failed; a mint without it logs anonymously in a
+        multi-user instance."""
+        db = self._dbWithCreds()
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="tok1") as refresh, \
+                patch("Database.database.requests.get", return_value=self._artistResponse()):
+            db._fetchArtistImageUrl("a1")
+
+        self.assertEqual(refresh.call_args.kwargs.get("logUser"), db.user)
+
 
 if __name__ == "__main__":
     unittest.main()

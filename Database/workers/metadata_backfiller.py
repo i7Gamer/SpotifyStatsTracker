@@ -567,7 +567,8 @@ class MetadataBackfillMixin:
                             return None
                         from Database.Listeners.spotifyListener import _refresh_spotify_access_token
                         return _refresh_spotify_access_token(
-                            creds["client_id"], creds["client_secret"], creds["refresh_token"])
+                            creds["client_id"], creds["client_secret"], creds["refresh_token"],
+                            logUser=self.user)
 
                     getAccessToken = _CycleAccessToken(mintAccessToken)
 

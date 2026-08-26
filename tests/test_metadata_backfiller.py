@@ -289,6 +289,32 @@ class TestMetadataBackfiller(DatabaseTestCase):
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("requests.get")
+    def test_the_cycle_token_mint_names_the_user_it_logs_for(self, mock_get, mock_refresh):
+        """_refresh_spotify_access_token's failure lines carry logUser to say
+        WHOSE worker failed - the listener passes it, and the cycle's shared
+        mint must too, or a refused refresh logs anonymously in a multi-user
+        instance."""
+        mock_get.side_effect = perIdResponder([])
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            #< one album missing metadata, so the cycle has a reason to mint
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) VALUES ('alb1', 'Album 1', '', 0.0, 0)")
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+
+        Database._active_backfills.clear()
+        db.backfiller_stop_event = MagicMock()
+        runsOneCycle(db, db.backfiller_stop_event)
+
+        db._metadataBackfillLoop()
+
+        self.assertEqual(mock_refresh.call_args.kwargs.get("logUser"), db.user)
+        Database._active_backfills.clear()
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("requests.get")
     def test_backfiller_loop_fetches_and_deduplicates(self, mock_get, mock_refresh):
         # 1. Setup mock HTTP response for Spotify v1/albums
         mock_get.side_effect = perIdResponder([
