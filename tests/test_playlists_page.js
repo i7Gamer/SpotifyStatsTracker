@@ -181,15 +181,41 @@ run('deselecting the last tag asks the server nothing at all', async () => {
   assert.strictEqual(dom.btnDownload.disabled, true);
 });
 
-run('both selected tags travel together', async () => {
+run('both selected tags travel together, one tags= param each', async () => {
   const dom = previewSetup({ respond: jsonOnce({ track_count: 30 }) });
 
   dom.chipA.click();
   dom.chipB.click();
   await tick();
 
-  const last = dom.calls.fetched[dom.calls.fetched.length - 1].url;
-  assert.ok(last.includes(encodeURIComponent('jazz,lofi')), last);
+  const last = new URL(dom.calls.fetched[dom.calls.fetched.length - 1].url, 'http://localhost');
+  assert.deepStrictEqual(last.searchParams.getAll('tags'), ['jazz', 'lofi']);
+});
+
+run('a tag whose name contains a comma survives the trip intact', async () => {
+  //< the reason the selection is repeated params rather than one joined
+  //  value: normalizeTag allows a comma in a tag NAME, and the old joined
+  //  form could not say one - the server split it into two tags that don't
+  //  exist and the page reported 0 matches for a chip the user could see
+  const chip = makeChip('rock, classic');
+  const previewCount = makeControl();
+  const btnDownload = makeControl();
+  const calls = loadPlaylists({
+    respond: jsonOnce({ track_count: 4 }),
+    selectors: { '.playlist-tag-chip': [chip] },
+    elements: { previewCount, btnDownloadPlaylist: btnDownload,
+                matchMode: makeControl('any'), sortBy: makeControl('plays'),
+                exportFormat: makeControl('csv') },
+  });
+
+  chip.click();
+  await tick();
+  btnDownload.handlers.click();
+
+  const preview = new URL(calls.fetched[0].url, 'http://localhost');
+  assert.deepStrictEqual(preview.searchParams.getAll('tags'), ['rock, classic']);
+  const download = new URL(global.window.location.href, 'http://localhost');
+  assert.deepStrictEqual(download.searchParams.getAll('tags'), ['rock, classic']);
 });
 
 // ------------------------------------------------- the out-of-order guard

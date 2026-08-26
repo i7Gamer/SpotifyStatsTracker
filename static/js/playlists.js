@@ -12,6 +12,15 @@
 
     var selectedTags = new Set();
 
+    //< one tags= param per tag, never joined: a tag NAME may contain a comma
+    //  (the server allows one), which a joined-then-split form cannot say -
+    //  see routes/tags.py::_requestedTags, the other half of this protocol
+    function tagsQueryString() {
+      return Array.from(selectedTags).map(function (t) {
+        return 'tags=' + encodeURIComponent(t);
+      }).join('&');
+    }
+
     //< the hidden input Flask-WTF renders; see the note in tags.js - the
     //  meta[name="csrf-token"] branch that used to lead this was dead in both
     //  copies, because nothing emits that tag
@@ -56,8 +65,7 @@
         return;
       }
 
-      var tagsArr = Array.from(selectedTags);
-      var url = '/api/playlists/preview?tags=' + encodeURIComponent(tagsArr.join(',')) +
+      var url = '/api/playlists/preview?' + tagsQueryString() +
                 '&match=' + encodeURIComponent(matchMode.value);
 
       fetch(url)
@@ -95,8 +103,7 @@
     if (btnDownload) {
       btnDownload.addEventListener('click', function() {
         if (selectedTags.size === 0) return;
-        var tagsArr = Array.from(selectedTags);
-        var exportUrl = '/playlist/export?tags=' + encodeURIComponent(tagsArr.join(',')) +
+        var exportUrl = '/playlist/export?' + tagsQueryString() +
                         '&match=' + encodeURIComponent(matchMode.value) +
                         '&sort=' + encodeURIComponent(sortBy.value) +
                         '&format=' + encodeURIComponent(exportFormat.value);

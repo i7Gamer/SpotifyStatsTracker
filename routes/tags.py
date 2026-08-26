@@ -20,6 +20,19 @@ logger = logging.getLogger(__name__)
 FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def _requestedTags() -> list[str]:
+    """The ?tags= selection: one repeated `tags` query param per tag
+    (?tags=a&tags=b - what playlists.js sends).
+
+    getlist, never a comma-split: a tag NAME may contain a comma
+    (normalizeTag allows one), and the old joined-and-split protocol turned
+    such a tag into two that don't exist - creatable, rendered as a chip,
+    matched never. An old bookmarked comma-joined multi-tag URL now reads as
+    ONE unknown tag and downloads an empty playlist; the page itself builds a
+    fresh URL per click, so nothing but a stale bookmark ever sends one."""
+    return [t.strip() for t in request.args.getlist("tags") if t.strip()]
+
+
 def _requestFields(*names) -> list[str] | None:
     """The named fields of a JSON or form body, stripped - or None when the
     body is not a mapping at all.
@@ -176,8 +189,7 @@ def register(app, dashboard):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
 
-        tags_param = request.args.get("tags", "")
-        tags = [t.strip() for t in tags_param.split(",") if t.strip()]
+        tags = _requestedTags()
         match_mode = request.args.get("match", "any")
 
         if not tags:
@@ -215,8 +227,7 @@ def register(app, dashboard):
         else:
             if not dashboard.repo.isTagsEnabled():
                 abort(404)
-            tags_param = request.args.get("tags", "")
-            tags = [t.strip() for t in tags_param.split(",") if t.strip()]
+            tags = _requestedTags()
             match_mode = request.args.get("match", "any")
             sortBy = request.args.get("sort", "plays")
             if sortBy not in ("plays", "recent", "name"):

@@ -182,6 +182,41 @@ class TestTagsRoutes(AppTestCase):
         self.assertIn("application/xspf+xml", resp.mimetype)
         self.assertIn("<location>spotify:track:t1</location>", resp.get_data(as_text=True))
 
+    def test_a_tag_whose_name_contains_a_comma_can_be_selected(self):
+        """The selection travels as one `tags` query param PER TAG. The old
+        protocol joined the selection with "," and split it back server-side,
+        so a tag whose NAME contains a comma - normalizeTag allows one - could
+        be created and rendered as a chip but never previewed or exported: the
+        split turned it into two tags that don't exist and the page reported
+        0 matches for a tag the user was looking at."""
+        self._login()
+        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "rock, classic"})
+
+        resp = self.client.get("/api/playlists/preview?tags=rock%2C%20classic")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["track_count"], 1)
+
+        resp = self.client.get("/playlist/export?tags=rock%2C%20classic&format=csv")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Rock Song", resp.get_data(as_text=True))
+
+    def test_a_multi_tag_selection_travels_as_repeated_params(self):
+        """?tags=workout&tags=chill - both tags must reach the filter, not
+        just the first (request.args.get reads only one value)."""
+        self._login()
+        self.dash.repo.upsertTrack(makeTrack(trackId="t2", name="Newer Song", albumId="alb2", artistId="art2"))
+        self.dash.repo.insertPlay(self.username, "t2", 9000.0, 200000)
+        self.dash.repo.commit()
+        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "workout"})
+        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t2", "tag": "chill"})
+
+        resp = self.client.get("/api/playlists/preview?tags=workout&tags=chill")
+        self.assertEqual(resp.get_json()["track_count"], 2)
+
+        body = self.client.get("/playlist/export?tags=workout&tags=chill&format=csv").get_data(as_text=True)
+        self.assertIn("Rock Song", body)
+        self.assertIn("Newer Song", body)
+
     def test_playlist_export_sort_by_recent(self):
         """Two tagged tracks with different last-played times, so the ordering
         is actually observable - with one track this passed even if sorting was
