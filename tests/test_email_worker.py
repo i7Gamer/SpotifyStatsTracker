@@ -134,6 +134,43 @@ def test_email_worker_processes_queue(mock_send):
 
 
 @patch("services.email_worker.send_email_notification")
+def test_a_failing_send_is_logged_and_the_job_still_completes(mock_send, caplog):
+    """The except/finally pair around one job, previously uncovered: a send
+    that raises must be LOGGED rather than silently dropped, must still
+    task_done() its queue item, and must report the job as processed so the
+    loop keeps draining instead of treating the queue as idle."""
+    mock_send.side_effect = RuntimeError("SMTP said no")
+
+    worker = EmailWorker()
+    worker.enqueue("test_user_w9", EVENT_INVALID_COOKIES, {})
+
+    with caplog.at_level("ERROR", logger="services.email_worker"):
+        processed = worker.process_one()
+
+    assert processed is True
+    assert "Error processing email notification" in caplog.text
+    assert worker._queue.unfinished_tasks == 0, "a failed send must still task_done() its item"
+
+
+def test_start_while_running_keeps_the_existing_thread():
+    """stop()'s release-the-reference dance leans on this guard by name -
+    "start() declines while a thread is alive" - and it was uncovered: a
+    second start() against a live worker must be a no-op, not a replacement
+    that orphans the first thread on an event nothing holds a reference to."""
+    worker = EmailWorker()
+    worker.start()
+    try:
+        first = worker._thread
+        assert first.is_alive()
+
+        worker.start()
+
+        assert worker._thread is first, "a live worker was replaced, orphaning its thread"
+    finally:
+        worker.stop()
+
+
+@patch("services.email_worker.send_email_notification")
 def test_global_queue_email_notification(mock_send):
     mock_send.return_value = True
 

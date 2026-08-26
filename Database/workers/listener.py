@@ -728,7 +728,7 @@ class ListenerMixin:
         self.autoImporter.start()
 
     def isListenerLoggedIn(self):
-        if self.listener == None:
+        if self.listener is None:
             return False
         return self.listener.isLoggedIn()
 
