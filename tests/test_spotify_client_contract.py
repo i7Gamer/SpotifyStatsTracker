@@ -576,8 +576,9 @@ class TestCookieUtilitiesContract(unittest.TestCase):
     """parseCookieString feeds the login form's pasted cookies (routes/auth),
     saveSession writes the sessions file the login flow verifies against
     (app._verifyCookiesMatchEmail). Formats supported are what users actually
-    paste: a devtools "k=v; k2=v2" line, a Netscape tab export (with its
-    header row and # comments), or bare k=v lines."""
+    paste: a devtools "k=v; k2=v2" line, a DevTools table copy (name/value
+    first, with its header row), a real Netscape cookies.txt export
+    (domain-first columns, # comments, #HttpOnly_ rows), or bare k=v lines."""
 
     def test_semicolon_line(self):
         from Database.Spotify.cookies import parseCookieString
@@ -592,6 +593,40 @@ class TestCookieUtilitiesContract(unittest.TestCase):
                "sp_key\tdef\t.spotify.com\n")
         cookies = parseCookieString(raw)
         self.assertEqual(cookies, {"sp_dc": "abc", "sp_key": "def"})
+
+    def test_netscape_7_column_standard_export(self):
+        """A real cookies.txt line is domain-first: name and value sit in the
+        last two of its seven columns. Read like the table paste above it
+        yielded {".spotify.com": "TRUE"} - and a silently dead login."""
+        from Database.Spotify.cookies import parseCookieString
+        raw = (".spotify.com\tTRUE\t/\tTRUE\t1799999999\tsp_dc\tAQB-token\n"
+               ".spotify.com\tTRUE\t/\tTRUE\t1799999999\tsp_key\tdef\n")
+        self.assertEqual(parseCookieString(raw),
+                         {"sp_dc": "AQB-token", "sp_key": "def"})
+
+    def test_netscape_httponly_prefixed_line(self):
+        """curl and the cookies.txt exporters hide HttpOnly cookies behind a
+        #HttpOnly_ prefix - comment-shaped, but a real cookie, and sp_dc/sp_key
+        (the two that matter here) are HttpOnly."""
+        from Database.Spotify.cookies import parseCookieString
+        raw = "#HttpOnly_.spotify.com\tTRUE\t/\tTRUE\t0\tsp_key\tdef\n"
+        self.assertEqual(parseCookieString(raw), {"sp_key": "def"})
+
+    def test_mixed_formats_one_paste(self):
+        """Every supported shape in one paste. The wide table row (7 columns
+        whose flag positions are NOT TRUE/FALSE) pins the format discriminator:
+        column count alone must not flip a name-first row to domain-first."""
+        from Database.Spotify.cookies import parseCookieString
+        raw = ("# Netscape HTTP Cookie File\n"
+               "NAME\tVALUE\tDOMAIN\n"
+               ".spotify.com\tTRUE\t/\tTRUE\t1799999999\tsp_dc\tAQB-token\n"
+               "#HttpOnly_.spotify.com\tTRUE\t/\tTRUE\t0\tsp_gs\tghi\n"
+               "sp_key\tdef\t.spotify.com\n"
+               "sp_t\tjkl\t.spotify.com\t/\tSession\t123\tfalse\n"
+               "sp_m=de\n")
+        self.assertEqual(parseCookieString(raw), {
+            "sp_dc": "AQB-token", "sp_gs": "ghi", "sp_key": "def",
+            "sp_t": "jkl", "sp_m": "de"})
 
     def test_bare_pairs_one_per_line(self):
         from Database.Spotify.cookies import parseCookieString
