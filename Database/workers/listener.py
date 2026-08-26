@@ -780,9 +780,6 @@ class ListenerMixin:
         #< two-step like getAutoImporterWorkerStatus: on a partially built
         #  instance even the autoImporter attribute may be missing, and a raise
         #  here would skip setting the worker stop events below
-        #< two-step like getAutoImporterWorkerStatus: on a partially built
-        #  instance even the autoImporter attribute may be missing, and a raise
-        #  here would skip setting the worker stop events below
         auto_imp = getattr(self, "autoImporter", None)
         wd = getattr(auto_imp, "wd", None) if auto_imp is not None else None
         if wd is not None:
