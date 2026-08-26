@@ -28,7 +28,7 @@ try:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
+    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
@@ -42,8 +42,13 @@ except ModuleNotFoundError:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
+
+#< after the shim above on purpose: on a direct `python Database/database.py`
+#  run, utils' own sys.path fix (see Database/utils.py) is what makes the
+#  repo-root config module importable at all
+from config import WEEKDAY_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -1661,7 +1666,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 total = item["total_plays"]
                 last_played = item["last_played_at"]
                 days_ago = max(1, int((now_ts - last_played) // SECONDS_PER_DAY)) if last_played else 0
-                months_ago = max(1, days_ago // 30)
+                months_ago = max(1, days_ago // GAP_DAYS_PER_MONTH)
                 song["trend_subtitle"] = f"{total} full plays all-time · last played {months_ago} month{'s' if months_ago != 1 else ''} ago"
                 result["forgotten"] = song
 
@@ -1709,12 +1714,13 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         if not rows:
             return None
 
-        # Map Python's locale-independent weekday index to English names
-        WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         counts = {}
         for row in rows:
             dt = convertToDatetime(row["bucketStartTs"], tz=self.tz)
-            day_name = WEEKDAYS[dt.weekday()]
+            #< Python's locale-independent weekday index, mapped through the
+            #  canonical English names (config.WEEKDAY_NAMES is Monday-first,
+            #  exactly weekday()'s order)
+            day_name = WEEKDAY_NAMES[dt.weekday()]
             counts[day_name] = counts.get(day_name, 0) + row["plays"]
 
         peak_day = max(counts, key=counts.get)

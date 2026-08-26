@@ -8,7 +8,7 @@ import math
 import time
 
 from flask import request
-from Database.utils import convertToDatetime, now
+from Database.utils import convertToDatetime, now, SECONDS_PER_DAY
 from services.genre_gate import emptyGenreCoverage, genreGatePasses, resolveGenreCoverage, resolveGenreDistribution
 from config import (
     SHARE_LINK_EXPIRY_CHOICES, SHARE_LINK_MAX_PER_BUCKET,
@@ -81,7 +81,7 @@ class WrappedBuilderMixin:
         view where an absolute date fits better."""
         if expiresAt is None:
             return "Never expires"
-        remainingDays = math.ceil((expiresAt - nowTs) / 86400)
+        remainingDays = math.ceil((expiresAt - nowTs) / SECONDS_PER_DAY)
         if remainingDays <= 0:
             return "Expires today"
         return f"Expires in {remainingDays} day" + ("" if remainingDays == 1 else "s")

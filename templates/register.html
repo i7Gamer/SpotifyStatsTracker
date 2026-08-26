@@ -15,7 +15,7 @@
       <p class="error">{{ error }}</p>
     {% endif %}
 
-    <form class="login-form" method="post" action="/register">
+    <form class="login-form" method="post" action="{{ url_for('register') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <div class="form-group">
         <label for="registerEmail">Email</label>
