@@ -493,11 +493,25 @@ class SqlFragments:
         words = self.searchWords(searchQuery)
         if not words:
             return ""
+        #< where this call found `params`, so the short-circuit below can put it
+        #  back exactly as it was
+        paramsBefore = len(params)
         clauses = []
         for word in words:
             trackIds = self.getMatchingTrackIds(word)
             playedFrom = self.getMatchingPlayedFrom(word)
             if not trackIds and not playedFrom:
+                # Unwind this call's own binds first. Each word appends its id
+                # blob as it is resolved, so by the time a LATER word turns out
+                # to match nothing, the earlier ones are already in `params` -
+                # and " AND 0" carries no placeholder to consume them. The
+                # statement's bind count then disagreed with its ? count and
+                # SQLite refused it, so /history 500'd on the ordinary way
+                # people narrow a search: adding a word to a query that is
+                # already returning rows. Word order decided it - a
+                # non-matching word FIRST returns before any append, which is
+                # why this survived: it is the spelling every test used.
+                del params[paramsBefore:]
                 return " AND 0"
             sides = []
             if trackIds:

@@ -99,6 +99,26 @@ class TestItStillNarrows(PerWordSearchTestCase):
         #< "a" appears in Despacito/Vida and Yesterday/Beatles
         self.assertEqual(self._songIds("a"), ["t1", "t2", "t3"])
 
+    def test_the_history_search_narrows_in_either_word_order(self):
+        """The /history path resolves each word as it goes and binds that
+        word's id blob immediately, so a word matching NOTHING short-circuited
+        to " AND 0" after earlier words had already appended theirs - and
+        " AND 0" carries no placeholder to consume them. The statement's bind
+        count then disagreed with its ? count, SQLite refused it, and the page
+        500'd on the ordinary way people narrow a search: adding a word to a
+        query that is already returning rows.
+
+        Word ORDER is what decided it, which is why nothing caught this - a
+        non-matching word FIRST returns before any append, and that is the
+        spelling every existing test used. The file's own header calls word
+        order irrelevant; here it is, on both paths."""
+        self.assertEqual(self._playIds("xylophone Despacito"), [])   #< always worked
+        self.assertEqual(self._playIds("Despacito xylophone"), [])
+        #< the count runs the same builder and 500'd the same way
+        self.assertEqual(self.db.searchEntriesCount("Despacito xylophone"), 0)
+        #< two matching words first, so more than one word's binds must unwind
+        self.assertEqual(self._playIds("Despacito Vida xylophone"), [])
+
     def test_adding_a_word_can_only_narrow(self):
         broad = self._songIds("a")
         narrowed = self._songIds("a Despacito")
