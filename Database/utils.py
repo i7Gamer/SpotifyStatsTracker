@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import re
 import datetime   #< deliberately not from-imported: datetime.datetime/timezone/timedelta read clearest
 import time as _time
 from os import environ
@@ -10,6 +11,9 @@ from contextlib import suppress
 from zoneinfo import ZoneInfo   #< IANA zones, selected via the TZ env var below
 
 DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%Y")   #< bare-date forms parseDateString accepts, most specific first
+
+#< the one bare-date form that also survives float() - see convertToDatetime
+_BARE_YEAR_RE = re.compile(r"\d{4}")
 
 # The env-var values this project reads as "on", re-exported from config so the
 # Database package and the web layer cannot disagree about what "on" means.
@@ -262,6 +266,25 @@ def convertToDatetime(timestamp, tz=None):
     raising: one bad date on one row must not take down a whole page."""
     if isinstance(timestamp, datetime.datetime):   #< already a datetime: just normalize the zone
         return toTimezone(timestamp, tz=tz)
+
+    # A bare four-digit string is a YEAR, and has to be read as one BEFORE the
+    # numeric path below, because that path succeeds: float("1981") is 1981.0,
+    # which is 33 minutes into 1970. Spotify sends exactly this - release_date
+    # arrives at the precision Spotify knows the album to, so
+    # release_date_precision "year" makes the field the four characters
+    # "1981" - and both callers that convert it (Formatters/spotifyClient.py's
+    # formatTrack and the album metadata backfiller) stored the 1970 value.
+    # For the backfiller it stuck: getAlbumsMissingMetadata only re-queues
+    # release_date = 0, so a wrong-but-nonzero date is never asked about again.
+    #
+    # In the shared helper rather than at the two call sites because the blast
+    # radius is exactly "four digits": %Y matches nothing else, so "0000"
+    # (no year 0), "12345" and "20210507" all stay numeric, and no caller can
+    # mean "1000 to 9999 seconds after the epoch" by a four-character string.
+    if isinstance(timestamp, str) and _BARE_YEAR_RE.fullmatch(timestamp):
+        parsed = parseDateString(timestamp, tz=tz)
+        if parsed is not None:
+            return parsed
 
     # The CONVERSION sits inside the guard, not just the float() call: NaN and
     # infinity pass float() and then blow up in fromtimestamp's arithmetic,

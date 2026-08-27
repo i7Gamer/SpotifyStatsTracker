@@ -296,6 +296,51 @@ class TestUnparseableInputNeverRaises(unittest.TestCase):
         self.assertEqual(utilsModule.convertToDatetime("0000-00-00"), utilsModule.epoch())
 
 
+class TestABareYearIsAYearNotAnEpochOffset(unittest.TestCase):
+    """convertToDatetime's contract already says "bare date", and
+    parseDateString accepts "%Y" - but the numeric fast-path ran first and
+    float("1981") succeeds, so a bare year landed 33 minutes into 1970.
+
+    Spotify sends exactly that: `release_date` comes at the precision Spotify
+    knows the album to, and `release_date_precision: "year"` means the field
+    is the four characters "1981". Both production callers converting that
+    field (Database/Formatters/spotifyClient.py's formatTrack and the album
+    metadata backfiller) stored 1981.0 - a 1970 timestamp - and for the
+    backfiller it stuck: getAlbumsMissingMetadata only re-queues
+    `release_date = 0`, so a wrong-but-nonzero date is never asked about
+    again."""
+
+    def test_a_year_precision_release_date_is_that_year(self):
+        self.assertEqual(utilsModule.convertToDatetime("1981").year, 1981)
+        #< the two coarser precisions Spotify also sends, which already worked
+        self.assertEqual(utilsModule.convertToDatetime("1981-12").year, 1981)
+        self.assertEqual(utilsModule.convertToDatetime("1981-12-25").year, 1981)
+
+    def test_the_decade_bucket_a_stored_year_produces(self):
+        """The user-visible half: plays.py's release-decade chart buckets on
+        strftime('%Y', release_date, 'unixepoch'), so the old 1981.0 put every
+        year-precision album in the 1970s."""
+        stamp = utilsModule.convertToDatetime("1981").timestamp()
+        decade = (utilsModule.convertToDatetime(stamp).year // 10) * 10
+        self.assertEqual(decade, 1980)
+
+    def test_numeric_strings_that_are_not_years_are_still_timestamps(self):
+        """The blast radius, pinned. Only EXACTLY four digits match %Y, so
+        these all stay on the numeric path they have always taken - the reason
+        this fix could be made in the shared helper rather than at each call
+        site."""
+        for text in ("0", "0000", "12345", "20210507", "1981.0", "-1981", "1e3"):
+            with self.subTest(text=text):
+                self.assertEqual(utilsModule.convertToDatetime(text),
+                                 utilsModule.fromtimestamp(float(text)))
+
+    def test_a_real_epoch_number_is_untouched(self):
+        """Negative control: the hot path this guard sits in front of."""
+        self.assertEqual(utilsModule.timeToInt(1700000000), 1700000000)
+        self.assertEqual(utilsModule.convertToDatetime(1700000000),
+                         utilsModule.fromtimestamp(1700000000))
+
+
 if __name__ == "__main__":
     unittest.main()
 
