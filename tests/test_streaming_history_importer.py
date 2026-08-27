@@ -1473,6 +1473,38 @@ class TestConvertToList(unittest.TestCase):
     def test_corrupt_json_is_unrecognized(self):
         self.assertEqual(self._importer()._convertToList('[{"ts": "2023-'), ([], "None"))
 
+    def test_a_leading_blank_line_does_not_leave_the_header_as_data(self):
+        """The sniff and the slice used to disagree about the same string: the
+        sniff normalized (`export.lstrip().startswith(...)`) and the slice did
+        not (`export.splitlines()[1:]`), so a leading newline made
+        splitlines()[1:] drop the BLANK line and keep the header as row 0.
+
+        That row then fails int(DURATION_MS) and books a droppedMalformed -
+        which is in UNREADABLE_DROP_STAT_KEYS, so _importHistoryBatchOverwriteLocked
+        refuses the whole batch with "re-export the file", advice that cannot
+        fix it. _expandMusicoletRows' own docstring calls this impossible:
+        "The header row is NOT our problem: _convertToList strips it ... Were
+        it to, every well-formed Musicolet overwrite import would abort"."""
+        for label, text in (("leading newline", "\n" + MUSICOLET_CSV),
+                            ("leading CRLF", "\r\n" + MUSICOLET_CSV),
+                            ("leading spaces", "   " + MUSICOLET_CSV),
+                            ("no leading whitespace", MUSICOLET_CSV)):
+            with self.subTest(label=label):
+                rows, exportType = self._importer()._convertToList(text)
+                self.assertEqual(exportType, "musicoletPremium")
+                self.assertTrue(rows, "the data row must survive")
+                self.assertFalse(rows[0].startswith("FILE_PATH,"),
+                                 f"{label}: the header was kept as a data row")
+
+    def test_a_leading_blank_line_books_no_malformed_row(self):
+        """The consequence the guard above exists for, asserted where the
+        overwrite import reads it."""
+        stats = {}
+        rows, _ = self._importer()._convertToList("\n" + MUSICOLET_CSV)
+        self._importer()._expandMusicoletRows(rows, stats=stats)
+
+        self.assertEqual(stats.get("droppedMalformed", 0), 0)
+
 
 class TestSearchForSongEmptyResults(unittest.TestCase):
     """An empty search result must raise a readable error whose text can never

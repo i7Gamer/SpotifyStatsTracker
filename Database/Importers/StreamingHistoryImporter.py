@@ -108,8 +108,17 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
         which Database.importHistory treats as a failed import rather than
         silently succeeding."""
         export = export.lstrip("\ufeff")
-        if export.lstrip().startswith("FILE_PATH,"):   #< Musicolet's CSV header
-            return export.splitlines()[1:], "musicoletPremium"   #< CSV: drop the header row
+        # ONE normalized string for both the sniff and the slice. They used to
+        # disagree - the sniff stripped, the slice did not - so a leading
+        # newline had splitlines()[1:] drop the BLANK line and keep the HEADER
+        # as row 0. That row fails int(DURATION_MS) and books a
+        # droppedMalformed, which is an UNREADABLE_DROP_STAT_KEY, so the
+        # overwrite import refused the whole batch and told the user to
+        # re-export a file that was fine. See _expandMusicoletRows' docstring,
+        # which states this cannot happen.
+        csvText = export.lstrip()
+        if csvText.startswith("FILE_PATH,"):   #< Musicolet's CSV header
+            return csvText.splitlines()[1:], "musicoletPremium"   #< CSV: drop the header row
 
         try:
             entries = json.loads(export)
