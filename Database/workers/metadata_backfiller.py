@@ -79,6 +79,18 @@ TOKEN_REFRESH_REAUTH_THRESHOLD = 3
 # because it is the one that says stopping now helps.
 SPOTIFY_RATE_LIMIT_STATUS = 429
 
+# How many EXTRA pages of one album's track list the repair pass will follow.
+#
+# GET /v1/albums/<id> embeds only the first page (50 items), so an album's
+# later tracks were never seen - and an artistless one among them made
+# getAlbumsWithArtistlessTracks re-select that album every retry window
+# forever, repairing the same first page each time. These pages spend the same
+# per-app catalog quota as the album lookups themselves (the window the ISRC
+# step shares), so the walk is bounded rather than trusting the server's own
+# `next` to end: 4 extra pages reaches 250 tracks, past any real album -
+# a 100-disc box set is one album per disc on Spotify, not one of 2000 tracks.
+ALBUM_TRACK_PAGE_MAX = 4
+
 # How long to stand the Web-API catalog lookups down when Spotify answers 429
 # without saying for how long. One stand-down for BOTH catalog steps - the ISRC
 # batch and the album batch spend the same per-app quota, so a refusal on
@@ -280,6 +292,55 @@ class MetadataBackfillMixin:
             stop_event.wait(SPOTIFY_REQUEST_PACE_SECONDS)
 
         return _CatalogBatch(attempted, failures, firstFailure)
+
+    def _walkRemainingAlbumTracks(self, albumRaw, headers, stop_event) -> bool:
+        """Extend `albumRaw["tracks"]["items"]` with the pages beyond the
+        first, in place. Returns whether the list is now COMPLETE.
+
+        Only the completeness answer may drive markAlbumsArtistRepairDone: a
+        walk that stopped early has not established that Spotify credits
+        nobody on the tracks it never saw, and stamping it would silence a
+        repairable album for ALBUM_ARTIST_REPAIR_RETRY_SECONDS.
+
+        Failures are swallowed rather than raised, deliberately. This runs
+        inside _spendCatalogBatch's per-id try, where raising would discard
+        the FIRST page too and mark the whole album a failure - so a blip on
+        page 2 would cost the repairs page 1 had already earned. Keeping them
+        and reporting "not complete" leaves the album queued for a later pass,
+        which is exactly the outcome that wants. A 429 still arms the shared
+        stand-down on its way out, because that is about the whole app's
+        quota, not about this album."""
+        import requests
+
+        tracks = albumRaw.get("tracks")
+        if not isinstance(tracks, dict) or not isinstance(tracks.get("items"), list):
+            return False   #< no track list at all: nothing walked, nothing to claim
+        for _ in range(ALBUM_TRACK_PAGE_MAX):
+            nextUrl = tracks.get("next")
+            if not nextUrl:
+                return True
+            if stop_event.is_set():
+                return False
+            stop_event.wait(SPOTIFY_REQUEST_PACE_SECONDS)   #< paced like every other catalog call
+            try:
+                resp = requests.get(nextUrl, headers=headers,
+                                    timeout=SPOTIFY_REQUEST_TIMEOUT_SECONDS)
+                if resp.status_code == SPOTIFY_RATE_LIMIT_STATUS:
+                    self._standDownCatalogLookups(resp)
+                    return False
+                if resp.status_code != 200:
+                    _dbmod.logger.warning(
+                        "[Backfiller-%s] Album track page returned %s; keeping the pages already read",
+                        self.user, resp.status_code)
+                    return False
+                page = resp.json()
+            except Exception as e:
+                _dbmod.logger.warning("[Backfiller-%s] Album track page failed: %s",
+                                      self.user, _dbmod.parseError(e))
+                return False
+            tracks["items"].extend(page.get("items") or [])
+            tracks["next"] = page.get("next")
+        return not tracks.get("next")   #< ran out of allowance, not out of pages
 
     def getSpotifyApiWorkerStatus(self) -> dict:
         """Same shape as getLastfmWorkerStatus, for the Spotify API metadata
@@ -672,6 +733,12 @@ class MetadataBackfillMixin:
                     _dbmod.logger.info("[Backfiller-%s] Fetching metadata for %d albums", self.user, len(target_ids))
                     fetched_albums = []
                     attempted_ids = []  #< albums that got a definitive response (incl. "gone") - rate-limits their next retry
+                    #< albums whose COMPLETE track list this cycle read, so a
+                    #  track still uncredited afterwards is one Spotify does
+                    #  not credit. Only the Web-API path can populate it: the
+                    #  cookie client's album() stops at its wrapper's first
+                    #  page and exposes no cursor to continue from.
+                    fullyWalkedIds = []
                     use_fallback = True
 
                     #< the cycle's shared token, minted here only if the ISRC
@@ -701,9 +768,19 @@ class MetadataBackfillMixin:
                         # Spotify has no data for is ANSWERED, and would
                         # otherwise be re-queued every cycle forever.
                         headers = {"Authorization": f"Bearer {access_token}"}
+
+                        def onAlbum(album_id, resp, headers=headers):
+                            #< the embedded track list is one page; walk the
+                            #  rest before handing the payload on, so the
+                            #  repair below sees every track and completeness
+                            #  is known for the stamp (see fullyWalkedIds)
+                            albumRaw = resp.json()
+                            if self._walkRemainingAlbumTracks(albumRaw, headers, stop_event):
+                                fullyWalkedIds.append(album_id)
+                            fetched_albums.append(albumRaw)
+
                         batch = self._spendCatalogBatch(
-                            "albums", target_ids, headers, stop_event,
-                            lambda album_id, resp: fetched_albums.append(resp.json()))
+                            "albums", target_ids, headers, stop_event, onAlbum)
                         #< extend, not assign: the cookie-client fallback below
                         #  stamps into this same list
                         attempted_ids.extend(batch.attempted)
@@ -808,6 +885,10 @@ class MetadataBackfillMixin:
 
                     if attempted_ids:
                         self.repo.markAlbumsBackfillAttempted(attempted_ids)
+                    #< the artistless queue's terminating condition: without it
+                    #  an album Spotify credits nobody on is re-selected every
+                    #  ALBUM_BACKFILL_RETRY_SECONDS forever, repairing nothing
+                    self.repo.markAlbumsArtistRepairDone(fullyWalkedIds)
 
                     if updated_count > 0:
                         _dbmod.logger.info(

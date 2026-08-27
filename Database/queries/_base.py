@@ -67,6 +67,19 @@ SKIP_RATE_PRIOR_WEIGHT = 10
 # (or unblock) later, without hammering the API for permanently dateless albums.
 ALBUM_BACKFILL_RETRY_SECONDS = 7 * 24 * 3600
 
+# How long an album stays OUT of the artistless-track queue once its complete
+# track list has been walked and every artist credit in it applied.
+#
+# Much longer than the window above because it answers a different question.
+# That one chases metadata Spotify may fill in later; this one records that we
+# have already seen everything there is to see - a track still without credits
+# after it is one Spotify does not credit, and asking weekly only spends the
+# per-app catalog quota the ISRC step shares. Not permanent, because an album
+# CAN gain a new artistless track later (an import writes one), and a
+# permanent exclusion is the shape this project has twice had to ship a
+# migrator to undo.
+ALBUM_ARTIST_REPAIR_RETRY_SECONDS = 90 * 24 * 3600
+
 # How long the ISRC backfiller waits before re-asking about a track Spotify
 # returned no ISRC for. Longer than the album window (which chases metadata that
 # genuinely gets filled in later) because an ISRC is assigned once, when the

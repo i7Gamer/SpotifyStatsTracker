@@ -116,7 +116,16 @@ CREATE TABLE IF NOT EXISTS albums (
     lastfm_attempted_at REAL,
     backfill_attempted_at REAL,
     bio             TEXT,
-    bio_attempted_at REAL
+    bio_attempted_at REAL,
+    -- When this album's COMPLETE track list was last walked and every artist
+    -- credit it carried applied. The artistless-track queue's other exit: an
+    -- album whose track Spotify simply credits nobody on can never satisfy
+    -- "no artistless tracks left", so it was re-queued every
+    -- ALBUM_BACKFILL_RETRY_SECONDS forever. A timestamp, not a flag - the
+    -- exclusion expires (see ALBUM_ARTIST_REPAIR_RETRY_SECONDS), because an
+    -- album can gain a new artistless track later and a permanent one is the
+    -- shape this project has twice shipped a migrator to undo.
+    artist_repair_done_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS tracks (

@@ -670,7 +670,13 @@ class TrackQueries:
         links. Shares the backfill_attempted_at rate limit (and the
         fabricated-id exclusion) with getAlbumsMissingMetadata."""
         conn = self._conn()
-        retryCutoff = time.time() - ALBUM_BACKFILL_RETRY_SECONDS
+        now = time.time()
+        retryCutoff = now - ALBUM_BACKFILL_RETRY_SECONDS
+        #< the second exit, and the one that makes this queue terminate at all:
+        #  an album whose track Spotify credits nobody on can never satisfy the
+        #  NOT EXISTS above, so without this it came back every retry window
+        #  forever - see markAlbumsArtistRepairDone
+        repairCutoff = now - ALBUM_ARTIST_REPAIR_RETRY_SECONDS
         rows = conn.execute(
             r"""
             SELECT DISTINCT al.id FROM albums al
@@ -678,11 +684,39 @@ class TrackQueries:
             WHERE NOT EXISTS (SELECT 1 FROM track_artists ta WHERE ta.track_id = t.id)
               AND al.id NOT LIKE 'album\_%' ESCAPE '\'
               AND (al.backfill_attempted_at IS NULL OR al.backfill_attempted_at < ?)
+              AND (al.artist_repair_done_at IS NULL OR al.artist_repair_done_at < ?)
             LIMIT ?
             """,
-            (retryCutoff, limit)
+            (retryCutoff, repairCutoff, limit)
         ).fetchall()
         return [row["id"] for row in rows]
+
+    def markAlbumsArtistRepairDone(self, albumIds) -> None:
+        """Record that these albums' COMPLETE track lists were walked and every
+        artist credit in the payload applied.
+
+        The artistless-track queue's terminating condition. Its own predicate -
+        "this album still holds a track with no artists" - is one an album can
+        never stop satisfying when Spotify credits nobody on that track, or
+        when the track sits beyond the reach of what was fetched. Each pass
+        then repaired nothing, stamped backfill_attempted_at, and the album
+        returned ALBUM_BACKFILL_RETRY_SECONDS later - and since this queue is
+        the only album source once the metadata queue drains, those albums
+        crowd out real work in every batch, indefinitely.
+
+        Only the caller knows whether the list was complete, which is why this
+        is a separate call and not a side effect of the repair itself: a
+        truncated fetch must NOT stamp, or a genuinely repairable album is
+        silenced for ALBUM_ARTIST_REPAIR_RETRY_SECONDS. Self-committing, like
+        markAlbumsBackfillAttempted beside it. Empty is a no-op."""
+        ids = list(dict.fromkeys(albumIds))
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        conn = self._conn()
+        with conn:
+            conn.execute(f"UPDATE albums SET artist_repair_done_at=? WHERE id IN ({placeholders})",
+                         (time.time(), *ids))
 
     def addMissingTrackArtists(self, trackId: str, artists: list[dict]) -> bool:
         """Write artist links for a known track that has NONE - the metadata

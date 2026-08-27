@@ -432,6 +432,19 @@ class SchemaQueries:
             if "bio_attempted_at" not in columns:
                 conn.execute("ALTER TABLE albums ADD COLUMN bio_attempted_at REAL")
 
+    def addAlbumArtistRepairColumnIfMissing(self) -> None:
+        """Add albums.artist_repair_done_at (migrate1_51_0) if missing - when
+        this album's COMPLETE track list was last walked and every artist
+        credit in it applied. Arrives NULL, which reads as "never walked", so
+        the upgrade queues every album exactly as before and the exclusion
+        only starts applying once a cycle has actually finished one. Guarded
+        so re-running the migration doesn't fail."""
+        conn = self._conn()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)").fetchall()}
+        with conn:
+            if "artist_repair_done_at" not in columns:
+                conn.execute("ALTER TABLE albums ADD COLUMN artist_repair_done_at REAL")
+
     def addRequesterSeenAcceptedColumnIfMissing(self) -> None:
         """Add user_shares.requester_seen_accepted (the "your share request
         was accepted" topbar notification's dismissal flag) if missing.

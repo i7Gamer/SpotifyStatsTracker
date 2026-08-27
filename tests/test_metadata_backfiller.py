@@ -165,6 +165,56 @@ class TestMetadataBackfiller(DatabaseTestCase):
         self.assertNotIn("album_deadbeef", queued)
         self.assertNotIn("alb4", queued)
 
+    def test_a_fully_walked_album_leaves_the_artistless_queue(self):
+        """The queue's exit condition used to be "no artistless tracks left",
+        which an album can never reach when Spotify simply credits nobody on
+        one of its tracks - or when the track sits past the album endpoint's
+        first page. Either way the repair pass ran, changed nothing, stamped
+        backfill_attempted_at, and the album came straight back
+        ALBUM_BACKFILL_RETRY_SECONDS later, forever, occupying a slot in every
+        batch. In the steady state (album metadata drained) this queue is the
+        ONLY album source, so those albums crowd out real work indefinitely.
+
+        markAlbumsArtistRepairDone records the other exit: we walked this
+        album's COMPLETE track list and applied every credit the payload
+        carried, so there is nothing further to learn from asking again soon.
+        A timestamp rather than a flag, and re-queued after
+        ALBUM_ARTIST_REPAIR_RETRY_SECONDS - a permanent exclusion is the shape
+        this project has twice had to ship a migrator to undo, and an album
+        CAN gain a new artistless track later (an import writes one)."""
+        import time
+        from Database.repository import ALBUM_ARTIST_REPAIR_RETRY_SECONDS
+
+        db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            for albumId, trackId in (("alb1", "tr1"), ("alb2", "tr2"), ("alb3", "tr3")):
+                conn.execute("INSERT INTO albums (id, name, url) VALUES (?, ?, '')",
+                             (albumId, albumId))
+                conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES (?, ?, '', ?)",
+                             (trackId, trackId, albumId))
+
+        db.repo.markAlbumsArtistRepairDone(["alb1"])
+        #< walked long ago: the window has to expire, not latch
+        with conn:
+            conn.execute("UPDATE albums SET artist_repair_done_at=? WHERE id='alb2'",
+                         (time.time() - ALBUM_ARTIST_REPAIR_RETRY_SECONDS - 60,))
+
+        queued = db.repo.getAlbumsWithArtistlessTracks(10)
+
+        self.assertNotIn("alb1", queued, "a fully walked album must stop coming back")
+        self.assertIn("alb2", queued, "the exclusion is a window, not a latch")
+        self.assertIn("alb3", queued, "an album nobody has walked is still queued")
+
+    def test_marking_no_albums_is_a_noop(self):
+        """The backfiller passes whatever the cycle collected, which is empty
+        whenever no album's track list was walked to the end."""
+        db = self._makeDb({}, [])
+
+        db.repo.markAlbumsArtistRepairDone([])   #< must not raise or touch rows
+
+        self.assertEqual(db.repo.getAlbumsWithArtistlessTracks(10), [])
+
     def test_repository_add_missing_track_artists(self):
         db = self._makeDb({}, [])
         conn = db.repo._conn()
@@ -1162,6 +1212,166 @@ class TestReauthPrompting(DatabaseTestCase):
         db._metadataBackfillLoop()
 
         db.setSpotifyNeedsReauth.assert_not_called()
+
+
+class TestAlbumTrackPaging(DatabaseTestCase):
+    """GET /v1/albums/<id> embeds only the FIRST page of the album's track
+    list (50 items; the cookie client's own wrapper stops at 25), and nothing
+    paged - so an album's later tracks were never seen at all: not their
+    names, not their durations, and not the artist links this repair pass
+    exists to restore.
+
+    That also made the queue non-terminating. getAlbumsWithArtistlessTracks
+    selects on "this album still holds a track with no artists", which such an
+    album can never stop satisfying, so it came back every
+    ALBUM_BACKFILL_RETRY_SECONDS forever and repaired the same first page each
+    time. Once the album-metadata queue drains - the loop's own documented
+    steady state - this queue is the only album source, so those albums
+    occupy slots in every batch indefinitely."""
+
+    NEXT_URL = "https://api.spotify.com/v1/albums/alb1/tracks?offset=50&limit=50"
+
+    def _db(self):
+        """One album that already HAS its metadata (so it reaches the queue
+        under test, not the missing-metadata one) holding two artistless
+        tracks - one on each page."""
+        with patch.object(Database, "startMetadataBackfiller"):
+            db = self._makeDb({}, [])
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url, release_date, total_tracks) "
+                         "VALUES ('alb1', 'Album 1', '', 1700000000.0, 60)")
+            conn.execute("INSERT INTO artists (id, name, url) VALUES ('art1', 'Artist 1', '')")
+            for trackId in ("page1Track", "page2Track"):
+                conn.execute("INSERT INTO tracks (id, name, url, album_id) VALUES (?, ?, '', 'alb1')",
+                             (trackId, trackId))
+        db.getUserSpotifyCredentials = MagicMock(return_value={
+            "client_id": "test_id", "client_secret": "test_secret", "refresh_token": "test_refresh"})
+        Database._active_backfills.clear()
+        self.addCleanup(Database._active_backfills.clear)
+        db.backfiller_stop_event = MagicMock()
+        db.backfiller_stop_event.is_set.return_value = False
+        db.backfiller_stop_event.wait.side_effect = (
+            lambda seconds=None: seconds == db.BACKFILLER_IDLE_WAIT_SECONDS)
+        return db, conn
+
+    def _response(self, payload, status=200):
+        response = MagicMock()
+        response.status_code = status
+        response.text = ""
+        response.json.return_value = payload
+        return response
+
+    def _creditedTrack(self, trackId):
+        return {"id": trackId, "name": trackId,
+                "artists": [{"id": "art1", "name": "Artist 1", "external_urls": {"spotify": ""}}]}
+
+    def _getStub(self, lastPageNext=None):
+        """First page carries `next`; the page it points at carries
+        `lastPageNext` (None ends the walk, a URL leaves it truncated)."""
+        def get(url, **kwargs):
+            if "/v1/tracks/" in url:
+                return self._response({})
+            if url == self.NEXT_URL:
+                return self._response({"items": [self._creditedTrack("page2Track")],
+                                       "next": lastPageNext})
+            return self._response({
+                "id": "alb1", "name": "Album 1", "release_date": "2020-05-05", "total_tracks": 60,
+                "tracks": {"items": [self._creditedTrack("page1Track")], "next": self.NEXT_URL},
+            })
+        return get
+
+    def _artistIdsFor(self, conn, trackId):
+        return [r["artist_id"] for r in conn.execute(
+            "SELECT artist_id FROM track_artists WHERE track_id=?", (trackId,)).fetchall()]
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_track_past_the_first_page_gets_its_artists(self, mock_get, mock_spotify, mock_refresh):
+        db, conn = self._db()
+        mock_get.side_effect = self._getStub()
+
+        db._metadataBackfillLoop()
+
+        self.assertEqual(self._artistIdsFor(conn, "page1Track"), ["art1"])
+        self.assertEqual(self._artistIdsFor(conn, "page2Track"), ["art1"],
+                         "the later page was never fetched, so its tracks stayed uncredited")
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_complete_walk_retires_the_album_from_the_queue(self, mock_get, mock_spotify, mock_refresh):
+        """Both halves have to hold: the tracks get credited AND the album
+        stops coming back. An album Spotify credits nobody on would still be
+        selected forever without the stamp."""
+        db, conn = self._db()
+        #< nobody is credited anywhere, so the NOT EXISTS predicate can never
+        #  be satisfied - the case the stamp exists for
+        def get(url, **kwargs):
+            if "/v1/tracks/" in url:
+                return self._response({})
+            if url == self.NEXT_URL:
+                return self._response({"items": [{"id": "page2Track", "name": "t", "artists": []}],
+                                       "next": None})
+            return self._response({
+                "id": "alb1", "name": "Album 1", "release_date": "2020-05-05", "total_tracks": 60,
+                "tracks": {"items": [{"id": "page1Track", "name": "t", "artists": []}],
+                           "next": self.NEXT_URL},
+            })
+        mock_get.side_effect = get
+
+        db._metadataBackfillLoop()
+
+        #< the cycle just stamped backfill_attempted_at, which hides this album
+        #  for ALBUM_BACKFILL_RETRY_SECONDS all by itself - assert before
+        #  ageing it past that and the test passes without the new stamp
+        #  existing at all
+        import time
+        from Database.repository import ALBUM_BACKFILL_RETRY_SECONDS
+        with conn:
+            conn.execute("UPDATE albums SET backfill_attempted_at=? WHERE id='alb1'",
+                         (time.time() - ALBUM_BACKFILL_RETRY_SECONDS - 60,))
+
+        self.assertIsNotNone(
+            conn.execute("SELECT artist_repair_done_at FROM albums WHERE id='alb1'")
+                .fetchone()["artist_repair_done_at"])
+        self.assertEqual(db.repo.getAlbumsWithArtistlessTracks(10), [],
+                         "a fully walked album must stop occupying a batch slot")
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_a_walk_that_did_not_finish_claims_nothing(self, mock_get, mock_spotify, mock_refresh):
+        """The dangerous direction. Stamping a truncated fetch would silence a
+        genuinely repairable album for ALBUM_ARTIST_REPAIR_RETRY_SECONDS."""
+        db, conn = self._db()
+        #< still a `next` after the last page this test serves, and the ceiling
+        #  stops the walk - so completeness was never established
+        mock_get.side_effect = self._getStub(lastPageNext=self.NEXT_URL)
+
+        db._metadataBackfillLoop()
+
+        row = conn.execute("SELECT artist_repair_done_at FROM albums WHERE id='alb1'").fetchone()
+        self.assertIsNone(row["artist_repair_done_at"],
+                          "an unfinished walk must not claim the album is done")
+
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_the_walk_is_bounded(self, mock_get, mock_spotify, mock_refresh):
+        """These pages come out of the same per-app catalog quota as the album
+        lookups themselves - the window the ISRC step shares - so a server
+        that keeps handing back a `next` must not be followed forever."""
+        from Database.workers.metadata_backfiller import ALBUM_TRACK_PAGE_MAX
+
+        db, conn = self._db()
+        mock_get.side_effect = self._getStub(lastPageNext=self.NEXT_URL)
+
+        db._metadataBackfillLoop()
+
+        pageCalls = [c for c in mock_get.call_args_list if c[0][0] == self.NEXT_URL]
+        self.assertEqual(len(pageCalls), ALBUM_TRACK_PAGE_MAX)
 
 
 if __name__ == "__main__":
