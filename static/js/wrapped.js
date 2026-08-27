@@ -258,6 +258,16 @@ if (typeof document !== 'undefined') {
   // report "you've reached the limit" from a 4xx body. Migrating it would mean
   // teaching those routes to return a fragment too; see the note in
   // routes/wrapped.py's createWrappedShareLink.
+  /* Every submit takes the next sequence number; only the newest one may
+     write. The panel lists one revoke form PER LINK beside the create form,
+     and each one answers with the WHOLE panel - so two overlapping submits is
+     the ordinary shape of this UI, not an edge case. Revoke A, then B: if A
+     settled second it repainted the panel rendered while B still existed,
+     putting a revoked link back on screen with a live Copy button handing out
+     a dead URL and a Revoke that now answers 403. Same idiom as playlists.js's
+     previewToken and the subnav pages' _navSeq. */
+  var shareSubmitSeq = 0;
+
   byId('shareLinkModal')?.addEventListener('submit', function (e) {
     var form = e.target;
     if (!form.matches('.share-link-create-form, .share-link-revoke-form')) return;
@@ -266,6 +276,13 @@ if (typeof document !== 'undefined') {
     var panelBody = byId('shareLinkPanelBody');
     var url = new URL(form.action, window.location.href);
     url.searchParams.set('ajax', 'true');
+    var seq = ++shareSubmitSeq;
+    /* Disabled for the round trip: the cap is enforced per request, so a
+       double-click on Create used to put a bucket one link over it. The
+       server-side half of that is createShareLinkIfUnderCap, which closes the
+       same window for two tabs and for curl. */
+    var submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
+    if (submitButton) submitButton.disabled = true;
 
     fetch(url, { method: 'POST', body: new FormData(form) })
       .then(function (response) {
@@ -281,13 +298,28 @@ if (typeof document !== 'undefined') {
       })
       .then(function (data) {
         if (!data) return;   //< navigating to /login
+        /* Checked AFTER the 401 peel above and never before it: a 401 is news
+           about the SESSION, which every in-flight submit shares, so whichever
+           one notices acts on it (see playlists.js, same rule). */
+        if (seq !== shareSubmitSeq) return;
         if (data.html !== undefined) {
           panelBody.innerHTML = data.html;
         } else {
           showShareLinkError(data.error || 'Something went wrong. Please try again.');
         }
       })
-      .catch(function () { showShareLinkError('Something went wrong. Please try again.'); });
+      .catch(function () {
+        //< gated too: an error about a request the user has already moved past
+        //  is as wrong as a stale repaint
+        if (seq !== shareSubmitSeq) return;
+        showShareLinkError('Something went wrong. Please try again.');
+      })
+      .finally(function () {
+        /* A successful paint replaced this button along with the rest of the
+           panel, so this only matters on the paths that did NOT repaint - a
+           refusal or a network error, both of which have to stay retryable. */
+        if (submitButton) submitButton.disabled = false;
+      });
   });
 
   // --- htmx wiring -----------------------------------------------------------

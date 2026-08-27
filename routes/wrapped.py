@@ -212,9 +212,14 @@ def register(app, dashboard):
             return redirect(url_for("wrappedPage", error=errorMessage, openShareModal=1))
         linkYear = None if allYears else year
 
-        bucketCount = dashboard.repo.countActiveShareLinksForBucket(
-            username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear)
-        if bucketCount >= SHARE_LINK_MAX_PER_BUCKET:
+        # Counted and inserted under one lock, not as a read here and a write
+        # below: two requests at cap-1 both read cap-1 and both insert, and the
+        # create button is never disabled, so a double-click was enough. The
+        # cap VALUE stays here - it is this route's policy, not the schema's.
+        created = dashboard.repo.createShareLinkIfUnderCap(
+            username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear, expiresInSeconds,
+            SHARE_LINK_MAX_PER_BUCKET)
+        if created is None:
             bucketLabel = "all-years" if linkYear is None else str(linkYear)
             errorMessage = (
                 f"You've reached the limit of {SHARE_LINK_MAX_PER_BUCKET} {bucketLabel} share links. "
@@ -223,7 +228,6 @@ def register(app, dashboard):
                 return jsonify(error=errorMessage), 400
             return redirect(url_for("wrappedPage", year=year, error=errorMessage, openShareModal=1))
 
-        dashboard.repo.createShareLink(username, Repository.SHARE_LINK_KIND_WRAPPED, linkYear, expiresInSeconds)
         if isAjax:
             html = render_template("_share_link_panel.html",
                                    **dashboard.shareLinkPanelArgs(username, year))

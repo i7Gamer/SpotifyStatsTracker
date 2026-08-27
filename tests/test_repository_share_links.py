@@ -223,6 +223,64 @@ class TestCountActiveShareLinksForBucket(RepositoryShareLinksTestCase):
         self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 6)
 
 
+class TestCreateShareLinkIfUnderCap(RepositoryShareLinksTestCase):
+    """The cap used to be a check-then-insert split across two calls in the
+    route: countActiveShareLinksForBucket read in one statement,
+    createShareLink inserted in another, with no lock and no unique constraint
+    spanning them. Two POSTs arriving at cap-1 both read cap-1 and both
+    insert - and the create button is never disabled, so a double-click is
+    enough. This is the same shape createShareRequest already serializes one
+    file over, and it takes the same lock."""
+
+    CAP = 3
+
+    def _create(self, username="alice", year=2026):
+        return self.repo.createShareLinkIfUnderCap(
+            username, "wrapped", year, expiresInSeconds=None, maxPerBucket=self.CAP)
+
+    def test_it_fills_the_bucket_and_then_refuses(self):
+        tokens = [self._create() for _ in range(self.CAP)]
+
+        self.assertTrue(all(tokens), "every link below the cap must be created")
+        self.assertIsNone(self._create(), "the cap has to actually bind")
+        self.assertEqual(
+            self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), self.CAP)
+
+    def test_the_buckets_are_counted_apart(self):
+        """year=None is the all-years bucket, and a different year is its own -
+        filling one must not refuse the others."""
+        for _ in range(self.CAP):
+            self._create()
+
+        self.assertIsNotNone(self._create(year=None))
+        self.assertIsNotNone(self._create(year=2025))
+        self.assertIsNotNone(self._create(username="bob"))
+
+    def test_the_count_is_read_while_the_write_lock_is_held(self):
+        """The race, pinned without threads or a clock: what makes the two
+        statements atomic is that ONE lock spans them, so it is enough to
+        prove the lock is already held when the count runs. A count outside it
+        is exactly the old bug, whether or not a second caller happens to be
+        there at the time."""
+        heldDuringCount = []
+        realCount = Repository.countActiveShareLinksForBucket
+
+        def probingCount(repoSelf, *args, **kwargs):
+            #< non-blocking: acquiring means it was NOT already held, which is
+            #  the failing case. Released immediately either way.
+            free = Repository._shareWriteLock.acquire(blocking=False)
+            heldDuringCount.append(not free)
+            if free:
+                Repository._shareWriteLock.release()
+            return realCount(repoSelf, *args, **kwargs)
+
+        with patch.object(Repository, "countActiveShareLinksForBucket", probingCount):
+            self._create()
+
+        self.assertEqual(heldDuringCount, [True],
+                         "the cap check ran outside the lock that guards the insert")
+
+
 class TestRevokeShareLink(RepositoryShareLinksTestCase):
     def test_owner_can_revoke(self):
         token = self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)

@@ -211,6 +211,29 @@ class ShareQueries:
             )
         return token
 
+    def createShareLinkIfUnderCap(self, username: str, kind: str, year: int | None,
+                                  expiresInSeconds: float | None, maxPerBucket: int) -> str | None:
+        """createShareLink, refused when this (kind, year) bucket is already
+        full. The new token, or None when it is - the caller words the
+        message and owns the cap value, which is policy, not schema.
+
+        Exists because the cap was a check-then-insert split across two calls
+        in the route: countActiveShareLinksForBucket read in one statement and
+        createShareLink inserted in another, with no lock and no unique
+        constraint spanning them. Two requests arriving at cap-1 both read
+        cap-1 and both insert - and the create button is never disabled, so a
+        double-click is enough, let alone two tabs or curl.
+
+        Takes the same class-level lock createShareRequest does, for the same
+        reason and with the same limit: it serializes this process, which is
+        the whole deployment (see _shareWriteLock's own comment). The raw
+        createShareLink stays uncapped and is still the right call for
+        anything that has already made this decision."""
+        with self._shareWriteLock:
+            if self.countActiveShareLinksForBucket(username, kind, year) >= maxPerBucket:
+                return None
+            return self.createShareLink(username, kind, year, expiresInSeconds)
+
     def getShareLink(self, token: str) -> dict | None:
         """None for an unknown, revoked, or expired token - all three look
         identical to a caller, so the public route can't leak which case it

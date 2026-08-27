@@ -357,11 +357,22 @@ run('another key leaves it open', () => {
 // ------------------------------------------------- creating a share link
 
 function submitShareForm(dom, options) {
+  const opts = options || {};
   const form = makeElement({ action: 'http://localhost/wrapped/share-links/2026' });
   form.matches = () => true;
+  if (opts.submitButton) form.querySelector = () => opts.submitButton;
   const evt = { target: form, prevented: 0, preventDefault() { this.prevented += 1; } };
   dom.modal.handlers.submit.call(dom.modal, evt);
   return evt;
+}
+
+// A fetch whose settlement THIS test controls, so two submits can be resolved
+// in the opposite order to the one they were made in - which is the whole
+// scenario and is not reproducible with an already-resolved promise.
+function deferredShareScenario() {
+  const settle = [];
+  const dom = shareScenario(() => new Promise((resolve, reject) => settle.push({ resolve, reject })));
+  return { dom, settle };
 }
 
 function shareScenario(respond) {
@@ -410,6 +421,63 @@ run('a network failure still says something', async () => {
   await tick(); await tick();
 
   assert.strictEqual(dom.panelBody.prepended[0].textContent, 'Something went wrong. Please try again.');
+});
+
+// The panel lists one revoke form PER LINK next to the create form, and every
+// one of them answers with the WHOLE panel - so two overlapping submits is the
+// ordinary shape of this UI, not an edge case. This was the only async path in
+// static/js with no in-flight guard (contrast playlists.js's previewToken, the
+// pages' _navSeq, detail-chart.js's activeLoad, and hx-sync everywhere else).
+run('a superseded response cannot repaint a panel the newer one replaced', async () => {
+  const { dom, settle } = deferredShareScenario();
+
+  submitShareForm(dom);   //< Revoke on link A
+  submitShareForm(dom);   //< Revoke on link B, a moment later
+  await tick();
+
+  //< B answers first, with the panel as it stands now that both are gone
+  settle[1].resolve({ status: 200, json: () => Promise.resolve({ html: '<p>A and B gone</p>' }) });
+  await tick(); await tick(); await tick();
+  //< then A's answer lands - rendered while B still existed
+  settle[0].resolve({ status: 200, json: () => Promise.resolve({ html: '<p>B still listed</p>' }) });
+  await tick(); await tick(); await tick();
+
+  assert.strictEqual(dom.panelBody.innerHTML, '<p>A and B gone</p>',
+    'a superseded response put a revoked link back on screen, with a live Copy '
+    + 'button handing out a dead URL and a Revoke that now 403s');
+});
+
+run('a superseded failure cannot show an error over a newer success', async () => {
+  const { dom, settle } = deferredShareScenario();
+
+  submitShareForm(dom);
+  submitShareForm(dom);
+  await tick();
+
+  settle[1].resolve({ status: 200, json: () => Promise.resolve({ html: '<p>done</p>' }) });
+  await tick(); await tick(); await tick();
+  settle[0].reject(new Error('offline'));
+  await tick(); await tick(); await tick();
+
+  assert.strictEqual(dom.panelBody.prepended, undefined,
+    'an error about a request the user has already moved past is a lie');
+  assert.strictEqual(dom.panelBody.innerHTML, '<p>done</p>');
+});
+
+run('the submit button is disabled while its own request is in flight', async () => {
+  const button = makeElement({ disabled: false });
+  const { dom, settle } = deferredShareScenario();
+
+  submitShareForm(dom, { submitButton: button });
+  await tick();
+
+  assert.strictEqual(button.disabled, true,
+    'a double-click on Create is what put a bucket one over its cap');
+
+  settle[0].resolve({ status: 400, json: () => Promise.resolve({ error: 'nope' }) });
+  await tick(); await tick(); await tick();
+
+  assert.strictEqual(button.disabled, false, 'a refused create has to stay retryable');
 });
 
 run('an unrelated form inside the modal is left to submit normally', () => {
