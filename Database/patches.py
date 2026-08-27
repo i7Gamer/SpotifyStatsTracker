@@ -238,8 +238,32 @@ def _reconnectPlayerStatusUnderLock(self):
         raise
     self.ws_dump = initPacket
     self.connection_id = connectionId
+    # The flag re-read HERE, not only at the two entry guards above: those run
+    # before this body spends 1-3s on the network (get_session,
+    # get_client_token, the handshake, the init-packet read), and stop() runs
+    # on another thread - it closes whatever self.ws is at THAT instant, the
+    # OLD socket. Publishing afterwards stranded the new one, because nothing
+    # else ever closes a streamer's socket: the fork's disconnect() has no
+    # caller, Spotify.close() only closes the curl TLS client, keep_alive
+    # exits on the flag without closing, and signalStop has already dropped
+    # the atexit hook. What was left behind is precisely what the entry
+    # guard's comment says it exists to prevent - an open dealer socket, its
+    # recv_events thread, and a ghost hobs_<device_id> registration on a
+    # session being torn down.
     with self.rlock:
-        self.ws = newWs
+        stoppedMidHandshake = getattr(self, "_deliberate_close", False)
+        if not stoppedMidHandshake:
+            self.ws = newWs
+    if stoppedMidHandshake:
+        #< outside the lock (close() can block on a socket) and guarded for the
+        #  same reason the entry close above is: this one is being abandoned
+        try:
+            newWs.close()
+        except Exception:  # noqa: S110 - abandoning a socket nobody adopted
+            pass
+        logger.info("Discarding a PlayerStatus reconnect: the websocket was closed "
+                    "deliberately while this one was still connecting.")
+        return
 
     # Register and connect device
     self.register_device()
@@ -451,7 +475,16 @@ def patched_websocket_streamer_init(self, *args, **kwargs):
         captured = _streamerAtexitCapture.captured
         _streamerAtexitCapture.captured = None
         try:
-            signal.signal(signal.SIGINT, previousSigintHandler)
+            # `is not None` first: getsignal() answers None when the current
+            # handler was NOT installed from Python, and signal.signal refuses
+            # None with a TypeError - which this only caught ValueError. In a
+            # `finally`, where a raised exception REPLACES the one being
+            # handled, that would have reported a genuine listener-build
+            # failure as an unrelated complaint about a signal handler. There
+            # is also nothing to put back in that case: a handler Python did
+            # not install is not one Python can reinstall.
+            if previousSigintHandler is not None:
+                signal.signal(signal.SIGINT, previousSigintHandler)
         except ValueError:
             pass  # signal.signal only works in main thread; silently skip if in worker thread
         if not initSucceeded:
@@ -1480,6 +1513,25 @@ def patch_totp_secret() -> bool:
     original_get_auth_vars = spotapi.client.BaseClient._get_auth_vars
 
     def patched_get_auth_vars(self, *args, **kwargs):
+        # Whether the call below will actually ASK Spotify for a token, decided
+        # before it runs. spotapi's _get_auth_vars is a no-op when both of these
+        # are already set - no request, returns None - and counting that as
+        # proof the pinned secret still works let a cached token clear the
+        # rotation streak. The app hits the no-op on a hot path
+        # (player_status_reconnect keeps a token that is not near expiry, then
+        # get_session() ends here), so during a REAL rotation every listener
+        # reconnect reset the count while the genuine failures accrued, and the
+        # confirm threshold could go unreached until the last cached token
+        # expired - delaying /admin's flag and the auto-recovery behind it.
+        #
+        # This mirrors spotapi's own guard (client.py: `if self.access_token is
+        # _Undefined or self.client_id is _Undefined`). It is a deliberate
+        # coupling to an internal, so it is pinned by a test that drives the
+        # no-op through the real installed spotapi rather than a stand-in: a
+        # version bump that moves the condition breaks that test rather than
+        # the rotation detector.
+        wouldFetch = (getattr(self, "access_token", _Undefined) is _Undefined
+                      or getattr(self, "client_id", _Undefined) is _Undefined)
         try:
             result = original_get_auth_vars(self, *args, **kwargs)
         except spotapi.exceptions.BaseClientError:
@@ -1507,7 +1559,8 @@ def patch_totp_secret() -> bool:
                 # which keeps the error semantics of this call unchanged.
                 _startTotpRecoveryInBackground()
             raise
-        recordTotpAuthSuccess()
+        if wouldFetch:
+            recordTotpAuthSuccess()
         return result
 
     patched_get_auth_vars._totpTracked = True

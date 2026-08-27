@@ -551,6 +551,63 @@ class TestReconnectInitPacketHandling(unittest.TestCase):
         instance.register_device.assert_not_called()
 
 
+class TestReconnectYieldsToAStopThatLandedMidHandshake(unittest.TestCase):
+    """Both _deliberate_close checks sit BEFORE the network - the entry guard
+    and the one under the reconnect lock - and the body then spends 1-3s in
+    get_session, get_client_token, the TLS/WS handshake and the init-packet
+    read before publishing.
+
+    stop() runs on another thread and closes whatever manager.ws is at THAT
+    instant, which is the OLD socket. So a reconnect finishing afterwards
+    stranded the new one: nothing else ever closes a streamer's socket - the
+    fork's disconnect() has no caller, Spotify.close() only closes the curl
+    TLS client, keep_alive exits on the flag without closing, and signalStop
+    has already dropped the atexit hook - leaving an open dealer socket, its
+    recv_events thread, and a live hobs_<device_id> registration outliving the
+    listener that owned them. That is exactly what the entry guard's comment
+    says it exists to prevent ("Resurrecting it would register a ghost device
+    on a session that is being torn down")."""
+
+    def _reconnect(self, stopDuringInitPacket):
+        from Database.patches import player_status_reconnect
+
+        instance = _reconnectableInstance(_FakeReconnectBase(expiresInMs=ONE_HOUR_MS))
+        oldWs = instance.ws
+        with patch("websockets.sync.client.connect") as wsConnect:
+            newWs = wsConnect.return_value
+
+            def recv(timeout=None):
+                if stopDuringInitPacket:
+                    #< the widest realistic window, and the one the rebuild
+                    #  path actually races: onStale calls listener.stop()
+                    #  while the manager thread is reconnecting
+                    instance._deliberate_close = True
+                return _INIT_PACKET_JSON
+            newWs.recv.side_effect = recv
+
+            player_status_reconnect(instance)
+        return instance, oldWs, newWs
+
+    def test_a_stop_mid_handshake_closes_the_new_socket_instead_of_publishing(self):
+        instance, oldWs, newWs = self._reconnect(stopDuringInitPacket=True)
+
+        newWs.close.assert_called_once_with()
+        self.assertIs(instance.ws, oldWs,
+                      "publishing here strands a socket nothing will ever close")
+        #< the ghost device the entry guard names
+        instance.register_device.assert_not_called()
+        instance.connect_device.assert_not_called()
+
+    def test_a_reconnect_nobody_stopped_still_publishes_and_registers(self):
+        """Negative control: the guard must not swallow the ordinary path."""
+        instance, _oldWs, newWs = self._reconnect(stopDuringInitPacket=False)
+
+        self.assertIs(instance.ws, newWs)
+        newWs.close.assert_not_called()
+        instance.register_device.assert_called_once_with()
+        instance.connect_device.assert_called_once_with()
+
+
 class _LockStub:
     """Stands in for the per-streamer reconnect lock: entering it runs a
     scripted side effect - the deterministic version of "another thread held
@@ -2013,6 +2070,72 @@ class TestTotpRotationTracking(unittest.TestCase):
         self.assertEqual(totpAuthSnapshot()["consecutiveFailures"], 1)
 
 
+class TestOnlyARealTokenFetchClearsTheRotationStreak(unittest.TestCase):
+    """spotapi's _get_auth_vars is a NO-OP when access_token and client_id are
+    both already set - it makes no request and returns None (its own guard:
+    `if self.access_token is _Undefined or self.client_id is _Undefined`).
+
+    Treating any non-raising return as proof the pinned secret still works let
+    a token nobody had to mint clear the failure streak. The app reaches that
+    no-op on a hot path: player_status_reconnect skips the token clear
+    whenever the cached token is not near expiry, then calls get_session(),
+    which ends in _get_auth_vars(). So during a REAL rotation every listener
+    reconnect holding a live token reset the count while the genuine failures
+    accrued from expiring tokens and fresh logins - and the confirm threshold
+    might not be reached until the last cached token died, delaying both
+    /admin's suspectedRotation flag and _startTotpRecoveryInBackground."""
+
+    def setUp(self):
+        from Database.patches import resetTotpAuthState
+        resetTotpAuthState()
+        self.addCleanup(resetTotpAuthState)
+
+    def _instance(self, tokenAlreadySet):
+        import spotapi.client
+        instance = spotapi.client.BaseClient.__new__(spotapi.client.BaseClient)
+        if tokenAlreadySet:
+            instance.access_token = "still-valid"
+            instance.client_id = "client-id"
+            #< any attribute touch here means a request was made after all,
+            #  which is the thing this test is asserting does NOT happen
+            instance.client = None
+        else:
+            instance.access_token = spotapi.client._Undefined
+            instance.client_id = spotapi.client._Undefined
+            ok = MagicMock()
+            ok.fail = False
+            ok.response = {"accessToken": "fresh", "clientId": "cid",
+                           "accessTokenExpirationTimestampMs": 0}
+            instance.client = MagicMock()
+            instance.client.get.return_value = ok
+        return instance
+
+    def test_a_call_that_fetched_nothing_leaves_the_streak_alone(self):
+        import spotapi.client
+        from Database.patches import recordTotpAuthFailure, totpAuthSnapshot
+
+        recordTotpAuthFailure()
+        recordTotpAuthFailure()
+
+        self.assertIsNone(spotapi.client.BaseClient._get_auth_vars(self._instance(True)))
+
+        self.assertEqual(totpAuthSnapshot()["consecutiveFailures"], 2,
+                         "a cached token is not evidence about the secret")
+
+    def test_a_call_that_really_minted_a_token_still_clears_it(self):
+        """The negative control, and the whole point of the counter: a genuine
+        mint IS evidence the pinned secret works."""
+        import spotapi.client
+        from Database.patches import recordTotpAuthFailure, totpAuthSnapshot
+
+        recordTotpAuthFailure()
+        recordTotpAuthFailure()
+
+        spotapi.client.BaseClient._get_auth_vars(self._instance(False))
+
+        self.assertEqual(totpAuthSnapshot()["consecutiveFailures"], 0)
+
+
 class TestTotpAutoRecovery(unittest.TestCase):
     """Once a rotation is confirmed, the new secret is read from Spotify's own
     web-player bundle - the source of truth, not a third-party mirror. This is
@@ -2316,6 +2439,39 @@ class TestStreamerAtexitUnregistration(unittest.TestCase):
                 raise failure
         with patch("Database.patches.original_websocket_streamer_init", fakeOriginalInit):
             spotapi.websocket.WebsocketStreamer.__init__(instance, MagicMock())
+
+    def test_an_unrestorable_sigint_handler_does_not_replace_the_real_error(self):
+        """signal.getsignal() answers None when the current handler was not
+        installed from Python, and signal.signal(SIGINT, None) raises
+        TypeError - which only ValueError was catching. That restore runs in
+        the `finally` of the patched __init__, where a raised exception
+        REPLACES the one being handled, so a genuine construction failure
+        would have surfaced as an unrelated TypeError about a signal handler,
+        sending the reader nowhere near the listener build that actually
+        failed. None is also not restorable by definition, so skipping it is
+        the correct action rather than a workaround."""
+        instance = self._newStreamer()
+        boom = RuntimeError("the real construction failure")
+
+        with patch("Database.patches.signal.getsignal", return_value=None):
+            with self.assertRaises(RuntimeError) as caught:
+                self._initRegistering(instance, lambda: None, failure=boom)
+
+        self.assertIs(caught.exception, boom)
+
+    def test_a_restorable_handler_is_still_put_back(self):
+        """Negative control: SIG_DFL/SIG_IGN and real Python handlers are
+        restorable, and skipping those would leave spotapi's own SIGINT hook
+        installed over the app's."""
+        import signal as signalModule
+
+        instance = self._newStreamer()
+        previous = signalModule.getsignal(signalModule.SIGINT)
+
+        with patch("Database.patches.signal.signal") as setHandler:
+            self._initRegistering(instance, lambda: None)
+
+        setHandler.assert_called_once_with(signalModule.SIGINT, previous)
 
     def test_spotapi_websocket_atexit_is_the_recording_shim(self):
         """The fork's module-level `atexit` name must resolve to the recorder,
