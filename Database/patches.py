@@ -722,7 +722,19 @@ def patched_get_packet(self, timeout: float = WS_RECV_TIMEOUT_SECONDS):
         # ping to notice - lost push time, against a one-way push->poll
         # fallback. A DELIBERATE close is told apart by the flag, which
         # _reconnectAfterDroppedPacket checks first.
-        _reconnectAfterDroppedPacket(self, e)
+        if not _reconnectAfterDroppedPacket(self, e) and timeout:
+            # Nothing came back on this socket, and recv() on a CLOSED one
+            # raises INSTANTLY rather than waiting out the timeout - so
+            # returning here hands the caller a turn that cost nothing.
+            # _runPushLoop has no sleep of its own (this timeout IS its
+            # pacing), so once the reconnect ceiling latched - three failures,
+            # after which _reconnectAfterDroppedPacket returns without even
+            # trying again - it spun a core flat out for the five minutes
+            # until the frame-silence watchdog fell back to polling. Skipped
+            # after a SUCCESSFUL reconnect, where the next recv has a live
+            # socket to wait on. Interruptibly, so a deliberate close still
+            # exits at once.
+            _sleepInterruptibly(self, timeout)
         return None
     except Exception as e:  # noqa: BLE001 - anything else is diagnosed, never silently retried
         logger.warning("Unexpected error reading websocket packet: %s: %s",
@@ -744,35 +756,42 @@ def patched_get_packet(self, timeout: float = WS_RECV_TIMEOUT_SECONDS):
     return packet
 
 
-def _reconnectAfterDroppedPacket(self, closeError) -> None:
-    """Bounded recovery for a dropped receive socket.
+def _reconnectAfterDroppedPacket(self, closeError) -> bool:
+    """Bounded recovery for a dropped receive socket. Returns whether the
+    socket is actually back.
 
     Mirrors patched_keep_alive's shape - one concise line per attempt, a hard
     ceiling, and an immediate stop once the underlying HTTP session is closed
     for good - rather than spotapi's unbounded `while True` + sleep(1), which
     turns an unreachable endpoint into a reconnect storm against the same
-    endpoint that just refused us."""
+    endpoint that just refused us.
+
+    Every "no" answer here leaves self.ws pointing at a socket that is already
+    closed (the reconnect body closes it on entry and only reassigns on
+    success), and recv() on one of those raises instantly - so the caller has
+    to do its own pacing on a False. See patched_get_packet."""
     if getattr(self, "_deliberate_close", False):
-        return
+        return False
     reconnect = getattr(self, "reconnect", None)
     if reconnect is None:
         logger.warning("Websocket dropped (%s) and no reconnect() available.", closeError)
-        return
+        return False
 
     failures = getattr(self, "_recvReconnectFailures", 0)
     if failures >= WS_RECV_MAX_RECONNECT_FAILURES:
-        return  #< already gave up and said so; stay quiet rather than log per packet
+        return False  #< already gave up and said so; stay quiet rather than log per packet
 
     logger.warning("Websocket dropped while reading (%s), attempting reconnect...", closeError)
     try:
         reconnect()
         _setRecvReconnectFailures(self, 0)
+        return True
     except Exception as reconnectError:
         if _isSessionClosedError(reconnectError):
             logger.error("Websocket receive giving up: the HTTP session is closed and "
                          "cannot be revived: %s", reconnectError)
             _setRecvReconnectFailures(self, WS_RECV_MAX_RECONNECT_FAILURES)
-            return
+            return False
         failures += 1
         _setRecvReconnectFailures(self, failures)
         logger.warning("Websocket reconnect failed (%d/%d): %s",

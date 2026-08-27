@@ -1236,6 +1236,46 @@ class TestPatchedGetPacket(unittest.TestCase):
 
         streamer.reconnect.assert_called_once_with()
 
+    def test_a_dead_socket_at_the_reconnect_ceiling_still_honours_the_timeout(self):
+        """get_packet(timeout=X) promises "wait up to X", and _runPushLoop
+        leans on it as its ONLY pacing - that loop has no sleep of its own.
+
+        recv() on a CLOSED socket raises immediately instead of waiting, and a
+        failed reconnect leaves self.ws pointing at exactly that socket (it is
+        closed on entry and only reassigned on success). Once
+        _recvReconnectFailures latches at the ceiling,
+        _reconnectAfterDroppedPacket returns without reconnecting and without
+        sleeping - so every turn of the push loop cost nothing and it spun a
+        core flat out until the 300s silence watchdog fell back to polling."""
+        import websockets.exceptions
+        from Database.patches import WS_RECV_MAX_RECONNECT_FAILURES, WS_RECV_TIMEOUT_SECONDS
+
+        streamer = _fakeStreamer([websockets.exceptions.ConnectionClosedOK(None, None)])
+        streamer._recvReconnectFailures = WS_RECV_MAX_RECONNECT_FAILURES
+
+        with patch("Database.patches._sleepInterruptibly") as slept:
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_not_called()   #< the ceiling is latched
+        slept.assert_called_once()
+        self.assertEqual(slept.call_args.args[1], WS_RECV_TIMEOUT_SECONDS,
+                         "the caller's own timeout is what has to be honoured")
+
+    def test_a_reconnect_that_worked_does_not_add_a_wait(self):
+        """The other side of it: after a successful reconnect the next recv
+        has a live socket to wait on, so paying the timeout here as well would
+        halve the push channel's responsiveness for nothing."""
+        import websockets.exceptions
+
+        streamer = _fakeStreamer([websockets.exceptions.ConnectionClosedOK(None, None)])
+
+        with patch("Database.patches._sleepInterruptibly") as slept, \
+             self.assertLogs("Database.patches", level="WARNING"):
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_called_once_with()
+        slept.assert_not_called()
+
     def test_a_clean_close_after_a_deliberate_stop_stays_quiet(self):
         """stop() closes the socket mid-read: the resulting clean-close must
         end quietly, not resurrect the connection being torn down."""
