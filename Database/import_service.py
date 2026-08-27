@@ -913,36 +913,45 @@ class ImportMixin:
         return totals
 
     def _computeCoveredRange(self, fileContents: list[str]) -> tuple | None:
-        """Parse every file (no DB writes, no lock) and return
-        (minStart, maxEnd, coveredYears) for the overwrite delete: the batch
-        span [earliest entry, latest entry] and the union of covered years (a
-        year counts as covered only if some entry STARTS in it - see
+        """Parse every file (no DB writes, no lock, no Spotify session) and
+        return (minStart, maxEnd, coveredYears) for the overwrite delete: the
+        batch span [earliest entry, latest entry] and the union of covered
+        years (a year counts as covered only if some entry STARTS in it - see
         Importer.coverage). Returns (None, None, set()) when the files cover
         nothing (all valid-but-empty), or None when any file is unrecognized/
         corrupt - the caller must abort WITHOUT deleting."""
-        importer = self._withCookiesFile(lambda cookiesFile: _dbmod.Importer(cookiesFile=cookiesFile, email=self.email))
-        try:
-            minStart = None
-            maxEnd = None
-            coveredYears: set[int] = set()
-            for content in fileContents:
-                parsedHistory, exportType = importer._convertToList(content)
-                if exportType == "None":
-                    return None
-                fileCoverage = importer.coverage(parsedHistory, exportType)
-                if fileCoverage is None:
-                    continue  #< a valid-but-empty export covers nothing
-                fileMin, fileMax, fileYears = fileCoverage
-                minStart = fileMin if minStart is None else min(minStart, fileMin)
-                maxEnd = fileMax if maxEnd is None else max(maxEnd, fileMax)
-                coveredYears |= fileYears
+        # No cookiesFile: this pass calls _convertToList and coverage, and
+        # neither touches Importer.sp - the client is there for the metadata
+        # lookups (_searchForSong/_fetchTrackMeta), which belong to the staging
+        # phase. Handing one over ran a full spotapi login anyway, since
+        # Spotify.__init__ logs in whenever it is given a path: a TLSClient of
+        # its own, and a cookies file written to disk and deleted around it,
+        # per overwrite import, for a pass that is pure text parsing. Staging
+        # still builds its own WITH cookies (_importHistoryBatchOverwriteLocked
+        # Phase 1, which runs right after this) - that one needs them, and
+        # dropping them there instead would silently synthesize every track
+        # rather than look it up.
+        #
+        # Nothing to release afterwards either, which is why the close() this
+        # used to end with is gone: without a path Spotify.__init__ leaves
+        # user_auth False and never builds a session.
+        importer = _dbmod.Importer(email=self.email)
+        minStart = None
+        maxEnd = None
+        coveredYears: set[int] = set()
+        for content in fileContents:
+            parsedHistory, exportType = importer._convertToList(content)
+            if exportType == "None":
+                return None
+            fileCoverage = importer.coverage(parsedHistory, exportType)
+            if fileCoverage is None:
+                continue  #< a valid-but-empty export covers nothing
+            fileMin, fileMax, fileYears = fileCoverage
+            minStart = fileMin if minStart is None else min(minStart, fileMin)
+            maxEnd = fileMax if maxEnd is None else max(maxEnd, fileMax)
+            coveredYears |= fileYears
 
-            return minStart, maxEnd, coveredYears
-        finally:
-            # Parsing never needed the importer's TLS login, but constructing
-            # the Importer opened one anyway - release it (fresh per login,
-            # see Database/Spotify/client.py).
-            importer.sp.close()
+        return minStart, maxEnd, coveredYears
 
     def _invalidateWrappedFromEarliestOf(self, rewrittenYears, whatCommitted: str) -> None:
         """Drop the cached Wrapped for the earliest year this import rewrote,

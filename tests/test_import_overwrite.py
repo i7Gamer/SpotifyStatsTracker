@@ -7,6 +7,7 @@ single file's import) rolls back everything and aborts the batch, so the
 overwrite either fully lands or leaves the original data untouched."""
 import datetime
 import hashlib
+import json
 import sys
 import os
 from unittest.mock import patch, MagicMock
@@ -692,23 +693,33 @@ class TestOverwriteAbortsOnAnUnreadableUpload(_OverwriteTestBase):
 
 
 class TestOverwriteClosesSessions(_OverwriteTestBase):
-    def test_the_batch_closes_every_importer_session_it_built(self):
-        """The overwrite batch builds one Importer for the coverage pre-pass
-        and one for staging; each holds a fresh TLS login that must be
-        released. The shared mock stands in for both constructions, so both
-        closes land on it."""
+    def test_the_batch_closes_the_one_session_it_builds(self):
+        """A fresh TLS login must not outlive the import that opened it.
+
+        Staging's Importer holds one, and is closed. The coverage pre-pass
+        builds its Importer WITHOUT cookies, so Spotify.__init__ never logs in
+        and there is no session to release - pinned as "never closed" rather
+        than simply dropped from the count, because a close() landing there
+        would mean a session had been opened after all. Which importer gets
+        the cookies is TestCoveredRangeNeedsNoSpotifySession's half; this is
+        the release discipline, and one mock per construction is what keeps
+        the two halves from being able to swap places unnoticed."""
         db = self._makeDb({}, [])
 
         def gen():
             yield _meta("i1", _ts(2020))
 
         fileSpecs = {"file1": ((_ts(2020), _ts(2020), {2020}), gen)}
-        importer = self._mockImporter(fileSpecs)
+        built = []
 
-        with patch("Database.database.Importer", return_value=importer):
+        with patch("Database.database.Importer",
+                   side_effect=lambda **kwargs: built.append(self._mockImporter(fileSpecs)) or built[-1]):
             db.importHistoryBatch(list(fileSpecs.keys()), overwriteRange=True)
 
-        self.assertEqual(importer.sp.close.call_count, 2)
+        self.assertEqual(len(built), 2, "one Importer per phase")
+        prePass, staging = built
+        self.assertEqual(prePass.sp.close.call_count, 0, "the pre-pass opened no session")
+        self.assertEqual(staging.sp.close.call_count, 1, "staging's session was not released")
 
 
 class TestWrappedInvalidationUsesTheUsersOwnYears(_OverwriteTestBase):
@@ -906,6 +917,78 @@ class TestMusicoletOverwriteAbortEndToEnd(_OverwriteTestBase):
         self.assertEqual(db.readProgress()["message"],
                          "Overwrite import complete: 1/1 files imported")
         self.assertEqual(len(self._playedAts(db)), 2, "both expanded plays landed")
+
+
+class TestCoveredRangeNeedsNoSpotifySession(DatabaseTestCase):
+    """The covered-range pre-pass is pure parsing, and must stay offline.
+
+    _computeCoveredRange only calls _convertToList and coverage, and neither
+    touches Importer.sp - the client exists for the metadata lookups
+    (_searchForSong/_fetchTrackMeta), which belong to the staging phase. It
+    built one anyway, through _withCookiesFile: a cookies file written and
+    deleted, and a full spotapi login with a TLSClient of its own, on every
+    overwrite import - on top of the one staging then builds for real.
+
+    Both halves are pinned here. Dropping the cookies from the WRONG importer
+    is the regression this split can cause, and it is a quiet one: staging
+    would silently stop resolving track metadata and synthesize every track
+    instead, which no existing test would notice because they all replace
+    Database.database.Importer wholesale."""
+
+    _CONTENT = json.dumps([{
+        "ts": "2019-06-01T12:00:00Z",
+        "ms_played": 60000,
+        "master_metadata_track_name": "Song",
+        "master_metadata_album_artist_name": "Artist",
+        #< no spotify_track_uri on purpose: that sends staging down
+        #  _fetchTrackMeta's URI branch, and the name search is the one call
+        #  _realImporter's stub answers (see its docstring)
+    }])
+
+    def _importerBuiltWith(self, built):
+        """A real Importer per construction - so the constructor under test
+        really runs - with its client swapped for the offline stub afterwards,
+        recording the kwargs each one was built with."""
+        from Database.Importers.StreamingHistoryImporter import Importer
+
+        def build(**kwargs):
+            built.append(kwargs)
+            importer = Importer(**kwargs)
+            importer.sp = MagicMock()
+            importer.sp.search.return_value = {"tracks": {"items": []}}
+            return importer
+        return build
+
+    def test_the_pre_pass_logs_in_to_nothing(self):
+        from Database.Spotify import Spotify
+        db = self._makeDb({}, [])
+
+        with patch.object(Spotify, "login", autospec=True) as login:
+            minStart, maxEnd, coveredYears = db._computeCoveredRange([self._CONTENT])
+
+        self.assertEqual(login.call_count, 0,
+                         "the parse-only pre-pass built a Spotify session")
+        #< and it still parses. A pre-pass that answered None would abort every
+        #  overwrite import - a far worse outcome than the login it saves
+        self.assertEqual(coveredYears, {2019})
+        self.assertIsNotNone(minStart)
+        self.assertIsNotNone(maxEnd)
+
+    def test_staging_still_gets_the_cookies_the_pre_pass_gave_up(self):
+        """The metadata lookups are the whole reason a login exists here."""
+        from Database.Spotify import Spotify
+        db = self._makeDb({}, [])
+        built = []
+
+        with patch.object(Spotify, "login", autospec=True), \
+             patch("Database.database.Importer",
+                   side_effect=self._importerBuiltWith(built)):
+            outcomes = db.importHistoryBatch([self._CONTENT], overwriteRange=True)
+
+        self.assertEqual(outcomes, ["imported"])
+        self.assertEqual(len(built), 2, "one Importer per phase")
+        self.assertIsNone(built[0].get("cookiesFile"), "the pre-pass needs no session")
+        self.assertIsNotNone(built[1].get("cookiesFile"), "staging looks tracks up")
 
 
 if __name__ == "__main__":
