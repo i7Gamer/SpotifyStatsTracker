@@ -59,8 +59,14 @@ def _isTransientFetchError(exc: Exception) -> bool:
     The line is "did we get the bytes and find them unusable, or did we never
     get them". Anything that is not a request error got far enough to be a
     verdict about the image itself - PIL could not decode it, the cap says it
-    is too big (a ValueError, deliberately not a RequestException), the disk
-    refused it. Those stay 'failed'.
+    is too big (a ValueError, deliberately not a RequestException). Those stay
+    'failed'.
+
+    This answers about the FETCH only. A failure to store bytes that already
+    arrived and decoded is a third thing - neither a blip nor a verdict - and
+    it cannot be told apart by type here (PIL raises OSError for an
+    undecodable image, and so does a full disk). _downloadImageTask knows
+    which phase it was in and handles that case itself.
 
     A request error is transient EXCEPT a 4xx, which is the server telling us
     this URL is not going to work: a 404 cover stays 404, and re-asking is the
@@ -106,6 +112,9 @@ class MediaFetchMixin:
         return b"".join(chunks)
 
     def _downloadImageTask(self, path: Path, url: str, imgId: str, kind: str):
+        #< flipped the moment the image itself is proven good; from there on a
+        #  failure is this host's, not the image's - see the storage note below
+        imageIsGood = False
         try:
             # Held in a `with`: the body is streamed and _readCappedBody stops
             # draining it the moment it blows the cap, and an undrained response
@@ -116,10 +125,28 @@ class MediaFetchMixin:
                 response.raise_for_status()
                 content = self._readCappedBody(response)
             img = _dbmod.Image.open(_dbmod.BytesIO(content))
+            # Decoded HERE rather than left to img.save() below. Image.open only
+            # reads the header, so a truncated or corrupt body opens fine and
+            # raises in the middle of the storage step - where the rule below
+            # would read it as the disk refusing a good image and retry it
+            # forever. Work save() would do anyway, just moved in front of the
+            # line that decides what the failure means.
+            img.load()
             # Always store as JPEG: the templates hardcode `<imgId>.jpeg`, so an
             # image saved under its source format (e.g. .png) would 404 forever.
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")   #< JPEG can't store alpha/palette modes
+            # Everything past this point is LOCAL. The bytes arrived and decoded,
+            # so a failure from here on is a fact about this host's disk, not
+            # about the image, and must not record the permanent verdict:
+            # lazyFetchArtistImage refuses a 'failed' artist before it ever
+            # reaches the reclaim tryClaimImageDownload would allow, so one full
+            # disk - or one antivirus handle held on a just-written file, which
+            # the cleanup note below names as a real event on Windows - cost that
+            # artist their picture until someone shipped a migrator. That is the
+            # harm releaseImageClaim exists to stop, arriving through the one
+            # door _isTransientFetchError cannot see.
+            imageIsGood = True
             path.mkdir(parents=True, exist_ok=True)
             # Staged and renamed, not written in place: a save that dies partway
             # (full disk, power loss) would otherwise leave a truncated JPEG at
@@ -148,12 +175,14 @@ class MediaFetchMixin:
                 raise
             self.repo.markImageStatus(imgId, kind, _dbmod.IMAGE_STATUS_OK)
         except Exception as e:
-            if _isTransientFetchError(e):
+            if imageIsGood or _isTransientFetchError(e):
                 #< see releaseImageClaim: 'failed' is a verdict about the IMAGE,
-                #  and lazyFetchArtistImage refuses one for good. A network-layer
-                #  failure never saw the image, so it is not entitled to that
-                #  verdict - an artist whose lookup succeeded and whose download
-                #  then hit a blip would otherwise lose their picture
+                #  and lazyFetchArtistImage refuses one for good. Two failures
+                #  are not entitled to it - a network-layer one never saw the
+                #  image, and a storage one (imageIsGood) saw a perfectly fine
+                #  one and could not put it down. An artist whose lookup
+                #  succeeded and whose download then hit a blip, or whose JPEG
+                #  landed on a full disk, would otherwise lose their picture
                 #  permanently. Track covers re-claim a 'failed' row anyway
                 #  (tryClaimImageDownload allows it, and the listener re-saves on
                 #  the next play), so for them this only avoids recording a

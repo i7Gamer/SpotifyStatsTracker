@@ -47,6 +47,25 @@ def _pngBytes():
     return buffer.getvalue()
 
 
+#< how much of the tail to drop for a body that still OPENS: PNG carries its
+#  dimensions in the leading IHDR chunk, so the header survives and only the
+#  pixel data is short. Measured against the 64x64 image below - enough to lose
+#  IEND and part of the IDAT stream, not so much that open() itself refuses.
+_TRUNCATION_BYTES = 40
+
+
+def _pngBytes40BytesShort():
+    """A PNG whose header parses and whose pixel data does not - the shape that
+    defers its failure to load() (i.e. to img.save()) instead of to open()."""
+    from io import BytesIO
+    from PIL import Image
+    buffer = BytesIO()
+    #< 64x64 rather than the 2x2 above: a tiny image's whole IDAT is smaller
+    #  than the truncation, which would take the header with it
+    Image.new("RGB", (64, 64), (1, 2, 3)).save(buffer, format="PNG")
+    return buffer.getvalue()[:-_TRUNCATION_BYTES]
+
+
 def _imageResponse(imageBytes):
     """A stand-in requests response for the streaming image download: the task
     reads the body through iter_content (capped), not .content.
@@ -764,6 +783,83 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
                 db._downloadImageTask(Path(tmpdir), "https://img/x", "t4", IMAGE_KIND_TRACK)
 
             self.assertEqual(db.repo.imageStatus("t4", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
+
+    def _artistAfterAFailingStore(self, db, tmpdir, target, boom):
+        """Download a perfectly good image, then fail at `target` while storing it.
+
+        The patches are process-wide and the suite runs other tests' worker
+        threads in this same process, so each one fires only for THIS test's
+        temp directory and delegates everything else to the real function
+        (same shape as test_a_cleanup_that_itself_fails's unlinkThatLoses)."""
+        db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST)
+        with patch("Database.database.requests.get",
+                   return_value=_imageResponse(_pngBytes())), \
+             patch(target, boom):
+            db._downloadImageTask(Path(tmpdir), "https://img/x", "art-1", IMAGE_KIND_ARTIST)
+
+    def test_a_disk_that_refuses_the_write_leaves_the_artist_retryable(self):
+        """The third category the two in this class's docstring miss: the
+        bytes arrived AND decoded, and the local disk refused them.
+
+        That is not a verdict about the image - the same URL will serve the
+        same good bytes a minute later - but it used to record one, because
+        the classifier only asks "was this a RequestException". For an artist
+        that verdict is permanent (lazyFetchArtistImage refuses 'failed'
+        before it ever reaches the reclaim), so one full disk or one
+        antivirus-held handle cost that artist their picture until someone
+        shipped a migrator - the exact harm releaseImageClaim exists to
+        prevent, arriving through the one door it did not cover."""
+        from PIL import Image as PILImage
+        realSave = PILImage.Image.save
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            def saveThatRunsOutOfDisk(self_img, target, **kwargs):
+                if Path(target).parent == Path(tmpdir):
+                    raise OSError("no space left on device")
+                return realSave(self_img, target, **kwargs)
+
+            self._artistAfterAFailingStore(db, tmpdir, "PIL.Image.Image.save",
+                                           saveThatRunsOutOfDisk)
+
+            self.assertIsNone(db.repo.imageStatus("art-1", IMAGE_KIND_ARTIST))
+            #< the whole point: the next render may ask again
+            self.assertTrue(db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST))
+
+    def test_a_rename_a_scanner_blocks_leaves_the_artist_retryable(self):
+        """The same rule at the other storage step, and the one this host
+        actually meets: media_fetch's own cleanup comment names it - on
+        Windows the moment a file has just been written is exactly when a
+        scanner may still hold it, and os.replace is what fails then."""
+        realReplace = os.replace
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            def replaceTheScannerBlocks(src, dst, **kwargs):
+                if Path(dst).parent == Path(tmpdir):
+                    raise PermissionError("[WinError 32] used by another process")
+                return realReplace(src, dst, **kwargs)
+
+            self._artistAfterAFailingStore(db, tmpdir, "Database.database.os.replace",
+                                           replaceTheScannerBlocks)
+
+            self.assertIsNone(db.repo.imageStatus("art-1", IMAGE_KIND_ARTIST))
+            self.assertTrue(db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST))
+
+    def test_a_body_that_decodes_only_partway_is_still_failed(self):
+        """The guard on the two above, and the reason the decode is forced
+        before the store rather than left where it fell.
+
+        Image.open only reads the header, so a truncated body opens fine and
+        raises inside img.save() - i.e. in the middle of the storage step. Any
+        "a failure while storing is transient" rule that trusts WHERE the
+        exception surfaced would hand this corrupt image a retry forever."""
+        db = self._makeDb({}, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            truncated = _pngBytes40BytesShort()
+            with patch("Database.database.requests.get",
+                       return_value=_imageResponse(truncated)):
+                db._downloadImageTask(Path(tmpdir), "https://img/x", "t5", IMAGE_KIND_TRACK)
+
+            self.assertEqual(db.repo.imageStatus("t5", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
 
     def test_save_error_log_includes_imgid(self):
         """If saving the image raises (e.g. corrupt bytes), the imgId appears in the log."""
