@@ -6,7 +6,7 @@
     "lint": "eslint ."
   },
   "devDependencies": {
-    "eslint": "9.39.0",
+    "eslint": "10.9.1",
     "globals": "14.0.0"
   },
   "overrides": {
