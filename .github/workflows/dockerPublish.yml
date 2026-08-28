@@ -17,7 +17,8 @@ name: Docker build and push
 # Nothing in the image resists arm64: every dependency that ships compiled code
 # (cryptography, pillow, pymongo, websockets, and curl_cffi, which carries
 # spotapi's libcurl-impersonate) publishes a prebuilt manylinux aarch64 wheel
-# for CPython 3.13, so this compiles nothing that the amd64 build does not.
+# for CPython 3.14 (curl_cffi and cryptography via abi3), so this compiles
+# nothing that the amd64 build does not.
 
 on:
   workflow_call:
