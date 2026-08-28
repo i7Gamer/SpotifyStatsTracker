@@ -1,12 +1,53 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
+# Dependabot version updates. One entry per dependency manifest in this repo.
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# `package-ecosystem` must name a real ecosystem. GitHub's starter file leaves
+# it as "", and Dependabot rejects the ENTIRE file when any one entry is
+# invalid - so a config in this shape opens no pull requests at all and reports
+# that only on the repository's Dependabot page. tests/test_dependabot_config.py
+# pins that, and pins that every manifest on disk has an entry here.
 
 version: 2
 updates:
-  - package-ecosystem: "" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  # requirements.txt, requirements-dev.txt and pyproject.toml.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # Pinned to a commit on TzurSoffer's fork, not a PyPI version, and it is
+      # the dependency this codebase monkey-patches most heavily
+      # (Database/patches.py). requirements.txt says to bump the SHA
+      # deliberately with any fallout fixed in the same commit - so no bot
+      # rewrites that line.
+      - dependency-name: "spotapi"
+
+  # package.json / package-lock.json - dev-only (eslint), never installed into
+  # the image, but it is what the Lint workflow runs `npm ci` against.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The Dockerfile's `FROM python:3.13-slim`.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The `uses:` refs in .github/workflows/. Directory is "/" - Dependabot finds
+  # the workflows itself and does not take a path to them.
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
