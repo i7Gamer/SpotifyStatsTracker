@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       # Pinned: a ruff upgrade can add checks to the selected rule groups, and
       # this gate is only useful if going red means someone's change broke
