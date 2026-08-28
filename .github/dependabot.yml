@@ -65,9 +65,10 @@ updates:
           - "minor"
           - "patch"
 
-  # The Dockerfile's `FROM python:3.13-slim`. No group: one image is already
-  # one pull request, and the test asserts that count rather than exempting
-  # docker by name - a multi-stage build adding a second base turns red here.
+  # The Dockerfile's `FROM python:<version>-slim`. No group: one image is
+  # already one pull request, and the test asserts that count rather than
+  # exempting docker by name - a multi-stage build adding a second base image
+  # turns red there.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -75,6 +76,22 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # The base image is not a dependency, it is the interpreter this code
+      # runs on - and moving it is a multi-file change no bot can make. CI pins
+      # `python-version:` to match (tests/test_python_version_alignment.py
+      # asserts it), and none of the docker* workflows run on a pull request,
+      # so a lone Dockerfile bump ships a Python the suite never executed.
+      #
+      # Note the vocabulary differs from `groups.update-types` above: an ignore
+      # takes the `version-update:semver-*` spelling. Since the tag carries no
+      # patch component (`3.14-slim`, not `3.14.2-slim`), ignoring major and
+      # minor means Dependabot proposes nothing here at all - which is the
+      # intent. Bump it by hand, with the CI pins in the same commit.
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   # The `uses:` refs in .github/workflows/. Directory is "/" - Dependabot finds
   # the workflows itself and does not take a path to them.
