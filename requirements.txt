@@ -54,5 +54,5 @@ tzdata==2026.3
 # module scope. Required for `import spotapi` to succeed at all - do not remove
 # as "unused". (pymongo used to arrive transitively via spotipyFree; with that
 # wrapper replaced by Database/Spotify/, it has to be named here.)
-redis==8.0.1
+redis==8.1.0
 pymongo==4.17.0
