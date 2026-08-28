@@ -5,7 +5,14 @@
 # it as "", and Dependabot rejects the ENTIRE file when any one entry is
 # invalid - so a config in this shape opens no pull requests at all and reports
 # that only on the repository's Dependabot page. tests/test_dependabot_config.py
-# pins that, and pins that every manifest on disk has an entry here.
+# pins that, pins that every manifest on disk has an entry here, and pins that
+# anything tracking more than one dependency is grouped.
+#
+# `groups` exist because the alternative is one PR per dependency: four
+# ecosystems at a limit of 5 is up to 20 open at once on a repo with one
+# maintainer. No group sets `applies-to`, so all of them default to
+# version-updates only - a SECURITY update still arrives as its own PR, which
+# is the one case where waiting for the weekly batch is wrong.
 
 version: 2
 updates:
@@ -17,6 +24,18 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      # Majors are deliberately NOT in here. Every pin in requirements.txt
+      # carries a paragraph on what was checked before it moved - websockets
+      # 16.1 -> 17.0.1 names the renamed kwargs it verified and 16.1 as the
+      # rollback - and that review does not survive being bundled with four
+      # unrelated bumps. Minors and patches get the one weekly PR.
+      python-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
     ignore:
       # Pinned to a commit on TzurSoffer's fork, not a PyPI version, and it is
       # the dependency this codebase monkey-patches most heavily
@@ -34,8 +53,21 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      # Same split as pip, for the same reason: eslint is pinned exactly so
+      # that a red lint run means someone's change broke something, not that
+      # the tool learned a new opinion overnight (see .github/workflows/lint.yml).
+      # A major there can add rules, so it gets its own PR.
+      npm-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
-  # The Dockerfile's `FROM python:3.13-slim`.
+  # The Dockerfile's `FROM python:3.13-slim`. No group: one image is already
+  # one pull request, and the test asserts that count rather than exempting
+  # docker by name - a multi-stage build adding a second base turns red here.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -53,3 +85,11 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      # No update-types filter here, unlike pip and npm. An action is pinned to
+      # its major tag (actions/checkout@v7), so v7 -> v8 is the ONLY update
+      # Dependabot ever proposes for it - filtering majors out would group
+      # nothing and leave one PR per action, which is the thing this avoids.
+      github-actions:
+        patterns:
+          - "*"
