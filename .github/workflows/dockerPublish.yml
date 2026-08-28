@@ -80,10 +80,10 @@ jobs:
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Set up Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Build this architecture
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       with:
         context: .
         platforms: ${{ matrix.platform }}
@@ -156,7 +156,7 @@ jobs:
 
     - name: Push by digest
       id: push
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       with:
         context: .
         platforms: ${{ matrix.platform }}
@@ -175,7 +175,7 @@ jobs:
         touch "/tmp/digests/${DIGEST#sha256:}"
 
     - name: Hand the digest to the merge job
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: digest-${{ matrix.arch }}
         path: /tmp/digests/*
@@ -192,7 +192,7 @@ jobs:
 
     steps:
     - name: Collect the per-architecture digests
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         path: /tmp/digests
         pattern: digest-*
