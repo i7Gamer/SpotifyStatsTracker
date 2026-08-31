@@ -30,7 +30,7 @@ pillow==12.3.0
 requests==2.34.2
 # Sits under the listener, which is this project's most incident-prone
 # subsystem (the 401 reconnect storm, register_device INVALID_USER, the atexit
-# prints), so 16.1 -> 17.0.1 was checked rather than taken:
+# prints), so 16.1 -> 17.0.1 -> 17.1 was checked rather than taken:
 #
 # 17.0's backwards-incompatible changes are the `socket` -> `sock` rename on
 # sync.client.connect, several booleans becoming keyword-only, ISO-8859-1
@@ -41,9 +41,26 @@ requests==2.34.2
 # verified against the installed 17.0.1 signature, and neither we nor spotapi
 # ever passed `socket=`.
 #
+# 17.1's changelog lists no backwards-incompatible changes, but one commit in
+# the range (1f7f0e5) DEPRECATES calling sync.client.connect() outside a `with`
+# block - precisely our shape, at Database/patches.py and inside spotapi. It is
+# warning-only: connect() still returns a ClientConnection while `legacy` is
+# unset, and the first recv/send/close warns once at stacklevel=3, so it lands
+# on the caller rather than __main__ and stays default-ignored in production.
+# The suite never builds a real connection, so it does not fire in CI either.
+# Also unlisted there: sync connect() now follows redirects and can be pointed
+# at a different host/port than the URI. dealer.spotify.com should never
+# redirect; if it starts, 17.0.1 raised where 17.1 follows silently.
+#
+# Deliberately NOT hedged with `legacy=True` in patched_connect: that kwarg
+# does not exist in 17.0.1, so passing it would cost the one-line rollback
+# below on the subsystem that most needs one. Revisit when 18.0 flips the
+# default - websockets sits on deprecations for years (13.0's `ssl_context`
+# rename still only warns in 17.1), so there is no hurry.
+#
 # NOT soak-tested against a live dealer connection - the suite mocks the
 # socket. If reconnect behaviour regresses after a deploy, this is the first
-# thing to suspect and 16.1 is the rollback.
+# thing to suspect and 17.0.1 is the rollback.
 websockets==17.1
 waitress==3.0.2
 tzdata==2026.3
