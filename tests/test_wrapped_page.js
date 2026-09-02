@@ -79,7 +79,7 @@ function loadWrapped(options) {
   const calls = {
     bodyListeners: {}, docListeners: {}, pruned: [], ajax: [], fetched: [],
     created: [], canvas: { gradient: [], texts: [], fills: [], strokes: [] },
-    charts: 0, renderedInto: [], downloads: [],
+    charts: 0, swapFailure: null, downloads: [],
   };
   const elements = options.elements || {};
   const buttons = options.buttons || [];
@@ -89,7 +89,6 @@ function loadWrapped(options) {
     location: { pathname: '/wrapped', search: options.search || '', href: 'http://localhost/wrapped' },
     AjaxStatus: options.noAjaxStatus ? undefined : {
       redirectIfUnauthorized(response) { return response.status === 401; },
-      renderInto(target, retry) { calls.renderedInto.push(target); calls.lastRetry = retry; },
     },
   };
   global.document = {
@@ -120,7 +119,10 @@ function loadWrapped(options) {
     },
   };
   global.renderTimeSeriesChart = function () { calls.charts += 1; };
-  global.HtmxFilters = { pruneEmptyParams(parameters) { calls.pruned.push(parameters); } };
+  global.HtmxFilters = {
+    pruneEmptyParams(parameters) { calls.pruned.push(parameters); },
+    onSwapFailure(targetId, retry) { calls.swapFailure = { targetId, retry }; },
+  };
   global.htmx = { ajax(method, url, opts) { calls.ajax.push({ method, url, opts }); } };
   global.FormData = function FormDataStub(form) { this.form = form; };
   global.fetch = function (url, init) {
@@ -494,24 +496,26 @@ run('an unrelated form inside the modal is left to submit normally', () => {
 
 // ---------------------------------------------------------------- failure
 
-run('a failed swap renders the retry into the recap container', () => {
-  const target = makeElement({ id: 'wrappedResults' });
-  const page = loadWrapped({ search: '?year=2026', elements: { wrappedResults: target } });
-
-  page.bodyListeners['htmx:responseError']({});
-  page.lastRetry();
-
-  assert.deepStrictEqual(page.renderedInto, [target]);
-  assert.strictEqual(page.ajax[0].url, '/wrapped?year=2026');
-  assert.strictEqual(page.ajax[0].opts.target, '#wrappedResults');
-});
-
-run('a failure with no recap container on the page is a no-op', () => {
+// The scoping is the shared helper's (tests/test_htmx_filters.js pins it): a
+// failure on some OTHER region must not blank the recap and offer a Retry for
+// a request that never failed. The hand-rolled body listeners this replaced
+// took no event at all, so they answered every failed swap on the page.
+run('a failed swap is reported through the shared helper, scoped to the recap', () => {
   const page = loadWrapped({});
 
-  page.bodyListeners['htmx:sendError']({});
+  assert.strictEqual(page.swapFailure.targetId, 'wrappedResults');
+  assert.strictEqual(page.bodyListeners['htmx:responseError'], undefined,
+    'an unscoped listener of its own is the shape the helper exists to replace');
+  assert.strictEqual(page.bodyListeners['htmx:sendError'], undefined);
+});
 
-  assert.deepStrictEqual(page.renderedInto, []);
+run('the retry re-requests the recap', () => {
+  const page = loadWrapped({ search: '?year=2026' });
+
+  page.swapFailure.retry();
+
+  assert.strictEqual(page.ajax[0].url, '/wrapped?year=2026');
+  assert.strictEqual(page.ajax[0].opts.target, '#wrappedResults');
 });
 
 (async () => {

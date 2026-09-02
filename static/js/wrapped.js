@@ -375,16 +375,16 @@ if (typeof document !== 'undefined') {
   // @requiresUser, so it has no session to redirect (see routes/wrapped.py).
   // An expired session on the owner's own page never arrives here at all: the
   // server answers an htmx request with HX-Redirect, and the browser navigates.
-  var reportWrappedFailure = function () {
-    var target = byId(WRAPPED_RESULTS_ID);
-    if (!target || !window.AjaxStatus) return;
-    window.AjaxStatus.renderInto(target, function () {
-      htmx.ajax('GET', window.location.pathname + window.location.search,
-                { target: '#' + WRAPPED_RESULTS_ID, swap: 'innerHTML' });
-    });
-  };
-  document.body.addEventListener('htmx:responseError', reportWrappedFailure);
-  document.body.addEventListener('htmx:sendError', reportWrappedFailure);
+  //
+  // The shared helper, because this page has exactly one htmx region: the
+  // year badges target #wrappedResults too, the export button is an
+  // out-of-band fragment of the same response, and the share forms use their
+  // own fetch() above. The hand-rolled block this replaced took no event, so it
+  // answered every failed swap on the page - the helper scopes on the target.
+  HtmxFilters.onSwapFailure(WRAPPED_RESULTS_ID, function () {
+    htmx.ajax('GET', window.location.pathname + window.location.search,
+              { target: '#' + WRAPPED_RESULTS_ID, swap: 'innerHTML' });
+  });
 }
 //< no module.exports: nothing here is pure enough to unit-test off the DOM. The
 //  shared filter helpers live in static/js/htmx-filters.js, which has its own
