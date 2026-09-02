@@ -119,7 +119,7 @@ if (typeof window !== 'undefined') (function() {
       chipsContainer.innerHTML = '';
 
       var label = document.createElement('span');
-      label.style.cssText = 'font-size: 0.9rem; font-weight: bold; color: var(--text-muted, #888888);';
+      label.style.cssText = 'font-size: 0.9rem; font-weight: bold; color: var(--muted);';
       label.textContent = 'Tags:';
       chipsContainer.appendChild(label);
 

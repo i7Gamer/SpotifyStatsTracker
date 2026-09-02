@@ -1449,7 +1449,7 @@ progress::-moz-progress-bar {
    never italic in either the server-rendered or the re-rendered case. */
 .no-tags-text {
   font-size: 0.85rem;
-  color: var(--text-muted, #888888);
+  color: var(--muted);
   font-style: italic;
 }
 

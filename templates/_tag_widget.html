@@ -4,7 +4,7 @@
 <div class="tag-widget" data-entity-type="{{ entity_type }}" data-entity-id="{{ entity_id }}" style="margin: 1rem 0; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color, #2d2d2d); border-radius: 8px;">
   <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
     <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;" class="tag-chips-container">
-      <span style="font-size: 0.9rem; font-weight: bold; color: var(--text-muted, #888888);">Tags:</span>
+      <span style="font-size: 0.9rem; font-weight: bold; color: var(--muted);">Tags:</span>
       {% if entity_tags %}
         {% for t in entity_tags %}
           <span class="tag-chip" data-tag="{{ t }}">
