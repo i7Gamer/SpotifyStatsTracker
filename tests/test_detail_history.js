@@ -57,8 +57,10 @@ function loadDetailHistory(options) {
       pushState(state, title, url) { calls.pushed.push(url); },
     },
     AjaxStatus: options.noAjaxStatus ? undefined : {
-      showBanner(retry) { calls.banners += 1; calls.lastRetry = retry; },
-      clearBanner() { calls.cleared += 1; },
+      showBanner(retry, message, owner) {
+        calls.banners += 1; calls.lastRetry = retry; calls.bannerOwner = owner;
+      },
+      clearBanner(owner) { calls.cleared += 1; calls.clearedOwner = owner; },
     },
   };
   global.document = {
@@ -237,6 +239,29 @@ run('a swap of something else does not clear this list\'s banner', () => {
   dom.page.bodyListeners['htmx:afterSwap']({ target: makeElement() });
 
   assert.strictEqual(dom.page.cleared, 0);
+});
+
+// The Trend-buckets chart (detail-chart.js) reports through the same banner
+// slot on the same page. Both used to clear it on their own success, so a sort
+// that landed took down the chart's failure banner and its Retry. The banner
+// is owned now (see ajax-status.js), and this list must name itself on both
+// sides: unowned, its own success could not take down its own banner, and its
+// clear would take down the chart's.
+
+run('the banner is claimed for this list', () => {
+  const dom = tabSetup();
+
+  dom.page.bodyListeners['htmx:responseError']({ detail: { target: dom.list } });
+
+  assert.strictEqual(dom.page.bannerOwner, 'detail-history');
+});
+
+run('the clear names this list, so it leaves the chart\'s banner alone', () => {
+  const dom = tabSetup();
+
+  dom.page.bodyListeners['htmx:afterSwap']({ target: dom.list });
+
+  assert.strictEqual(dom.page.clearedOwner, 'detail-history');
 });
 
 (async () => {

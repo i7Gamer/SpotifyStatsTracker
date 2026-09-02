@@ -7,8 +7,12 @@
  * had no signal and no way to retry. Two presentations:
  *   renderInto(target, onRetry) - replace a single swap target's contents with
  *     an inline "couldn't load - Retry" block (history, dashboard cards).
- *   showBanner(onRetry) / clearBanner() - a page-level banner for pages whose
- *     swap targets are canvases or many small regions (charts, genres, compare).
+ *   showBanner(onRetry, message, owner) / clearBanner(owner) - a page-level
+ *     banner for pages whose swap targets are canvases or many small regions
+ *     (charts, genres, compare). `owner` is for a page with TWO loaders sharing
+ *     the slot (the detail pages' chart and play log): a clear that names an
+ *     owner only removes that owner's banner, so one loader's success cannot
+ *     take down the other's failure. A single-owner page passes none.
  * onRetry is the page's own loader; Retry clears the error and re-fires it.
  * Exposed on window; also module.exports so the API contract can be unit-tested
  * under node. */
@@ -38,7 +42,11 @@
     target.appendChild(wrap);
   }
 
-  function showBanner(onRetry, message) {
+  //< who last put the banner up (see the header). The slot is reused rather
+  //  than stacked, so the loader that reported most recently owns it.
+  var bannerOwner;
+
+  function showBanner(onRetry, message, owner) {
     var host = document.querySelector('main') || document.body;
     if (!host) return;
     var banner = document.getElementById(BANNER_ID);
@@ -48,6 +56,7 @@
       banner.className = 'ajax-error-banner';
       host.insertBefore(banner, host.firstChild);
     }
+    bannerOwner = owner;
     banner.innerHTML = '';
     var text = document.createElement('span');
     text.textContent = message || DEFAULT_MESSAGE;
@@ -58,11 +67,16 @@
     }));
   }
 
-  function clearBanner() {
+  // A clear that names an owner is "MY request succeeded" - no news about a
+  // banner someone else (or nobody) put up, so it leaves that one alone. A
+  // clear naming none is the Retry button's own, and the single-owner pages'.
+  function clearBanner(owner) {
+    if (owner !== undefined && owner !== bannerOwner) return;
     var banner = document.getElementById(BANNER_ID);
     if (banner && banner.parentNode) {
       banner.parentNode.removeChild(banner);
     }
+    bannerOwner = undefined;
   }
 
   // An expired session used to leave these pages dead-ended: the route sent a

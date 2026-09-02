@@ -239,6 +239,26 @@ run('a failure of the live load shows a banner whose Retry reloads', async () =>
   assert.strictEqual(page.pendingFetches.length, 2, 'Retry issues a fresh load');
 });
 
+run('the chart claims its banner and clears only its own', async () => {
+  /* The play-log list (detail-history.js) reports through the same banner
+   * slot on the same page. Unowned, its sort landing took down the chart's
+   * failure banner - and the Retry a chart still showing the previous series
+   * under the new label needed. Both sides name themselves now. */
+  const page = freshPage();
+
+  page.load('day');
+  page.pendingFetches[0].reject(new Error('network down'));
+  await settle();
+  assert.strictEqual(page.calls.banners[0].owner, 'detail-chart');
+
+  page.load('week');
+  page.pendingFetches[1].resolve(okResponse('newer'));
+  await settle();
+
+  assert.deepStrictEqual(page.calls.cleared, ['detail-chart'],
+                         "a chart success must not take down the play log's banner");
+});
+
 run("the previous load's abort is neither logged nor reported", async () => {
   /* What a real fetch() does to the load a newer bucket change aborted: reject
    * with an AbortError. The catch filters it by name - the reason the

@@ -106,6 +106,74 @@ run('clearBanner is safe when no banner exists', () => {
   assert.doesNotThrow(() => AjaxStatus.clearBanner());
 });
 
+// --- banner ownership --------------------------------------------------------
+// The detail pages host two loaders that both report through the one banner
+// slot: the Trend-buckets chart and the play-log list. Each cleared the banner
+// on its own success, so a play-log sort that landed removed the chart's
+// failure banner - and with it the Retry a chart still showing the PREVIOUS
+// series under the new label needed. A banner now remembers who put it up, and
+// a clear that names an owner only removes that owner's banner. A clear that
+// names none still removes whatever is up: that is the Retry button, and every
+// single-owner page.
+
+const BANNER_ID = 'ajax-error-banner';
+
+function bannerIsUp(dom) {
+  return !!dom.byId[BANNER_ID] && dom.main.children.includes(dom.byId[BANNER_ID]);
+}
+
+run("a clear naming a different owner leaves the banner up", () => {
+  const dom = installDom();
+  AjaxStatus.showBanner(() => {}, undefined, 'detail-chart');
+
+  AjaxStatus.clearBanner('detail-history');
+
+  assert.ok(bannerIsUp(dom), "another loader's success is not this failure's recovery");
+});
+
+run('a clear naming the same owner removes the banner', () => {
+  const dom = installDom();
+  AjaxStatus.showBanner(() => {}, undefined, 'detail-chart');
+
+  AjaxStatus.clearBanner('detail-chart');
+
+  assert.ok(!bannerIsUp(dom));
+});
+
+run('a clear naming no owner removes an owned banner', () => {
+  //< the Retry button's own clear, and the single-owner pages' calls
+  const dom = installDom();
+  AjaxStatus.showBanner(() => {}, undefined, 'detail-chart');
+
+  AjaxStatus.clearBanner();
+
+  assert.ok(!bannerIsUp(dom));
+});
+
+run('the latest showBanner owns the banner', () => {
+  //< the slot is reused, not stacked, so the loader that last reported owns it
+  const dom = installDom();
+  AjaxStatus.showBanner(() => {}, undefined, 'detail-chart');
+  AjaxStatus.showBanner(() => {}, undefined, 'detail-history');
+
+  AjaxStatus.clearBanner('detail-chart');
+  assert.ok(bannerIsUp(dom), 'the chart no longer owns it');
+
+  AjaxStatus.clearBanner('detail-history');
+  assert.ok(!bannerIsUp(dom));
+});
+
+run('an owned clear leaves a banner nobody claimed', () => {
+  //< an owned clear says "MY request succeeded", which is no news about a
+  //  failure nobody claimed; only a bare clear (or its own Retry) takes it down
+  const dom = installDom();
+  AjaxStatus.showBanner(() => {});
+
+  AjaxStatus.clearBanner('detail-chart');
+
+  assert.ok(bannerIsUp(dom));
+});
+
 // --- expired-session handling ------------------------------------------------
 // A 302 to /login is followed transparently by fetch(), so the loader used to
 // parse the login page's HTML as JSON and show "couldn't load" with a Retry

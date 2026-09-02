@@ -10,6 +10,10 @@
 (function () {
   var DETAIL_FADE_MS = 200;
 
+  //< the play log (detail-history.js) reports through the same banner slot;
+  //  naming this loader keeps one's success from clearing the other's failure
+  var BANNER_OWNER = 'detail-chart';
+
   //< the in-flight fetch ({controller, wrap}) - a newer bucket change aborts it
   //  so a slow older response can't land after (and clobber) the newer one
   var activeLoad = null;
@@ -74,7 +78,7 @@
         if (window.renderTimeSeriesChart) {
           window.renderTimeSeriesChart();
         }
-        if (window.AjaxStatus) window.AjaxStatus.clearBanner();
+        if (window.AjaxStatus) window.AjaxStatus.clearBanner(BANNER_OWNER);
       })
       .catch(function (err) {
         //< navigating to /login - not a load failure to report
@@ -83,7 +87,7 @@
           console.error(err);
           //< the canvas can't hold a message, so surface a banner with Retry
           if ((!activeLoad || activeLoad.controller === controller) && window.AjaxStatus) {
-            window.AjaxStatus.showBanner(function () { loadDetailTimeSeries(); });
+            window.AjaxStatus.showBanner(function () { loadDetailTimeSeries(); }, undefined, BANNER_OWNER);
           }
         }
       })

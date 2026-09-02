@@ -36,6 +36,10 @@
   //  failure banner apart from the whole-body one (see detail-page.js)
   var HISTORY_RESULTS_ID = 'detailHistoryResults';
 
+  //< the Trend-buckets chart (detail-chart.js) reports through the same banner
+  //  slot; naming this list keeps one's success from clearing the other's failure
+  var BANNER_OWNER = 'detail-history';
+
   //< re-resolved by initDetailHistory on every body swap; empty until then
   var filterButtons = [];
   var categoryDivs = [];
@@ -119,16 +123,17 @@
     window.AjaxStatus.showBanner(function () {
       htmx.ajax('GET', window.location.pathname + window.location.search,
                 { target: '#' + HISTORY_RESULTS_ID, swap: 'innerHTML' });
-    });
+    }, undefined, BANNER_OWNER);
   }
 
   if (typeof window !== 'undefined') {
     window.initDetailHistory = initDetailHistory;
     document.body.addEventListener('htmx:responseError', reportHistoryFailure);
     document.body.addEventListener('htmx:sendError', reportHistoryFailure);
-    //< a swap that succeeded clears whatever the last failure left up
+    //< a swap that succeeded clears what this list's last failure left up -
+    //  and only that: the chart's banner is its own to clear
     document.body.addEventListener('htmx:afterSwap', function (evt) {
-      if (window.AjaxStatus && isHistorySwap(evt.target)) window.AjaxStatus.clearBanner();
+      if (window.AjaxStatus && isHistorySwap(evt.target)) window.AjaxStatus.clearBanner(BANNER_OWNER);
     });
   }
 })();
