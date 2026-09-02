@@ -9,8 +9,15 @@
 
    Being replaced rather than mutated is why its click handler is delegated off
    document.body now: a listener bound to this element directly would go with it
-   on the first swap. #}
-<button id="exportWrappedBtn" class="primary-button button-icon"{% if oobSwap %} hx-swap-oob="true"{% endif %}
+   on the first swap.
+
+   type="button" is load-bearing: a <button> without one is a SUBMIT button, and
+   this one sits inside the filter form. htmx only intercepts the events named
+   in that form's hx-trigger (`change`), so the browser's native GET followed
+   every export click - a full reload that reset the stats filter and wrote the
+   raw serialized query into the address bar. tests/test_wrapped_htmx.py pins
+   it. #}
+<button type="button" id="exportWrappedBtn" class="primary-button button-icon"{% if oobSwap %} hx-swap-oob="true"{% endif %}
         data-year="{{ year }}"
         {# label, not a key: wrapped.js paints it on the exported PNG
            ("Listening Summary for @…") and uses it as the filename. #}

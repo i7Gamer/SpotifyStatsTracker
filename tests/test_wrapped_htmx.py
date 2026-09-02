@@ -517,3 +517,49 @@ class TestSharedWrappedHtmx(PublicSharedWrappedTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheExportButtonIsNotASubmitButton(WrappedHtmxTestCase):
+    """The Export Summary Card button lives INSIDE the #wrappedFilters form
+    (it comes back out of band with every filter swap, so that is where it has
+    to sit), and a <button> with no type attribute defaults to type=submit. Its
+    click handler (wrapped.js) never preventDefaults, and htmx only intercepts
+    the events named in hx-trigger - which is `change` here, not `submit` - so
+    the browser followed every export click with a NATIVE GET of the form: a
+    full reload that reset the stats filter, scrolled to the top and wrote the
+    raw serialized query (empty groupBy= included) into the address bar.
+
+    The 2026-09-02 review found it as the only untyped <button> inside a
+    <form> on any rendered page. The second test keeps it that way for the one
+    form that hosts non-submit buttons: inside #wrappedFilters, only the
+    <noscript> Apply button may submit."""
+
+    def _filterForm(self):
+        body = self._page()
+        start = body.index('id="wrappedFilters"')
+        start = body.rindex("<form", 0, start)
+        end = body.index("</form>", start)
+        return body[start:end]
+
+    def test_the_export_button_carries_type_button(self):
+        form = self._filterForm()
+        tagStart = form.index('id="exportWrappedBtn"')
+        tag = form[form.rindex("<button", 0, tagStart):form.index(">", tagStart)]
+        self.assertIn('type="button"', tag)
+
+    def test_only_the_noscript_apply_button_may_submit_the_filter_form(self):
+        form = self._filterForm()
+        noscriptStart = form.index("<noscript>")
+        noscriptEnd = form.index("</noscript>", noscriptStart)
+        position = 0
+        offenders = []
+        while True:
+            position = form.find("<button", position)
+            if position < 0:
+                break
+            tag = form[position:form.index(">", position)]
+            insideNoscript = noscriptStart < position < noscriptEnd
+            if 'type="button"' not in tag and not insideNoscript:
+                offenders.append(tag)
+            position += len("<button")
+        self.assertEqual(offenders, [])
