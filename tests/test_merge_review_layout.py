@@ -21,8 +21,8 @@ _ADMIN_PATH = os.path.join(_ROOT, "templates", "admin.html")
 
 _STATIC_CARD_CLASS = "card-static"
 _BUTTON_CLASSES = ("primary-button", "button-small")
-#< the row's primary verdict ("Same recording - merge"), and the base its
-#  neighbour ("Not the same") is built on
+#< the row's primary verdict ("Same Recording - Merge"), and the base its
+#  neighbour ("Not the Same") is built on
 _MERGE_VERDICT_SELECTOR = ".merge-release-actions .primary-button"
 _NEIGHBOUR_SELECTOR = ".button"
 

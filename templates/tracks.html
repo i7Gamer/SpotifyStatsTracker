@@ -178,7 +178,7 @@
               {% endfor %}
             </ul>
             {% if milestones|length > MILESTONE_INITIAL_VISIBLE %}
-            <button type="button" class="milestone-more-btn" data-milestone-more data-chunk-size="{{ MILESTONE_CHUNK_SIZE }}">Show {{ [MILESTONE_CHUNK_SIZE, milestones|length - MILESTONE_INITIAL_VISIBLE]|min }} more</button>
+            <button type="button" class="milestone-more-btn" data-milestone-more data-chunk-size="{{ MILESTONE_CHUNK_SIZE }}">Show {{ [MILESTONE_CHUNK_SIZE, milestones|length - MILESTONE_INITIAL_VISIBLE]|min }} More</button>
             {% endif %}
           {% else %}
             <p class="milestone-empty">No milestones yet &mdash; keep listening and they'll show up here as you hit play-count, listening-time, and streak achievements.</p>

@@ -1,4 +1,4 @@
-// Plain-node unit test for the "Play now" embedded-player state machine
+// Plain-node unit test for the "Play Now" embedded-player state machine
 // (static/js/play-embed.js). No test framework/dependency - run with:
 //   node tests/test_play_embed.js
 const assert = require('assert');
@@ -20,62 +20,62 @@ const IDLE = { phase: 'idle', visible: false };
 
 run('first click loads the script and reveals the player', () => {
   assert.deepStrictEqual(nextPlayEmbedState(IDLE, 'click'), {
-    phase: 'loading', visible: true, action: 'load-script', label: 'Hide player',
+    phase: 'loading', visible: true, action: 'load-script', label: 'Hide Player',
   });
 });
 
 run('clicking again while the script is still loading just hides (no second load)', () => {
   const shown = { phase: 'loading', visible: true };
   assert.deepStrictEqual(nextPlayEmbedState(shown, 'click'), {
-    phase: 'loading', visible: false, action: 'none', label: 'Play now',
+    phase: 'loading', visible: false, action: 'none', label: 'Play Now',
   });
 });
 
 run('re-showing while still loading stays a no-op (script requested once)', () => {
   const hiddenDuringLoad = { phase: 'loading', visible: false };
   assert.deepStrictEqual(nextPlayEmbedState(hiddenDuringLoad, 'click'), {
-    phase: 'loading', visible: true, action: 'none', label: 'Hide player',
+    phase: 'loading', visible: true, action: 'none', label: 'Hide Player',
   });
 });
 
 run('api ready while visible creates the controller and autoplays', () => {
   const loadingVisible = { phase: 'loading', visible: true };
   assert.deepStrictEqual(nextPlayEmbedState(loadingVisible, 'api-ready'), {
-    phase: 'ready', visible: true, action: 'create-and-play', label: 'Hide player',
+    phase: 'ready', visible: true, action: 'create-and-play', label: 'Hide Player',
   });
 });
 
 run('api ready while hidden creates the controller but does not autoplay', () => {
   const loadingHidden = { phase: 'loading', visible: false };
   assert.deepStrictEqual(nextPlayEmbedState(loadingHidden, 'api-ready'), {
-    phase: 'ready', visible: false, action: 'create', label: 'Play now',
+    phase: 'ready', visible: false, action: 'create', label: 'Play Now',
   });
 });
 
 run('clicking a visible ready player hides and pauses it', () => {
   const readyVisible = { phase: 'ready', visible: true };
   assert.deepStrictEqual(nextPlayEmbedState(readyVisible, 'click'), {
-    phase: 'ready', visible: false, action: 'pause', label: 'Play now',
+    phase: 'ready', visible: false, action: 'pause', label: 'Play Now',
   });
 });
 
 run('clicking a hidden ready player shows and resumes playback', () => {
   const readyHidden = { phase: 'ready', visible: false };
   assert.deepStrictEqual(nextPlayEmbedState(readyHidden, 'click'), {
-    phase: 'ready', visible: true, action: 'play', label: 'Hide player',
+    phase: 'ready', visible: true, action: 'play', label: 'Hide Player',
   });
 });
 
 run('a stray api-ready in idle is ignored', () => {
   assert.deepStrictEqual(nextPlayEmbedState(IDLE, 'api-ready'), {
-    phase: 'idle', visible: false, action: 'none', label: 'Play now',
+    phase: 'idle', visible: false, action: 'none', label: 'Play Now',
   });
 });
 
 run('a stray api-ready when already ready is ignored and preserves visibility', () => {
   const readyVisible = { phase: 'ready', visible: true };
   assert.deepStrictEqual(nextPlayEmbedState(readyVisible, 'api-ready'), {
-    phase: 'ready', visible: true, action: 'none', label: 'Hide player',
+    phase: 'ready', visible: true, action: 'none', label: 'Hide Player',
   });
 });
 
@@ -108,7 +108,7 @@ run('a failed script load returns to idle so the next click can retry', () => {
 run('a failed load restores the Play label rather than leaving Hide', () => {
   const afterError = nextPlayEmbedState({ phase: 'loading', visible: true }, 'script-error');
 
-  assert.strictEqual(afterError.label, 'Play now');
+  assert.strictEqual(afterError.label, 'Play Now');
 });
 
 run('clicking again after a failure requests the script once more', () => {
@@ -130,7 +130,7 @@ run('a script error once the player is ready changes nothing', () => {
 
 // --- what that failure actually renders --------------------------------------
 // The notice used to build an "Open in Spotify" anchor of its own, because the
-// hero card had none: the Play now button REPLACED the card's anchor. The card
+// hero card had none: the Play Now button REPLACED the card's anchor. The card
 // carries both now (templates/_track_card.html), so a second link a few pixels
 // under the first is noise - the notice points at the one already there. Which
 // nodes get built is wiring, not state, so this drives initPlayEmbed against a
@@ -166,7 +166,7 @@ function fakeElement(tagName) {
 function failedScriptLoad() {
   const button = fakeElement('button');
   button.dataset = { spotifyUrl: SPOTIFY_URL, embedType: 'track' };
-  button.textContent = 'Play now';
+  button.textContent = 'Play Now';
   const container = fakeElement('section');
   const slot = fakeElement('div');
   const created = [];
@@ -217,7 +217,7 @@ run('the failure still reveals the container and frees the button to retry', () 
 
   assert.strictEqual(container.hidden, false);
   assert.ok(container.classList.contains('is-visible'));
-  assert.strictEqual(button.textContent, 'Play now');
+  assert.strictEqual(button.textContent, 'Play Now');
   assert.strictEqual(button.attributes['aria-expanded'], 'true');
 });
 

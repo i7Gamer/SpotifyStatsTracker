@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// "+N more" / "Show less" toggle on long artist lists. _artist_links.html
+// "+N more" / "Show Less" toggle on long artist lists. _artist_links.html
 // renders lists longer than MAX_INLINE_ARTISTS with the tail inside a hidden
 // .artist-overflow span next to an .artist-toggle button; this flips them.
 
@@ -12,7 +12,7 @@ function nextArtistToggleState(isExpanded, hiddenCount) {
   const expanded = !isExpanded;
   return {
     expanded,
-    label: expanded ? 'Show less' : `+${hiddenCount} more`,
+    label: expanded ? 'Show Less' : `+${hiddenCount} more`,
     overflowHidden: !expanded,
   };
 }

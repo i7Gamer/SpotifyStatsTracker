@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Progressive "Show N more" reveal for the dashboard's Milestones card
+// Progressive "Show N More" reveal for the dashboard's Milestones card
 // (templates/tracks.html). The server renders only the first few milestones
 // visible; the rest carry the `hidden` attribute next to a [data-milestone-more]
 // button. This reveals them a chunk (data-chunk-size) at a time, and drops the
@@ -19,7 +19,7 @@ function milestoneRevealState(visibleCount, total, chunkSize) {
   return {
     visible,
     moreHidden: remaining <= 0,
-    label: remaining > 0 ? `Show ${Math.min(chunkSize, remaining)} more` : '',
+    label: remaining > 0 ? `Show ${Math.min(chunkSize, remaining)} More` : '',
   };
 }
 

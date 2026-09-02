@@ -293,7 +293,7 @@ class DashboardCardsTestCase(_DashboardHelpers, AppTestCase):
         self.assertIn(b">Import &amp; Export</a>", body)
         # Log out is a POST form (state-changing), not a plain link.
         self.assertIn(b"dropdown-logout-form", body)
-        self.assertIn(b">Log out</button>", body)
+        self.assertIn(b">Log Out</button>", body)
 
     def test_nav_dropdown_triggers_are_keyboard_focusable(self):
         # The dropdown triggers must be focusable (tabindex) so keyboard users
@@ -643,7 +643,7 @@ class DashboardMilestonesCardTestCase(_DashboardHelpers, AppTestCase):
         self.assertEqual(total - hidden, 2)   #< visible
         self.assertIn(b"data-milestone-more", body)
         self.assertIn(b'data-chunk-size="5"', body)
-        self.assertIn(b"Show 3 more", body)
+        self.assertIn(b"Show 3 More", body)
         #< the button is inert without its script, and the suite would not
         #  otherwise notice the tag going missing
         self.assertIn(b"js/milestone-more.js", body)
@@ -668,7 +668,7 @@ class DashboardMilestonesCardTestCase(_DashboardHelpers, AppTestCase):
         body = self._get(dash, self._makeDb()).data
 
         self.assertIn(b"data-milestone-more", body)
-        self.assertIn(b"Show 1 more", body)   #< not the full chunk size
+        self.assertIn(b"Show 1 More", body)   #< not the full chunk size
         self.assertEqual(body.count(b'class="milestone-item" hidden'), 1)
 
     def test_kill_switch_hides_both_cards(self):

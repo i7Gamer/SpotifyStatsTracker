@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// The song/artist/album detail pages' "Play now" button: reveals an embedded
+// The song/artist/album detail pages' "Play Now" button: reveals an embedded
 // Spotify player between the hero card and the charts and starts playback via
 // the official Spotify iFrame API. The API script is loaded lazily on the first
 // click, so visitors who never press Play pull nothing from Spotify.
@@ -10,8 +10,8 @@
 // data-embed-type (track|artist|album); markup lives in templates/_track_card.html
 // and the #play-embed container in the three detail templates.
 
-const PLAY_LABEL = 'Play now';
-const HIDE_LABEL = 'Hide player';
+const PLAY_LABEL = 'Play Now';
+const HIDE_LABEL = 'Hide Player';
 const SPOTIFY_IFRAME_API_SRC = 'https://open.spotify.com/embed/iframe-api/v1';
 
 // Shown in the player's place when the API script never loads. It names the
@@ -120,7 +120,7 @@ function initPlayEmbed() {
     //
     // So the failure is reported in the container the player would have filled.
     // It used to carry its own "Open in Spotify" anchor as the way through,
-    // because back then the hero card had none - the Play now button replaced
+    // because back then the hero card had none - the Play Now button replaced
     // it. The card shows both now, so the notice points at that pill instead of
     // duplicating it inches below itself. The state machine has already returned
     // to 'idle', so a later click still retries the script (a transient network

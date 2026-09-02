@@ -57,7 +57,7 @@ run('handles invalid or null payload gracefully', () => {
 // the Settings tab replaces the form this file bound on load. admin-page.js
 // re-initialises the swapped-in body by calling window.initAdminBackupForm();
 // the function existed only inside this file's IIFE, so that hook was dead and
-// "Create backup now" fell back to a full-page POST - the same button behaving
+// "Create Backup Now" fell back to a full-page POST - the same button behaving
 // two ways depending on how you reached the tab. Pinned as the contract
 // admin-page.js actually depends on, by name.
 run('exposes initAdminBackupForm for admin-page.js to re-run after a tab swap', () => {
@@ -78,7 +78,7 @@ run('exposes initAdminBackupForm for admin-page.js to re-run after a tab swap', 
 const FORM_SELECTOR = 'form[action*="/admin/create_backup"]';
 
 function driveSubmit(respond) {
-  const button = { disabled: false, textContent: 'Create backup now' };
+  const button = { disabled: false, textContent: 'Create Backup Now' };
   const handlers = {};
   const container = { innerHTML: null, children: [], appendChild(node) { this.children.push(node); } };
   const form = {
@@ -151,7 +151,7 @@ async function settle() {
     await settle();
     run('the button and its label come back after a 401', () => {
       assert.strictEqual(button.disabled, false, 'the finally must run on every path');
-      assert.strictEqual(button.textContent, 'Create backup now');
+      assert.strictEqual(button.textContent, 'Create Backup Now');
     });
   }
 

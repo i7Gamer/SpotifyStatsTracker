@@ -48,7 +48,7 @@ from services.email_worker import EMAIL_WORKER
 
 logger = logging.getLogger(__name__)
 
-# How long a manual "Create backup now" request waits for the snapshot before
+# How long a manual "Create Backup Now" request waits for the snapshot before
 # returning and letting it finish in the background. The common case (a small
 # database) completes well within this and reports the filename synchronously;
 # only a large database exceeds it, and there we return rather than hold the

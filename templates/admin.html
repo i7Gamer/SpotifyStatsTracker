@@ -561,7 +561,7 @@
           <form method="post" action="{{ url_for('adminRestart') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);"
                 onsubmit="return confirm('Restart the app now? Worker-count changes apply after the restart. This only recovers if the process is supervised (a relaunch-on-exit launch script) - otherwise the app will stop.');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            <button type="submit" class="button button-danger button-small" style="min-height: auto;">Restart app to apply</button>
+            <button type="submit" class="button button-danger button-small" style="min-height: auto;">Restart App to Apply</button>
           </form>
           {% else %}
           <p style="color: var(--muted); font-size: 0.8rem; margin: 1rem 0 0 0; padding-top: 1rem; border-top: 1px solid var(--border, #333);">Worker-count changes apply after you restart the app. A one-click restart button appears here when <code>ALLOW_INSTANCE_RESTART=1</code> is set in a supervised launch.</p>
@@ -629,7 +629,7 @@
           <p style="color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0.5rem;">
             Duplicates ISRC cannot decide (remasters, imported rows):
           </p>
-          <a href="{{ url_for('adminMergeReview') }}" class="primary-button button-small">Merge review</a>
+          <a href="{{ url_for('adminMergeReview') }}" class="primary-button button-small">Merge Review</a>
         </div>
       </article>
 
@@ -766,7 +766,7 @@
             <div id="backup-status-message" style="margin-top: 0.75rem; min-height: 1.5em;"></div>
             <form method="post" action="{{ url_for('adminCreateBackup') }}" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #333);">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-              <button type="submit" id="btn-create-backup" class="primary-button button-small">Create backup now</button>
+              <button type="submit" id="btn-create-backup" class="primary-button button-small">Create Backup Now</button>
             </form>
           </div>
         </article>

@@ -467,7 +467,7 @@ class TestTheDismissalLog(MergeReviewRouteTestCase):
         self.assertIn("suggested again", unquote_plus(resp.headers["Location"]))
         #< and the pair is back in the queue the redirect lands on
         body = self._request(dash, "GET", "/admin/merge-review").data.decode()
-        self.assertIn("Same recording", body)
+        self.assertIn("Same Recording", body)
         self.assertNotIn("Kept separate", body)
 
     def test_another_admins_no_is_listed_with_its_own_take_it_back_button(self):

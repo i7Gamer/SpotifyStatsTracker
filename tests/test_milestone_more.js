@@ -24,19 +24,19 @@ run('a single milestone leaves nothing to reveal and hides the button', () => {
 
 run('the first reveal offers a full chunk', () => {
   assert.deepStrictEqual(milestoneRevealState(1, 12, CHUNK), {
-    visible: 1, moreHidden: false, label: 'Show 5 more',
+    visible: 1, moreHidden: false, label: 'Show 5 More',
   });
 });
 
 run('mid-way through, full chunks are still offered', () => {
   assert.deepStrictEqual(milestoneRevealState(6, 12, CHUNK), {
-    visible: 6, moreHidden: false, label: 'Show 5 more',
+    visible: 6, moreHidden: false, label: 'Show 5 More',
   });
 });
 
 run('the final chunk is labelled with the true remainder, not the chunk size', () => {
   assert.deepStrictEqual(milestoneRevealState(11, 12, CHUNK), {
-    visible: 11, moreHidden: false, label: 'Show 1 more',
+    visible: 11, moreHidden: false, label: 'Show 1 More',
   });
 });
 
@@ -55,7 +55,7 @@ run('overshooting the total clamps to it and hides the button', () => {
 run('a sub-chunk remainder is fully revealed by a single click', () => {
   // 3 total, 1 shown -> "Show 2 more" -> one click (1 + chunk) reveals the rest.
   assert.deepStrictEqual(milestoneRevealState(1, 3, CHUNK), {
-    visible: 1, moreHidden: false, label: 'Show 2 more',
+    visible: 1, moreHidden: false, label: 'Show 2 More',
   });
   assert.deepStrictEqual(milestoneRevealState(1 + CHUNK, 3, CHUNK), {
     visible: 3, moreHidden: true, label: '',

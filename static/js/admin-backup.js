@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 i7Gamer
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/* The admin console "Create backup now" button form: submitted via fetch so
+/* The admin console "Create Backup Now" button form: submitted via fetch so
  * triggering a snapshot doesn't reload the page or navigate away - the route
  * answers XHR posts with {kind, message} JSON (see adminCreateBackup), rendered
  * into the #backup-status-message slot inside the Backups card. */
@@ -106,7 +106,7 @@
   // re-runs the initialiser by name off window - the same way it re-runs
   // onSkipModeChange, which survives only because its inline script is
   // declared OUTSIDE the swapped body. This one is not: without the
-  // assignment the lookup found nothing and "Create backup now" quietly
+  // assignment the lookup found nothing and "Create Backup Now" quietly
   // degraded to a full-page POST after any tab switch.
   if (typeof window !== 'undefined') {
     window.initAdminBackupForm = initAdminBackupForm;

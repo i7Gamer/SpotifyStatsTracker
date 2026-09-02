@@ -103,7 +103,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
           <input type="hidden" name="member" value="{{ release.trackId }}"/>
           <input type="hidden" name="canonical" value="{{ picked }}"/>
-          <button type="submit" class="primary-button button-small">Same recording &mdash; merge</button>
+          <button type="submit" class="primary-button button-small">Same Recording &mdash; Merge</button>
         </form>
         {#- carries `canonical` too, so the recorded "no" says what it was
             ruled AGAINST. The picker rewrites both forms' copies together. -#}
@@ -111,7 +111,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
           <input type="hidden" name="member" value="{{ release.trackId }}"/>
           <input type="hidden" name="canonical" value="{{ picked }}"/>
-          <button type="submit" class="button button-small">Not the same</button>
+          <button type="submit" class="button button-small">Not the Same</button>
         </form>
       </div>
     </div>
@@ -152,7 +152,7 @@
       <form method="post" action="{{ url_for('adminMergeReviewUndismiss') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <input type="hidden" name="member" value="{{ entry.trackId }}"/>
-        <button type="submit" class="button button-small">Put back in the queue</button>
+        <button type="submit" class="button button-small">Put Back in the Queue</button>
       </form>
     </div>
   </div>

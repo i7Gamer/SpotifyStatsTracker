@@ -14,10 +14,10 @@ function run(name, fn) {
   }
 }
 
-run('expanding reveals the overflow and relabels to "Show less"', () => {
+run('expanding reveals the overflow and relabels to "Show Less"', () => {
   assert.deepStrictEqual(nextArtistToggleState(false, 3), {
     expanded: true,
-    label: 'Show less',
+    label: 'Show Less',
     overflowHidden: false,
   });
 });

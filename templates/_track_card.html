@@ -298,7 +298,7 @@
         </div>
         {% endif %}
         {# Every card that has a real url links out; the detail-page heroes ALSO
-           get a Play now button, which reveals the embedded player in place (see
+           get a Play Now button, which reveals the embedded player in place (see
            static/js/play-embed.js). The button used to replace the anchor there,
            which made the detail pages the one surface offering no way to open
            the entity on Spotify itself - so both render, the anchor first: going
@@ -310,7 +310,7 @@
             {% set playNowEmbedType = {'top_artists': 'artist', 'top_albums': 'album'}.get(section, 'track') %}
             <button type="button" class="track-label track-spotify-link play-now-button"
                     data-spotify-url="{{ track.get('url') }}" data-embed-type="{{ playNowEmbedType }}"
-                    aria-expanded="false" aria-controls="play-embed">Play now</button>
+                    aria-expanded="false" aria-controls="play-embed">Play Now</button>
           {% endif %}
         {% endif %}
       </div>

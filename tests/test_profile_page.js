@@ -192,7 +192,7 @@ const SAMPLE_HTML = `<!doctype html><html><body>
   </nav>
   <section class="profile-section"><h2 id="preferences">Prefs</h2></section>
   <section class="profile-section"><h2 id="display-name">Name</h2></section>
-  <div class="profile-logout-row"><button>Log out</button></div>
+  <div class="profile-logout-row"><button>Log Out</button></div>
 </div>
 </body></html>`;
 
