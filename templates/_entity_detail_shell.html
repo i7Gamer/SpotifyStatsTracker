@@ -1,0 +1,88 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# Shell of a two-phase load - see song_detail.html's comment for the htmx
+     wiring and for why one of the three second requests is still a fetch(); the
+     body is _entity_detail_body.html.
+
+     The content block of artist_detail.html and album_detail.html, which set
+     the parameters and include this (the two shells were 81 lines differing in
+     eight - see _entity_detail_body.html for the same story one level down):
+       entity       - the artist / album dict
+       entityKind   - 'artist' / 'album', the tag widget's type and the admin
+                      refresh form's kind
+       backEndpoint - the Top page the back button returns to
+       backLabel    - its text
+       heroLine     - the line under the h1 (the album's is a macro call, so it
+                      arrives as rendered markup) #}
+  <section class="hero">
+    <div class="hero-content">
+      <h1>{{ entity.get('name', '') }}</h1>
+      <p>{{ heroLine }}</p>
+    </div>
+  </section>
+
+  <div class="detail-toolbar">
+    <a id="back-button" class="button" href="{{ url_for(backEndpoint) }}">&larr; {{ backLabel }}</a>
+    {# Inline, between the back button and the controls: the admin refresh
+       result used to render as a block above the whole toolbar and push every
+       section below it down by its own height. Whitespace-free so :empty
+       hides it when there is no message. #}
+    <div id="detail-flash">{% if error %}<p class="error" style="color: #ff4a4a;">{{ error }}</p>{% endif %}{% if success %}<p class="success" style="color: #4aff4a;">{{ success }}</p>{% endif %}</div>
+    <div class="detail-toolbar-actions">
+      {% if isAdmin %}
+      <form method="post" action="{{ url_for('adminRefreshLastfmEntity', kind=entityKind, entity_id=entity.get('id')) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="groupBy" value="{{ groupBy }}"/>
+        <button type="submit" class="button">Refresh Last.fm Data</button>
+      </form>
+      {% endif %}
+      <div class="filter-group">
+        <label for="groupBy">Trend buckets:</label>
+        {# Disabled until the body arrives - see song_detail.html. #}
+        <select id="groupBy" name="groupBy" onchange="updateDetailGroupByFilter()" disabled>
+          <option value="" {% if not groupBy %}selected{% endif %}>Auto</option>
+          <option value="day" {% if groupBy == 'day' %}selected{% endif %}>Day</option>
+          <option value="week" {% if groupBy == 'week' %}selected{% endif %}>Week</option>
+          <option value="month" {% if groupBy == 'month' %}selected{% endif %}>Month</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  {% if tags_enabled and not hide_tags_panel %}
+  {% set entity_type = entityKind %}
+  {% set entity_id = entity.get('id') %}
+  {% include '_tag_widget.html' %}
+  {% endif %}
+
+  {# The swap target - see song_detail.html for what each attribute is doing. #}
+  <div id="detailBody"
+       hx-target="#detailBody"
+       hx-swap="innerHTML"
+       hx-sync="#detailBody:replace">
+    <section hx-get="{{ bodyUrl }}" hx-trigger="load">
+      {% include '_detail_skeleton.html' %}
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/vendor/htmx.min.js') }}"></script>
+  {# The boosted-link modifier fix - see song_detail.html for why it is not
+     optional on a page with an hx-boost. #}
+  <script src="{{ url_for('static', filename='js/htmx-filters.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/back-button.js') }}"></script>
+  <script>
+    window.__chartData = {};
+    window.__deferInitialChartRender = true;
+
+    initBackButton();
+  </script>
+  <script src="{{ url_for('static', filename='js/chart-utils.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/detail-chart.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/detail-history.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/admin-refresh.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/play-embed.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/tags.js') }}"></script>
+  {# Last: it calls the init functions the scripts above define. #}
+  <script src="{{ url_for('static', filename='js/detail-page.js') }}"></script>

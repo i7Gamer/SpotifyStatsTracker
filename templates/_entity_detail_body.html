@@ -1,0 +1,100 @@
+{#- SPDX-FileCopyrightText: 2026 i7Gamer
+    SPDX-License-Identifier: AGPL-3.0-or-later -#}
+
+{# The artist and album detail pages' deferred body - see _song_detail_body.html
+   for the split's rationale. The artist page has the most to gain from it: the
+   songs-by-this-artist aggregate and the Last.fm biography fetch both live
+   below this line.
+
+   ONE template for both pages: they were two 88-line copies differing only in
+   the entity variable and three strings, and every fix to one had to be
+   re-applied to the other. The wrappers (_artist_detail_body.html,
+   _album_detail_body.html - the names routes/charts.py renders) set:
+     entity       - the artist / album dict
+     entityKind   - 'artist' / 'album', worded into the aria-label and empty line
+     heroSection  - the _track_card.html section for the hero card
+     bioEnabled   - this kind's instance-wide biography toggle
+     songsHeading - the heading over the songs list #}
+<section id="track-list" class="track-list">
+  {% set track = entity %}
+  {% set section = heroSection %}
+  {% set item_number = '' %}
+  {% set playNowButton = true %}
+  {# The skip summary rides the hero card's stat line (see _skip_stat.html);
+     both flags must be reset below or the song list inherits them. #}
+  {% set showSkipStats = true %}
+  {% include '_track_card.html' %}
+</section>
+{% set playNowButton = false %}
+{% set showSkipStats = false %}
+
+{% if entity.get('url') %}
+<section id="play-embed" class="play-embed" hidden>
+  <div id="play-embed-slot"></div>
+</section>
+{% endif %}
+
+{% if bioEnabled and entity.get('bio') %}
+<section class="card biography-card">
+  <h2>Biography</h2>
+  <p>{{ entity.get('bio') }}</p>
+  <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem;">Biography via Last.fm</p>
+</section>
+{% endif %}
+
+{% if firstSongName or entity.get('uniqueSongCount') %}
+<section class="track-summary-grid">
+  {% if firstSongName %}
+  <article class="track-summary-card">
+    <h3>First Song You Listened To</h3>
+    <p class="summary-value">{{ firstSongName }}</p>
+  </article>
+  {% endif %}
+  {% if entity.get('uniqueSongCount') %}
+  <article class="track-summary-card">
+    <h3>Unique Songs Listened</h3>
+    <p class="summary-value">{{ entity.get('uniqueSongCount') }}</p>
+  </article>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card chart-card">
+  <div class="chart-section">
+    <h2>Play History</h2>
+    <div class="chart-canvas-wrap">
+      <canvas id="timeSeriesChart" role="img" aria-label="Play history for this {{ entityKind }} over time"></canvas>
+    </div>
+    {# The skips series' key - see _song_detail_body.html. #}
+    <div class="chart-legend" id="timeSeriesLegend"></div>
+  </div>
+</section>
+
+<nav class="wrapped-stats-filters" aria-label="Switch between top songs and play history">
+  <button class="stats-filter-button{{ ' active' if view != 'history' else '' }}" data-filter="top-songs">Top Songs</button>
+  <button class="stats-filter-button{{ ' active' if view == 'history' else '' }}" data-filter="history">History</button>
+</nav>
+
+<div data-category="top-songs" class="{{ 'visible' if view != 'history' else '' }}">
+  <h2 class="detail-tabs-heading">{{ songsHeading }}</h2>
+  <section class="track-list">
+    {% if songs %}
+      {% for track in songs %}
+        {% set item_number = loop.index %}
+        {% set section = 'top_songs' %}
+        {% include '_track_card.html' %}
+      {% endfor %}
+    {% else %}
+      <p class="empty-state">No songs found for this {{ entityKind }}.</p>
+    {% endif %}
+  </section>
+</div>
+
+<div data-category="history" class="{{ 'visible' if view == 'history' else '' }}">
+  {#- historyPartial comes from the route (see _detailHistoryContext): this tab
+      renders cards normally, but the timeline when an album has only ever had
+      one track played from it -#}
+  {% include '_detail_history_container.html' %}
+</div>
+
+{% include '_detail_chart_data.html' %}

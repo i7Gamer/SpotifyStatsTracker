@@ -20,7 +20,9 @@ import unittest
 _ROOT = os.path.join(os.path.dirname(__file__), "..")
 _CSS_PATH = os.path.join(_ROOT, "static", "css", "style.css")
 _REFRESH_JS_PATH = os.path.join(_ROOT, "static", "js", "admin-refresh.js")
-_DETAIL_TEMPLATES = ("song_detail.html", "album_detail.html", "artist_detail.html")
+#< the artist and album shells are thin wrappers around _entity_detail_shell.html
+#  (2026-09-02, UI-11), which is where their toolbar row now lives
+_DETAIL_TEMPLATES = ("song_detail.html", "_entity_detail_shell.html")
 
 _TOOLBAR_MARKER = 'class="detail-toolbar"'
 _ACTIONS_MARKER = 'class="detail-toolbar-actions"'
