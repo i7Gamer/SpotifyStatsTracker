@@ -47,8 +47,8 @@
 <!-- Registered Users & Sync Status: permanently pinned at the top -->
 <section class="card" style="overflow-x: auto;">
   <div class="card-header admin-card-header">
-    <h2 style="margin: 0; font-family: var(--font-headings);">Registered Users &amp; Sync Status</h2>
-    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">Monitor real-time sync status and background thread states for all active user profiles, and manage who administers this instance.</p>
+    <h2>Registered Users &amp; Sync Status</h2>
+    <p style="font-size: 0.9rem;">Monitor real-time sync status and background thread states for all active user profiles, and manage who administers this instance.</p>
   </div>
   <div class="admin-card-body">
     <table class="status-table admin-status-table">
@@ -159,7 +159,7 @@
         <div class="stats-card-icon">{{ icon }}</div>
         <div class="stats-card-info">
           <span class="stats-card-label">{{ label }}</span>
-          <h2 class="summary-value" style="font-size: 2.2rem; margin: 0.5rem 0 0 0;">{{ value }}</h2>
+          <h2 class="summary-value">{{ value }}</h2>
         </div>
       </article>
       {% endfor %}
@@ -467,10 +467,10 @@
   {% elif current_tab == 'workers' %}
     <!-- Workers Tab: Spotify API, Last.fm Backfilling, Advanced Tuning -->
     <section class="grid admin-card-grid">
-      <article class="card" style="padding: 0;">
+      <article class="card admin-settings-card">
         <div class="card-header admin-card-header">
-          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Spotify API Backfilling</h2>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Recovery and metadata fetching via the Spotify Developer API.</p>
+          <h2>Spotify API Backfilling</h2>
+          <p>Recovery and metadata fetching via the Spotify Developer API.</p>
         </div>
         <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminSpotifySettings') }}">
@@ -497,10 +497,10 @@
         </div>
       </article>
 
-      <article class="card" style="padding: 0;">
+      <article class="card admin-settings-card">
         <div class="card-header admin-card-header">
-          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Last.fm Backfilling Settings</h2>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Genre and biography data sourced from Last.fm.</p>
+          <h2>Last.fm Backfilling Settings</h2>
+          <p>Genre and biography data sourced from Last.fm.</p>
         </div>
         <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminLastfmSettings') }}">
@@ -534,10 +534,10 @@
         </div>
       </article>
 
-      <article class="card" style="padding: 0;">
+      <article class="card admin-settings-card">
         <div class="card-header admin-card-header">
-          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Advanced Tuning</h2>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Numeric limits that were previously fixed in code. Worker counts apply after the app restarts.</p>
+          <h2>Advanced Tuning</h2>
+          <p>Numeric limits that were previously fixed in code. Worker counts apply after the app restarts.</p>
         </div>
         <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminTuningSettings') }}">
@@ -573,10 +573,10 @@
   {% elif current_tab == 'settings' %}
     <!-- Settings Tab: User Settings, Email & Notifications, Playback Classification, Backups -->
     <section class="grid admin-card-grid">
-      <article class="card" style="padding: 0;">
+      <article class="card admin-settings-card">
         <div class="card-header admin-card-header">
-          <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">User Settings</h2>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Account creation and cross-account features.</p>
+          <h2>User Settings</h2>
+          <p>Account creation and cross-account features.</p>
         </div>
         <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminUserSettings') }}">
@@ -633,10 +633,10 @@
         </div>
       </article>
 
-      <article class="card" style="padding: 0;">
+      <article class="card admin-settings-card">
         <div class="card-header admin-card-header">
-          <h3 style="margin: 0; font-family: var(--font-headings);">Email &amp; Notifications</h3>
-          <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">SMTP server credentials and instance-wide notification controls.</p>
+          <h3>Email &amp; Notifications</h3>
+          <p>SMTP server credentials and instance-wide notification controls.</p>
         </div>
         <div class="admin-card-body">
           <form method="post" action="{{ url_for('adminEmailSettings') }}">
@@ -711,10 +711,10 @@
       </article>
 
       <div class="admin-settings-col">
-        <article class="card" style="padding: 0;">
+        <article class="card admin-settings-card">
           <div class="card-header admin-card-header">
-            <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Playback Classification</h2>
-            <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
+            <h2>Playback Classification</h2>
+            <p>The skip threshold decides skip vs. real listen (plays under it are excluded from counts, listen time, top lists and streaks — saving reclassifies all history). The completion percent then splits real plays into complete vs. partial on the Charts completion chart.</p>
           </div>
           <div class="admin-card-body">
             <form method="post" action="{{ url_for('adminSkipSettings') }}">
@@ -745,10 +745,10 @@
           </div>
         </article>
 
-        <article class="card" style="padding: 0;">
+        <article class="card admin-settings-card">
           <div class="card-header admin-card-header">
-            <h2 style="margin: 0; font-family: var(--font-headings); font-size: 1.15rem;">Backups</h2>
-            <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem;">Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
+            <h2>Backups</h2>
+            <p>Automatic database snapshots into Database/Data/Backups. Set either to 0 to disable. Applies after the app restarts.</p>
           </div>
           <div class="admin-card-body">
             <form method="post" action="{{ url_for('adminBackupSettings') }}">

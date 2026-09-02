@@ -4121,6 +4121,13 @@ html.theme-red {
   letter-spacing: 0.05em;
 }
 
+/* The big number under the label (overview's six cards, admin's four): a
+   fixed size rather than .summary-value's clamp, so a row of cards lines up. */
+.stats-card .summary-value {
+  font-size: 2.2rem;
+  margin: 0.5rem 0 0 0;
+}
+
 /* Status Table Styles */
 .status-table th {
   font-weight: 600;
@@ -5041,6 +5048,35 @@ html.theme-red {
 
 .admin-card-header {
   padding: 1.5rem 1.5rem 0.5rem 1.5rem;
+}
+
+/* Every .admin-card-header opens with a flush heading and a muted blurb.
+   Shared by the pinned Registered Users card and the settings cards; only
+   the sizes below differ between them. */
+.admin-card-header h2,
+.admin-card-header h3 {
+  margin: 0;
+}
+
+.admin-card-header p {
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+
+/* The tabbed settings cards (Spotify API, Last.fm, Backups, ...): the card
+   itself goes flush so .admin-card-header / .admin-card-body own the
+   padding, and the header text runs a step smaller than the users table's.
+   These were the same three style attributes repeated on seven cards. */
+.admin-settings-card {
+  padding: 0;
+}
+
+.admin-settings-card .admin-card-header h2 {
+  font-size: 1.15rem;
+}
+
+.admin-settings-card .admin-card-header p {
+  font-size: 0.85rem;
 }
 
 .admin-status-table {
