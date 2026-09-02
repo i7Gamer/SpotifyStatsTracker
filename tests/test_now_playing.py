@@ -180,6 +180,39 @@ class TestGetNowPlaying(DatabaseTestCase):
         self.assertTrue(nowPlaying["isPaused"])
         self.assertEqual(nowPlaying["positionMs"], 5000)
 
+    def test_a_dead_listener_shows_nothing_even_while_the_snapshot_says_paused(self):
+        """The staleness cut above applies to a PLAYING snapshot only - a paused
+        one has no duration to run out - and stop() never clears the cached
+        connect state. So a listener that died (reconnects exhausted -> DEAD)
+        kept showing 'Paused: <last track>' with a frozen position, as if it
+        were a live paused session, until the next 5-minute login check
+        rebuilt it. Health is the signal: nothing a DEAD listener reports is
+        being recorded."""
+        db = self._makeDbWithState(_playingState("t1", isPaused=True, positionMs=5000, ageSeconds=3600),
+                                   tracks=self._T1_CATALOG)
+        db.listener_health = "DEAD"
+        self.assertIsNone(db.getNowPlaying())
+
+    def test_a_stopped_listener_shows_nothing_even_while_the_snapshot_says_paused(self):
+        """The rebuild window: the old listener is stopped (signalStop flips
+        `run`) while the new one is still logging in, and health is not yet
+        DEAD. The flag the stop already flips is the cheapest truth here."""
+        db = self._makeDbWithState(_playingState("t1", isPaused=True, positionMs=5000, ageSeconds=3600),
+                                   tracks=self._T1_CATALOG)
+        db.listener.run = False
+        self.assertIsNone(db.getNowPlaying())
+
+    def test_a_healthy_running_listener_still_shows_its_paused_snapshot(self):
+        """The control for the two above: a phone genuinely left paused is a
+        real paused session, and the frozen position is correct for it."""
+        db = self._makeDbWithState(_playingState("t1", isPaused=True, positionMs=5000, ageSeconds=3600),
+                                   tracks=self._T1_CATALOG)
+        db.listener_health = "HEALTHY"
+        db.listener.run = True
+        nowPlaying = db.getNowPlaying()
+        self.assertTrue(nowPlaying["isPaused"])
+        self.assertEqual(nowPlaying["positionMs"], 5000)
+
     def test_track_that_should_have_ended_long_ago_is_treated_as_stale(self):
         """A frozen websocket leaves the state saying 'playing' forever - once
         the track's own duration (plus grace) has elapsed, report nothing."""

@@ -608,8 +608,9 @@ class ListenerMixin:
     def getNowPlaying(self, includePlayedFlags: bool = True) -> dict | None:
         """What this user is playing right now, read from the listener's
         cached connect player_state (zero extra network calls - see
-        Listener.getConnectPlayerState). None when nothing is playing, the
-        state looks stale, or the track can't be identified. Track metadata
+        Listener.getConnectPlayerState). None when the listener is no longer
+        running, nothing is playing, the state looks stale, or the track
+        can't be identified. Track metadata
         comes from the catalog; a first-ever listen isn't in the catalog yet
         (metadata is only fetched when a play completes), so the connect
         state's own metadata is the fallback.
@@ -624,6 +625,16 @@ class ListenerMixin:
         instead. The keys stay in the payload either way, so nothing downstream
         has to learn about the distinction."""
         if self.listener is None:
+            return None
+        # A listener that is no longer recording has nothing to show, whatever
+        # its cached state says. The staleness cut below only reaches a PLAYING
+        # snapshot (a paused one has no duration to run out), and stop() never
+        # clears manager._state - so a dead listener (reconnects exhausted) or
+        # one stopped for a rebuild kept showing "Paused: <last track>" with a
+        # frozen position, like a live paused session, until the login check
+        # rebuilt it. `run` is the flag signalStop already flips; the cached
+        # state itself is deliberately left alone (it feeds the position math).
+        if self.listener_health == "DEAD" or not getattr(self.listener, "run", True):
             return None
         state = self.listener.getConnectPlayerState()
         if not state or not state.get("is_playing"):
