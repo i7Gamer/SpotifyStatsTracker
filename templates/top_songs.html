@@ -14,6 +14,8 @@
       <p>Your most-played tracks and listening totals.</p>
     </div>
   </section>
+  {# what getSongsStats' searchQuery matches: name, album, or artist(s) #}
+  {% set searchPlaceholder = 'Search songs, artists, albums' %}
   {% include '_page_card.html' %}
 
   {% include '_top_list_container.html' %}

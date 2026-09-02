@@ -11,6 +11,8 @@
       <p>Your most-listened artists and aggregated stats.</p>
     </div>
   </section>
+  {# what getArtistsStats' searchQuery matches: the artist's name only #}
+  {% set searchPlaceholder = 'Search artists' %}
   {% include '_page_card.html' %}
 
   {% include '_top_list_container.html' %}

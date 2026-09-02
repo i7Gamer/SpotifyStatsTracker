@@ -11,6 +11,8 @@
       <p>Your most-listened albums and aggregated stats.</p>
     </div>
   </section>
+  {# what getAlbumsStats' searchQuery matches: the album's name or any artist on it #}
+  {% set searchPlaceholder = 'Search albums or their artists' %}
   {% include '_page_card.html' %}
 
   {% include '_top_list_container.html' %}

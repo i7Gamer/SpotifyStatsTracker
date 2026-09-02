@@ -36,7 +36,11 @@
        and `search` catches the native clear button, which fires no input event
        in every browser. #}
     <label for="searchQuery">Search:</label>
-    <input type="search" id="searchQuery" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search songs, artists, playlists" aria-label="Search the current page">
+    {# searchPlaceholder is set by the including shell: each Top page's query
+       matches something different (see the searchQuery notes on getSongsStats,
+       getArtistsStats and getAlbumsStats), and one shared promise was wrong on
+       all three - playlists are matched by /history's search alone. #}
+    <input type="search" id="searchQuery" name="q" value="{{ request.args.get('q', '') }}" placeholder="{{ searchPlaceholder or 'Search by name' }}" aria-label="Search the current page">
 </div>
 
 <div class="filter-group">
