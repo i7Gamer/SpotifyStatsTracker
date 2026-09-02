@@ -26,6 +26,10 @@
      and fail at runtime, not at render time. Plain attributes only. #}
   <section class="hero">
     <div class="hero-content">
+      {# The page's h1, for heading navigation only: this hero holds the filter
+         form and no title, so the page had no heading at all. Drop the class
+         to make it visible like the other heroes'. #}
+      <h1 class="visually-hidden">History</h1>
       {# hx-get + hx-trigger replace updateHistoryFilters/updateHistoryTagFilter
          and the debounce helpers: htmx serializes this form's own inputs, so
          "which params does a filter change set vs delete" is now just which

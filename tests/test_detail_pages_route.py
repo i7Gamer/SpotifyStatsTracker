@@ -1737,6 +1737,18 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
                 self.assertTrue(body.strip().startswith(
                     '<section id="track-list" class="track-list">'), body[:120])
 
+    def test_each_page_with_its_body_has_one_h1_and_no_skipped_level(self):
+        """The hero card's h3 sat straight under the shell's h1 (2026-09-02
+        review, UI-05); see tests/_headings.py."""
+        from _headings import assertHeadingOrder
+        for path in self.DEFERRED_LOOKUPS:
+            with self.subTest(path=path):
+                dash = self._makeApp()
+
+                page = self._getPath(dash, self._db(), path).get_data(as_text=True)
+
+                assertHeadingOrder(self, page, path)
+
     def test_the_body_tabs_carry_aria_pressed_for_the_open_view(self):
         """The Top Songs / History tabs are toggle buttons whose state was a
         class alone (2026-09-02 review, UI-03): the body renders aria-pressed

@@ -8,6 +8,10 @@
    htmx swaps it in on first paint and every filter/page change. `statCards` is
    a list of {label, value}; `section` selects the card type in
    _track_card.html. #}
+{# Heading navigation only: the stat cards and the list cards are h3s, and
+   without a level between them and the shell's h1 they read as a level deeper
+   than they are. #}
+<h2 class="visually-hidden">Results</h2>
 <section class="track-summary-grid-3">
   {% for card in statCards %}
   <article class="track-summary-card">

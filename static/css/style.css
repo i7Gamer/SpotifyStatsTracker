@@ -2410,9 +2410,13 @@ progress::-moz-progress-bar {
   z-index: 5;
 }
 
-.instructions h3 {
+/* An h2 since the 2026-09-02 heading-order pass (it sits straight under the
+   login page's h1); the font-size is the browser's h3 default, so the level
+   moved and the look did not. */
+.instructions h2 {
   margin-top: 0;
   color: var(--text);
+  font-size: 1.17em;
 }
 
 .instructions a {

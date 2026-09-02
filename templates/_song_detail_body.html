@@ -13,6 +13,10 @@
    here: once swapped in it is a direct child of #detailBody, which is what the
    stylesheet's gap-under-the-hero rule keys on. #}
 <section id="track-list" class="track-list">
+  {# Heading navigation only: the hero card's h3 sits straight under the
+     shell's h1. Inside the section, which must stay the first element (above);
+     .visually-hidden is out of flow, so the grid never sees it. #}
+  <h2 class="visually-hidden">Overview</h2>
   {% set track = song %}
   {% set section = 'top_songs' %}
   {% set item_number = '' %}

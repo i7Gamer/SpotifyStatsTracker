@@ -8,6 +8,8 @@
    _pagination.html needs (page, totalPages, prevUrl, nextUrl, pageLinks,
    showingStart, showingEnd, totalCount) - see dashboard/pagination.py's
    _buildPaginationContext. #}
+{# Heading navigation only: the cards are h3s under the shell's h1. #}
+<h2 class="visually-hidden">Plays</h2>
 <section class="track-list">
   {% if tracks %}
     {% for track in tracks %}

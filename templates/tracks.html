@@ -4,6 +4,10 @@
 {% extends "layout.html" %}
 {% block title %}Dashboard - {{ super() }}{% endblock %}
 {% block content %}
+  {# The page's h1, for heading navigation only: the dashboard has no hero and
+     its cards are all h2s, so without this a screen reader's heading list
+     opened on "Now playing" with no page title above it. #}
+  <h1 class="visually-hidden">Dashboard</h1>
   {# Live/always-current cards, independent of the interval/date-range filter -
      in their own panel above the form + results. #}
   <section class="dashboard-live">
