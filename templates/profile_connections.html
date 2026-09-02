@@ -55,7 +55,11 @@
     </div>
   </form>
   {% if has_api %}
-  <form id="disconnectApiForm" method="post" action="{{ url_for('profileDisconnect') }}">
+  {#- Asks first: disconnecting discards the stored client secret and refresh
+      token, and reconnecting means typing the secret in again. No apostrophes
+      in the message - see song_detail.html's split form. -#}
+  <form id="disconnectApiForm" method="post" action="{{ url_for('profileDisconnect') }}"
+        onsubmit="return confirm('Disconnect the Spotify API? The saved client secret and refresh token are discarded, and reconnecting means entering the secret again.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
   </form>
   {% endif %}

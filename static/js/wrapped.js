@@ -49,6 +49,8 @@ var WRAPPED_RESULTS_ID = 'wrappedResults';
 //< the stats-filter category that shows every section; also the fallback when
 //  the chosen one has no items in the year just loaded
 var STATS_FILTER_ALL = 'all';
+//< what Revoke asks before a share link dies for good
+var SHARE_LINK_REVOKE_CONFIRM = 'Revoke this link? Anyone who has it will be refused, and sharing again means creating a new one.';
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
@@ -300,6 +302,12 @@ if (typeof document !== 'undefined') {
     var form = e.target;
     if (!form.matches('.share-link-create-form, .share-link-revoke-form')) return;
     e.preventDefault();
+    /* Revoke asks first: a revoked token is gone for good (friends holding the
+       link are refused; sharing again means a new link to hand round), and the
+       button sits 8px from Copy on a phone. HERE, not in an inline onsubmit:
+       `return false` there only cancels the default action - the event still
+       bubbles to this handler, which would fetch anyway. */
+    if (form.matches('.share-link-revoke-form') && !window.confirm(SHARE_LINK_REVOKE_CONFIRM)) return;
 
     var panelBody = byId('shareLinkPanelBody');
     var url = new URL(form.action, window.location.href);

@@ -100,6 +100,24 @@ class TestDisconnectIsPostOnly(_LoggedInProfileTestCase):
         self.assertEqual(resp.status_code, 302)
         mock_db.updateUserSpotifyCredentials.assert_called_once_with(None, None, None)
 
+    def test_the_disconnect_form_asks_before_it_submits(self):
+        """Disconnecting discards the stored client secret and refresh token,
+        and reconnecting means typing the secret in again - one of the two
+        unconfirmed actions the 2026-09-02 review (UI-06) gave a confirm, in
+        the inline onsubmit shape the split and merge forms already use."""
+        import bs4
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        self._login(dash, client)
+        with patch.object(dash, "get_user_db") as mock_get_db:
+            self._mockDb(mock_get_db)
+            html = client.get("/profile/connections").get_data(as_text=True)
+
+        form = bs4.BeautifulSoup(html, "html.parser").select_one("#disconnectApiForm")
+
+        self.assertIsNotNone(form)
+        self.assertTrue(form.get("onsubmit", "").startswith("return confirm("), form.get("onsubmit"))
+
 
 class TestLogoutIsPostOnly(unittest.TestCase):
     def _makeApp(self):

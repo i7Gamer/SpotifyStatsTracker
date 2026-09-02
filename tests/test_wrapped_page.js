@@ -82,7 +82,7 @@ function loadWrapped(options) {
   const calls = {
     bodyListeners: {}, docListeners: {}, pruned: [], ajax: [], fetched: [],
     created: [], canvas: { gradient: [], texts: [], fills: [], strokes: [] },
-    charts: 0, swapFailure: null, downloads: [],
+    charts: 0, swapFailure: null, downloads: [], confirms: [],
   };
   const elements = options.elements || {};
   const buttons = options.buttons || [];
@@ -90,6 +90,9 @@ function loadWrapped(options) {
 
   global.window = {
     location: { pathname: '/wrapped', search: options.search || '', href: 'http://localhost/wrapped' },
+    //< the Revoke confirm: every message asked is recorded, and the answer
+    //  is the test's (yes unless it says otherwise)
+    confirm(message) { calls.confirms.push(message); return options.confirmAnswer !== false; },
     AjaxStatus: options.noAjaxStatus ? undefined : {
       redirectIfUnauthorized(response) { return response.status === 401; },
     },
@@ -421,7 +424,10 @@ run('another key leaves it open', () => {
 function submitShareForm(dom, options) {
   const opts = options || {};
   const form = makeElement({ action: 'http://localhost/wrapped/share-links/2026' });
-  form.matches = () => true;
+  //< a create form unless the test says revoke: the handler tells the two
+  //  apart by class, and only one of them asks first
+  const ownClass = opts.revoke ? '.share-link-revoke-form' : '.share-link-create-form';
+  form.matches = (selector) => selector.split(',').some((part) => part.trim() === ownClass);
   if (opts.submitButton) form.querySelector = () => opts.submitButton;
   const evt = { target: form, prevented: 0, preventDefault() { this.prevented += 1; } };
   dom.modal.handlers.submit.call(dom.modal, evt);
@@ -540,6 +546,42 @@ run('the submit button is disabled while its own request is in flight', async ()
   await tick(); await tick(); await tick();
 
   assert.strictEqual(button.disabled, false, 'a refused create has to stay retryable');
+});
+
+// A revoked token is gone for good - friends holding the link get refused and
+// a new one has to be created and handed round - and the button sits 8px from
+// Copy on a phone. So Revoke asks first. The confirm lives in this delegated
+// handler and not in an inline onsubmit: `return false` there cancels only the
+// default action, the event still bubbles here and the fetch would run anyway.
+
+run('Revoke asks first, and a refusal submits nothing - natively or by fetch', () => {
+  const dom = modalSetup({ confirmAnswer: false, respond: () => Promise.resolve({ status: 200 }) });
+
+  const evt = submitShareForm(dom, { revoke: true });
+
+  assert.strictEqual(dom.page.confirms.length, 1);
+  assert.deepStrictEqual(dom.page.fetched, [], 'a refused revoke must not be sent');
+  assert.strictEqual(evt.prevented, 1, 'nor may the browser submit it natively');
+});
+
+run('a confirmed Revoke goes through', async () => {
+  const dom = shareScenario(() => Promise.resolve({ status: 200, json: () => Promise.resolve({ html: '<p>gone</p>' }) }));
+
+  submitShareForm(dom, { revoke: true });
+  await tick(); await tick();
+
+  assert.strictEqual(dom.page.confirms.length, 1);
+  assert.strictEqual(dom.page.fetched.length, 1);
+  assert.strictEqual(dom.panelBody.innerHTML, '<p>gone</p>');
+});
+
+run('Create never asks', () => {
+  const dom = shareScenario(() => Promise.resolve({ status: 200, json: () => Promise.resolve({ html: '' }) }));
+
+  submitShareForm(dom);
+
+  assert.deepStrictEqual(dom.page.confirms, []);
+  assert.strictEqual(dom.page.fetched.length, 1);
 });
 
 run('an unrelated form inside the modal is left to submit normally', () => {
