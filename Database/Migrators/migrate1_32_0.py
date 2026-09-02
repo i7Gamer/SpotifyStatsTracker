@@ -18,7 +18,7 @@ try:
         _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
         DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
     )
-    from config import TRUTHY_ENV_VALUES
+    from config import TRUTHY_ENV_VALUES, SKIP_EMAIL_VERIFICATION_ENV_VAR
 except ModuleNotFoundError:
     from Migrators.base import BaseMigrator, resolveRuntimeDir
     from repository import (
@@ -34,7 +34,7 @@ except ModuleNotFoundError:
         _envInt, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR,
         DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
     )
-    from config import TRUTHY_ENV_VALUES
+    from config import TRUTHY_ENV_VALUES, SKIP_EMAIL_VERIFICATION_ENV_VAR
 
 
 class Migrator(BaseMigrator):
@@ -51,7 +51,7 @@ class Migrator(BaseMigrator):
     never clobbered. See Repository.mergePlaySkipsIntoPlays."""
 
     def _seedSettings(self, repo) -> None:
-        emailVerification = "0" if os.environ.get("SKIP_EMAIL_VERIFICATION", "").strip().lower() in TRUTHY_ENV_VALUES else "1"
+        emailVerification = "0" if os.environ.get(SKIP_EMAIL_VERIFICATION_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES else "1"
         seeds = {
             SKIP_THRESHOLD_MODE_KEY: SKIP_THRESHOLD_DEFAULT_MODE,   #< value seeded via setSkipThreshold below
             COMPLETION_COMPLETE_PERCENT_KEY: str(COMPLETION_COMPLETE_PERCENT_DEFAULT),

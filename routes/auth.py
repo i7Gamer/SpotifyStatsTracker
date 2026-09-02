@@ -23,7 +23,7 @@ from config import (
     PASSWORD_MIN_LENGTH, RATE_LIMIT_ERROR_MESSAGE, SPOTIFY_OAUTH_STATE_NUM_BYTES,
     SPOTIFY_OAUTH_STATE_SESSION_KEY, DISPLAY_NAME_MIN_LENGTH,
     DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN, TOP_LIST_DEFAULT_WINDOW,
-    SPOTIFY_AUTH_TIMEOUT_SECONDS,
+    SPOTIFY_AUTH_TIMEOUT_SECONDS, SPOTIFY_CALLBACK_URL_ENV_VAR,
 )
 from Database.Spotify.cookies import parseCookieString
 from Database.lastfm import LastfmClient
@@ -397,7 +397,7 @@ def register(app, dashboard):
         """The context all profile pages share: the identity block, which
         sub-nav tab is current, which tabs exist at all, and whatever flash the
         redirect that landed here carried."""
-        spotifyCallbackUrl = os.environ.get("SPOTIFY_CALLBACK_URL")
+        spotifyCallbackUrl = os.environ.get(SPOTIFY_CALLBACK_URL_ENV_VAR)
         lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
         featureEnabled = bool(spotifyCallbackUrl)
         emailNotifsEnabled = dashboard.repo.getAppSetting("email_notifications_enabled", "0") == "1"
@@ -755,7 +755,7 @@ def register(app, dashboard):
                      profileSignOutEverywhere, methods=["POST"])
 
     def profileDisconnect():
-        if not os.environ.get("SPOTIFY_CALLBACK_URL"):
+        if not os.environ.get(SPOTIFY_CALLBACK_URL_ENV_VAR):
             abort(404)
         email, username, db = dashboard.get_current_user_or_redirect()
         if not email:
@@ -804,7 +804,7 @@ def register(app, dashboard):
     app.add_url_rule("/profile/shares/<int:share_id>", "profileShareAction", profileShareAction, methods=["POST"])
 
     def spotifyAuthorize():
-        spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
+        spotify_callback_url = os.environ.get(SPOTIFY_CALLBACK_URL_ENV_VAR)
         if not spotify_callback_url:
             abort(404)
         email, username, db = dashboard.get_current_user_or_redirect()
@@ -833,7 +833,7 @@ def register(app, dashboard):
     app.add_url_rule("/spotify-authorize", "spotifyAuthorize", spotifyAuthorize, methods=["GET"])
 
     def spotifyCallback():
-        spotify_callback_url = os.environ.get("SPOTIFY_CALLBACK_URL")
+        spotify_callback_url = os.environ.get(SPOTIFY_CALLBACK_URL_ENV_VAR)
         if not spotify_callback_url:
             abort(404)
         email, username, db = dashboard.get_current_user_or_redirect()

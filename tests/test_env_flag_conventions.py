@@ -1,6 +1,6 @@
 """How this project reads on/off environment flags, pinned in one place.
 
-Two conventions live here, and both were broken by the same refactor.
+Three conventions live here; the first two were broken by the same refactor.
 
 The first is that "which strings mean on" has ONE answer. It briefly had two:
 `config.TRUTHY_ENV_VALUES` accepted {1, true, yes, on} while
@@ -13,9 +13,16 @@ else. The commit that introduced that helper converted six of the seven sites;
 the one it missed spelled the exact bug the helper exists to remove - a bare
 truthiness test on the raw string, which reads FLASK_DEBUG=0 as ON.
 
-Both gates are structural, because both failures are invisible to a behavioural
-test: a second copy of the set behaves identically until someone edits one of
-them, and a missed call site only misbehaves under an env var no test sets.
+The third is that an environment variable's NAME is spelled once, as a
+`*_ENV_VAR` constant, and every read goes through it. Eleven names followed
+that convention while three (SPOTIFY_CALLBACK_URL at five sites, and
+SKIP_EMAIL_VERIFICATION and IMPORT_KEYWORD) were bare literals - a typo at
+one of the five would have disabled backfill on that one path only.
+
+All three gates are structural, because all three failures are invisible to a
+behavioural test: a second copy of the set behaves identically until someone
+edits one of them, a missed call site only misbehaves under an env var no test
+sets, and a misspelled literal reads as "unset".
 """
 import os
 import re
@@ -44,6 +51,20 @@ _DOCSTRING = re.compile(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'')
 
 #< any read of the variable, however it is spelled to get at the environment
 _FLASK_DEBUG_READ = re.compile(r"""["']FLASK_DEBUG["']""")
+
+#< `SOMETHING_ENV_VAR = "NAME"` at module scope - the one place a name is spelled
+_ENV_VAR_DEFINITION = re.compile(r'^([A-Z][A-Z0-9_]*_ENV_VAR)\s*=\s*["\']([A-Z][A-Z0-9_]*)["\']', re.MULTILINE)
+
+# Every name that has a constant. The scan below is driven off the definitions
+# it finds, so without this floor a deleted constant would make its name
+# vanish from the scan - and its literal sites pass by never being looked for.
+ENV_VAR_NAMES_WITH_CONSTANTS = frozenset({
+    "ALLOW_INSTANCE_RESTART", "TRUST_PROXY_HEADERS", "ADMIN_EMAIL", "ENABLE_HSTS",
+    "BACKUP_INTERVAL_HOURS", "BACKUP_RETENTION_COUNT", "BACKUP_DIR",
+    "SPOTIFY_TOTP_SECRET", "SPOTIFY_TOTP_AUTO_RECOVER",
+    "DATA_ENCRYPTION_KEY", "FLASK_SECRET_KEY",
+    "SPOTIFY_CALLBACK_URL", "SKIP_EMAIL_VERIFICATION", "IMPORT_KEYWORD",
+})
 
 
 def _productionSources():
@@ -129,3 +150,45 @@ class TestFlaskDebugHasOneReader(unittest.TestCase):
         """The bug the missed call site had, stated as behaviour."""
         with unittest.mock.patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
             self.assertFalse(databaseUtils.flaskDebugEnabled())
+
+
+class TestEnvVarNamesAreSpelledOnce(unittest.TestCase):
+    """An environment variable's name lives in exactly one `*_ENV_VAR` constant
+    and nowhere else in code.
+
+    A bare literal at a read site is a name that can be misspelled without
+    anything noticing - os.environ.get("SPOTFIY_CALLBACK_URL") is simply
+    unset, and that one path quietly behaves as if the feature were off. A
+    constant makes the typo a NameError at import.
+    """
+
+    @staticmethod
+    def _definitions():
+        """{name: relativePath} for every `*_ENV_VAR = "NAME"` in the app."""
+        found = {}
+        for path, text in _productionSources():
+            for _constant, name in _ENV_VAR_DEFINITION.findall(_stripProse(text)):
+                found[name] = str(path)
+        return found
+
+    def test_every_known_name_has_a_constant(self):
+        """The floor for the scan below - see ENV_VAR_NAMES_WITH_CONSTANTS."""
+        self.assertEqual(
+            sorted(ENV_VAR_NAMES_WITH_CONSTANTS - set(self._definitions())), [],
+            "these env var names have lost their *_ENV_VAR constant")
+
+    def test_no_module_spells_a_named_variable_itself(self):
+        definitions = self._definitions()
+        offenders = []
+        for path, text in _productionSources():
+            code = _stripProse(text)
+            for name, owner in definitions.items():
+                if str(path) == owner:
+                    continue
+                if re.search(rf"""["']{name}["']""", code):
+                    offenders.append(f"{path}: {name!r} (constant lives in {owner})")
+
+        self.assertEqual(
+            offenders, [],
+            "env var names must be read through their *_ENV_VAR constant, not "
+            f"spelled as a literal:\n" + "\n".join(offenders))

@@ -168,6 +168,17 @@ TRUST_PROXY_HEADERS_ENV_VAR = "TRUST_PROXY_HEADERS"
 # recovery path if the automatic earliest-user promotion picked the wrong
 # account.
 ADMIN_EMAIL_ENV_VAR = "ADMIN_EMAIL"
+# The public URL Spotify redirects to after /spotify-authorize. Setting it is
+# what enables Web-API backfilling: every Spotify Developer API route, link
+# and badge is gated on it, and with it unset those routes 404.
+SPOTIFY_CALLBACK_URL_ENV_VAR = "SPOTIFY_CALLBACK_URL"
+# Truthy = skip the "do these cookies belong to this email" check at login
+# (see SpotifyDashboardApp.skipEmailVerification). That check is what stops
+# one user from claiming another's account, so this is off by default.
+SKIP_EMAIL_VERIFICATION_ENV_VAR = "SKIP_EMAIL_VERIFICATION"
+# When set, the auto-importer only picks up dropped files whose name contains
+# this keyword; unset = import every dropped file.
+IMPORT_KEYWORD_ENV_VAR = "IMPORT_KEYWORD"
 PASSWORD_MIN_LENGTH = 8   #< also enforced client-side via the minlength attribute
 # The editable label an account is shown as (users.display_name). The username
 # itself can never change - it's the primary key eight tables reference by

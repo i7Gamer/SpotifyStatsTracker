@@ -244,7 +244,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         # this email" check at login, e.g. if Spotify starts blocking the
         # verification request for their account. Off by default since it's
         # what stops one user from claiming another's account/database.
-        self.skipEmailVerification = os.environ.get("SKIP_EMAIL_VERIFICATION", "").strip().lower() in TRUTHY_ENV_VALUES
+        self.skipEmailVerification = os.environ.get(SKIP_EMAIL_VERIFICATION_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES
         
         self.currentVersion = "0.0.0"   #< placeholder in case the VERSION file is unreadable
         with suppress(Exception):
@@ -1044,7 +1044,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if "spotifyNeedsReauthBadge" not in g:
                 username = session.get("username")
                 g.spotifyNeedsReauthBadge = (
-                    bool(os.environ.get("SPOTIFY_CALLBACK_URL"))
+                    bool(os.environ.get(SPOTIFY_CALLBACK_URL_ENV_VAR))
                     and bool(username)
                     and self.repo.getSpotifyNeedsReauth(username)
                 )

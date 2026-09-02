@@ -48,7 +48,7 @@ except ModuleNotFoundError:
 #< after the shim above on purpose: on a direct `python Database/database.py`
 #  run, utils' own sys.path fix (see Database/utils.py) is what makes the
 #  repo-root config module importable at all
-from config import WEEKDAY_NAMES
+from config import WEEKDAY_NAMES, IMPORT_KEYWORD_ENV_VAR
 
 logger = logging.getLogger(__name__)
 
@@ -539,7 +539,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # calls importHistory, which takes the same lock.
         self._importLock = threading.RLock()
 
-        filterKeyword = os.environ.get("IMPORT_KEYWORD")   #< None = import every dropped file
+        filterKeyword = os.environ.get(IMPORT_KEYWORD_ENV_VAR)   #< None = import every dropped file
         logger.info("auto import filtering by %s", filterKeyword)
         # importHistoryBatch (not importHistory): files dropped together share
         # one import run state, so a skip/replay pair straddling a file
