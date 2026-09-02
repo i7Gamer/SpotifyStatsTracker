@@ -44,6 +44,7 @@ function makeElement(extra) {
     matches() { return false; },
     querySelector() { return null; },
     prepend(node) { (this.prepended = this.prepended || []).push(node); },
+    focus() { this.focused = (this.focused || 0) + 1; },
   }, extra || {});
 }
 
@@ -310,13 +311,17 @@ run('an unknown theme falls back to the default rather than drawing nothing', ()
 // ----------------------------------------------------------- share modal
 
 function modalSetup(options) {
-  const modal = makeElement({ id: 'shareLinkModal' });
+  const closeBtn = makeElement();
+  const modal = makeElement({
+    id: 'shareLinkModal',
+    querySelector(selector) { return selector === '.share-modal-close' ? closeBtn : null; },
+  });
   const openBtn = makeElement();
   const panelBody = makeElement();
   const page = loadWrapped(Object.assign({
     elements: { shareLinkModal: modal, shareWrappedBtn: openBtn, shareLinkPanelBody: panelBody },
   }, options || {}));
-  return { page, modal, openBtn, panelBody };
+  return { page, modal, openBtn, panelBody, closeBtn };
 }
 
 run('the Share button opens the modal', () => {
@@ -345,6 +350,54 @@ run('Escape closes the modal', () => {
   dom.page.docListeners.keydown({ key: 'Escape' });
 
   assert.strictEqual(dom.modal.style.display, 'none');
+});
+
+// A role="dialog" is announced by focus landing inside it; display:flex alone
+// says nothing to a screen reader and left focus on the Share button behind
+// the overlay. Closing has to hand it back, or Escape drops focus from the now
+// display:none Close button to <body>. Same rule as layout-chrome.js's drawer.
+run('opening the dialog moves focus into it', () => {
+  const dom = modalSetup();
+
+  dom.openBtn.handlers.click();
+
+  assert.strictEqual(dom.closeBtn.focused, 1);
+});
+
+run('every close path returns focus to whatever opened the dialog', () => {
+  const dom = modalSetup();
+  global.document.activeElement = dom.openBtn;
+
+  dom.openBtn.handlers.click();
+  dom.page.docListeners.keydown({ key: 'Escape' });
+  assert.strictEqual(dom.openBtn.focused, 1, 'Escape');
+
+  dom.openBtn.handlers.click();
+  dom.closeBtn.handlers.click();
+  assert.strictEqual(dom.openBtn.focused, 2, 'the Close button');
+  assert.strictEqual(dom.modal.style.display, 'none', 'the Close button no longer needs an inline handler');
+
+  dom.openBtn.handlers.click();
+  dom.modal.handlers.click.call(dom.modal, { target: dom.modal });
+  assert.strictEqual(dom.openBtn.focused, 3, 'the overlay');
+});
+
+run('a dialog the server opened returns focus to the Share button', () => {
+  //< ?openShareModal=1 renders it open, so nothing on the page opened it
+  const dom = modalSetup();
+  dom.modal.style.display = 'flex';
+
+  dom.page.docListeners.keydown({ key: 'Escape' });
+
+  assert.strictEqual(dom.openBtn.focused, 1);
+});
+
+run('Escape with the dialog closed leaves focus where it is', () => {
+  const dom = modalSetup();
+
+  dom.page.docListeners.keydown({ key: 'Escape' });
+
+  assert.strictEqual(dom.openBtn.focused, undefined, 'it hears every keypress on the page');
 });
 
 run('another key leaves it open', () => {

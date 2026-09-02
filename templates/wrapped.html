@@ -136,7 +136,9 @@
   {% if not publicView and share_links_enabled %}
   <div id="shareLinkModal" class="share-modal-overlay" style="display: {{ 'flex' if request.args.get('openShareModal') else 'none' }};">
     <div class="share-modal-card" role="dialog" aria-modal="true" aria-labelledby="shareLinkModalTitle">
-      <button type="button" class="share-modal-close" aria-label="Close" onclick="document.getElementById('shareLinkModal').style.display = 'none';">&times;</button>
+      {# Closed from wrapped.js (closeShareModal), which also returns focus to
+         whatever opened the dialog - an inline display='none' here could not. #}
+      <button type="button" class="share-modal-close" aria-label="Close">&times;</button>
       {# Year-scoped (create-form action URL, the revoke forms' hidden year, and
          which link counts as "current"), so a year switch re-renders it - as an
          out-of-band swap keyed on this id. The forms inside still post through

@@ -217,21 +217,45 @@ if (typeof document !== 'undefined') {
   // It lives outside the swap container, so these elements survive every swap
   // and can be bound directly. Only present when not publicView and the admin
   // has share links on, hence the ?. throughout.
+  //
+  // Focus moves with it. A role="dialog" is announced by focus landing inside
+  // it - display:flex alone says nothing to a screen reader and left focus on
+  // the Share button behind the overlay - so opening focuses the Close button,
+  // and every close path hands focus back to whatever opened it; otherwise
+  // Escape dropped it from the now display:none button to <body>. Same rule as
+  // layout-chrome.js's drawer. The fallback is the Share button, for a dialog
+  // the server rendered open (?openShareModal=1) that nothing on the page
+  // opened.
 
-  byId('shareWrappedBtn')?.addEventListener('click', function () {
+  var shareModalOpener = null;
+
+  var openShareModal = function () {
     var modal = byId('shareLinkModal');
-    if (modal) modal.style.display = 'flex';
-  });
+    if (!modal) return;
+    shareModalOpener = document.activeElement;
+    modal.style.display = 'flex';
+    modal.querySelector('.share-modal-close')?.focus();
+  };
+
+  var closeShareModal = function () {
+    var modal = byId('shareLinkModal');
+    //< only an OPEN dialog hands focus back: the Escape listener below hears
+    //  every keypress on the page and must not yank focus to the Share button
+    if (!modal || modal.style.display !== 'flex') return;
+    modal.style.display = 'none';
+    (shareModalOpener || byId('shareWrappedBtn'))?.focus();
+    shareModalOpener = null;
+  };
+
+  byId('shareWrappedBtn')?.addEventListener('click', openShareModal);
+  byId('shareLinkModal')?.querySelector('.share-modal-close')?.addEventListener('click', closeShareModal);
 
   byId('shareLinkModal')?.addEventListener('click', function (e) {
-    if (e.target === this) this.style.display = 'none';
+    if (e.target === this) closeShareModal();
   });
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') {
-      var modal = byId('shareLinkModal');
-      if (modal) modal.style.display = 'none';
-    }
+    if (e.key === 'Escape') closeShareModal();
   });
 
   var showShareLinkError = function (message) {
