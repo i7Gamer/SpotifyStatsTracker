@@ -1538,7 +1538,17 @@ progress::-moz-progress-bar {
   }
 }
 
+/* .loading is the placeholder a swap replaces ("Loading…"); .empty-state is
+   the answer when the swap brought nothing ("No plays recorded yet."). Same
+   look today, kept as two rules on purpose: the empty lines wore .loading for
+   a long time, and anything that ever makes .loading LOOK like loading - a
+   spinner, the .loading-fade opacity - must not reach them. The dashboard's
+   cards have their own smaller .dashboard-card-empty. */
 .loading {
+  color: var(--muted);
+}
+
+.empty-state {
   color: var(--muted);
 }
 

@@ -143,7 +143,7 @@
         {% include '_track_card.html' %}
       {% endfor %}
     {% else %}
-      <p class="loading">No songs played in {{ year }}.</p>
+      <p class="empty-state">No songs played in {{ year }}.</p>
     {% endif %}
   </section>
 </div>
@@ -158,7 +158,7 @@
         {% include '_track_card.html' %}
       {% endfor %}
     {% else %}
-      <p class="loading">No artists played in {{ year }}.</p>
+      <p class="empty-state">No artists played in {{ year }}.</p>
     {% endif %}
   </section>
 </div>
@@ -173,7 +173,7 @@
         {% include '_track_card.html' %}
       {% endfor %}
     {% else %}
-      <p class="loading">No albums played in {{ year }}.</p>
+      <p class="empty-state">No albums played in {{ year }}.</p>
     {% endif %}
   </section>
 </div>

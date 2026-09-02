@@ -24,7 +24,7 @@
       {% if myTopGenres %}
         {{ genreMacros.genreBarList(myTopGenres, nameWidth='9rem', barHeight='10px', gap='0.5rem') }}
       {% else %}
-        <p class="loading">No genre data in this period.</p>
+        <p class="empty-state">No genre data in this period.</p>
       {% endif %}
     </div>
     <div>
@@ -32,7 +32,7 @@
       {% if theirTopGenres %}
         {{ genreMacros.genreBarList(theirTopGenres, nameWidth='9rem', barHeight='10px', gap='0.5rem', color='var(--compare-theirs)') }}
       {% else %}
-        <p class="loading">No genre data in this period.</p>
+        <p class="empty-state">No genre data in this period.</p>
       {% endif %}
     </div>
   </div>
@@ -49,7 +49,7 @@
         {% endfor %}
       </div>
     {% else %}
-      <p class="loading">No overlapping genres in this period.</p>
+      <p class="empty-state">No overlapping genres in this period.</p>
     {% endif %}
   </div>
   {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
