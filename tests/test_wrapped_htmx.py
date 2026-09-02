@@ -338,6 +338,32 @@ class TestOutOfBandRegions(WrappedHtmxTestCase):
         self.assertNotIn('id="shareLinkPanelBody"', body)
 
 
+class TestShareLinkRowStructure(WrappedHtmxTestCase):
+    """The current/all-years list (_share_link_panel.html:10-25) and the
+    other-years list (:40-57) used to hand-duplicate their row markup
+    (2026-09-02 review, WP-6). Both now go through one shareLinkRow macro;
+    this pins that a link in either list still renders the same row - one
+    revoke form (the class wrapped.js's confirm() gating keys off) and one
+    Copy button, each carrying that link's own id/token."""
+
+    def test_a_current_year_link_and_an_other_year_link_render_the_same_row(self):
+        currentToken = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)
+        otherToken = self.dash.repo.createShareLink(
+            "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2024, None)
+        currentId = self.dash.repo.getShareLink(currentToken)["id"]
+        otherId = self.dash.repo.getShareLink(otherToken)["id"]
+
+        body = self._page("?year=2026")
+
+        self.assertEqual(body.count('class="share-link-revoke-form"'), 2)
+        self.assertEqual(body.count('onclick="copyShareLink(this)"'), 2)
+        self.assertEqual(body.count(f'action="/profile/share-links/{currentId}"'), 1)
+        self.assertEqual(body.count(f'action="/profile/share-links/{otherId}"'), 1)
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{currentToken}"')
+        self.assertRegex(body, rf'data-url="https?://[^"]*/shared/{otherToken}"')
+
+
 class TestGenreCardIsNotRecomputedPerFilterChange(WrappedHtmxTestCase):
     """The genre card's data depends on the YEAR and nothing else, so a trend-
     bucket / items-per-category / sort change must not pay for it.

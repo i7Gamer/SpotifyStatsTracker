@@ -5,9 +5,13 @@
    h3 it used to be, so the level move drew nothing new. #}
 <h2 id="shareLinkModalTitle" style="margin: 0 0 0.75rem; font-size: 1.17em;">Share this Wrapped</h2>
 
-{% if allYearsLinks or yearLinks %}
-<div style="display: flex; flex-direction: column; gap: 0.5rem; margin: 0 0 1rem;">
-  {% for link in allYearsLinks + yearLinks %}
+{# One row's markup, shared by the current/all-years list below and the
+   other-years list further down (2026-09-02 review, WP-6) - they used to
+   hand-duplicate it, which is exactly the kind of place a fix to one and not
+   the other goes unnoticed. `link.year is none` only ever fires from the
+   first list (an other-year link always has a real year), so the same
+   badge expression is correct in both. #}
+{% macro shareLinkRow(link) %}
   <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
     <div style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
       <span class="badge badge-secondary">{{ 'All years' if link.year is none else link.year }}</span>
@@ -22,6 +26,12 @@
       </form>
     </div>
   </div>
+{% endmacro %}
+
+{% if allYearsLinks or yearLinks %}
+<div style="display: flex; flex-direction: column; gap: 0.5rem; margin: 0 0 1rem;">
+  {% for link in allYearsLinks + yearLinks %}
+    {{ shareLinkRow(link) }}
   {% endfor %}
 </div>
 {% endif %}
@@ -36,24 +46,13 @@
   <summary style="cursor: pointer; font-size: 0.85rem; color: var(--muted);">
     Links for other years ({{ otherYearLinks | length }})
   </summary>
+  {# year= is the year still on screen, not the link's - the panel this
+     refresh returns is the one the user is looking at. shareLinkRow's
+     hidden year field reads the same `year` variable, so this holds there
+     too. #}
   <div style="display: flex; flex-direction: column; gap: 0.5rem; margin: 0.5rem 0 0;">
     {% for link in otherYearLinks %}
-    <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <div style="font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
-        <span class="badge badge-secondary">{{ link.year }}</span>
-        <span style="color: var(--muted);">{{ link.expiryLabel }}</span>
-      </div>
-      <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <button type="button" class="primary-button button-small" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
-        {# year= is the year still on screen, not the link's - the panel this
-           refresh returns is the one the user is looking at. #}
-        <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-          <input type="hidden" name="year" value="{{ year }}"/>
-          <button type="submit" class="primary-button button-small is-danger">Revoke</button>
-        </form>
-      </div>
-    </div>
+      {{ shareLinkRow(link) }}
     {% endfor %}
   </div>
 </details>
