@@ -26,7 +26,6 @@ from routes._htmx import isHtmxSwap
 from routes._xhr import declaresItselfXhr as _declaresItselfXhr
 from services.deploy_state import deployMismatch, sourceFingerprint
 from services.email_worker import EMAIL_WORKER
-from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.secret_store import readOrCreateKeyFile, FLASK_SECRET_KEY_ENV_VAR
@@ -64,6 +63,7 @@ from routes.wrapped import register as registerWrappedRoutes
 from routes.auth import register as registerAuthRoutes
 from routes.system import register as registerSystemRoutes
 from routes.tags import register as registerTagsRoutes
+from dashboard.context_processors import register as registerContextProcessors
 from Database.Spotify import Spotify
 from Database.Spotify.cookies import saveSession, parseCookieString
 
@@ -607,8 +607,9 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
 
         Context processors run when the template renders - i.e. AFTER the view
         function. The dashboard both shows the milestones and clears the badge
-        (markMilestonesSeen), so without priming, _injectMilestoneStatus counts
-        what is left after the clear: zero. The badge would then never appear on
+        (markMilestonesSeen), so without priming, _injectMilestoneStatus (in
+        dashboard/context_processors.py) counts what is left after the clear:
+        zero. The badge would then never appear on
         the very page the user landed on, and `/` is where login drops them - so
         for anyone whose first page is the dashboard the notification was
         silently consumed without ever being shown.
@@ -888,194 +889,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 cache[username] = self.repo.getDisplayName(username)
             return cache[username]
 
-        @self.app.context_processor
-        def _injectPasswordPolicy():
-            # Lets register.html/reset_password.html show the actual configured
-            # minimum instead of a hardcoded number that could drift from
-            # PASSWORD_MIN_LENGTH.
-            return {"minPasswordLength": PASSWORD_MIN_LENGTH}
-
-        @self.app.context_processor
-        def _injectFallbackMarkers():
-            # Single-sources the created_reason marker values (Database.db) so
-            # templates compare against the constants instead of duplicating the
-            # string literals.
-            return {
-                "SYNTHETIC_FALLBACK_REASON": SYNTHETIC_FALLBACK_REASON,
-                "RESTRICTED_FALLBACK_REASON": RESTRICTED_FALLBACK_REASON,
-            }
-
-        @self.app.context_processor
-        def _injectArtistListLimits():
-            # _artist_links.html collapses long artist lists behind a
-            # "+N more" toggle - single-sources the thresholds so the macro
-            # compares against the constants instead of magic numbers.
-            return {
-                "MAX_INLINE_ARTISTS": MAX_INLINE_ARTISTS,
-                "MIN_HIDDEN_ARTISTS": MIN_HIDDEN_ARTISTS,
-            }
-
-        @self.app.context_processor
-        def _injectAdminStatus():
-            # Lets templates show admin-only affordances (the profile page's
-            # ADMIN chip). Memoized on g like _injectShareStatus below - one
-            # request can render several templates.
-            if "isAdmin" not in g:
-                username = session.get("username")
-                g.isAdmin = self.repo.isAdmin(username) if username else False
-            return {"isAdmin": g.isAdmin}
-
-        def _memoizedSetting(name: str, read):
-            # Instance-wide settings reads, memoized on g for the current
-            # request. Every context processor re-runs on every render, and one
-            # request can render a dozen templates (the Wrapped AJAX endpoint
-            # alone renders six partials), so an un-memoized "cheap settings
-            # read" is really one app_settings SELECT per setting per partial.
-            key = f"_setting_{name}"
-            if key not in g:
-                setattr(g, key, read())
-            return getattr(g, key)
-
-        @self.app.context_processor
-        def _injectRegistrationStatus():
-            # Lets login.html hide its "Create an account" link when the
-            # admin has disabled new registrations.
-            return {"registration_enabled": _memoizedSetting(
-                "registration_enabled", self.repo.isRegistrationEnabled)}
-
-        @self.app.context_processor
-        def _injectShareLinksStatus():
-            # Lets wrapped.html hide its "Share this Wrapped" panel and
-            # profile.html hide its share-link list when the admin has
-            # disabled public share links.
-            return {"share_links_enabled": _memoizedSetting(
-                "share_links_enabled", self.repo.isShareLinksEnabled)}
-
-        @self.app.context_processor
-        def _injectArtistBioStatus():
-            # Lets artist_detail.html hide its Biography section (even for
-            # an artist whose bio was already fetched and stored) and
-            # overview.html's admin panel show the toggle's current state.
-            return {"artist_bio_enabled": _memoizedSetting(
-                "artist_bio_enabled", self.repo.isArtistBioEnabled)}
-
-        @self.app.context_processor
-        def _injectAlbumBioStatus():
-            # Mirrors _injectArtistBioStatus, for album_detail.html's
-            # Biography section and the album_bio toggle's current state.
-            return {"album_bio_enabled": _memoizedSetting(
-                "album_bio_enabled", self.repo.isAlbumBioEnabled)}
-
-        @self.app.context_processor
-        def _injectLastfmGenreStatus():
-            # Lets layout.html's nav show the "Genres" link only when the
-            # admin's instance-wide Last.fm genre backfill is enabled - the
-            # same kill switch the Charts genre section already respects, so
-            # the nav never advertises a page whose entire content is off.
-            return {"lastfm_genre_enabled": _memoizedSetting(
-                "lastfm_genre_enabled", self.repo.isLastfmGenreBackfillEnabled)}
-
-        @self.app.context_processor
-        def _injectTagsStatus():
-            # Lets layout.html hide the "Playlists" nav link, _page_card.html
-            # hide the Top Songs/Artists/Albums tag filter, and the detail
-            # pages hide the tag panel when the admin's instance-wide tags
-            # kill switch is off.
-            return {"tags_enabled": _memoizedSetting("tags_enabled", self.repo.isTagsEnabled)}
-
-        @self.app.context_processor
-        def _injectTagsPanelStatus():
-            # Per-user "hide the tag panel" preference (set on /profile),
-            # independent of the admin-wide tags_enabled switch above - lets
-            # song/artist/album detail pages skip _tag_widget.html for a user
-            # who just doesn't want to see it. Memoized on g like
-            # _injectSpotifyReauthStatus: one request can render several
-            # templates.
-            if "hideTagsPanel" not in g:
-                username = session.get("username")
-                g.hideTagsPanel = self.repo.getHideTagsPanel(username) if username else False
-            return {"hide_tags_panel": g.hideTagsPanel}
-
-        @self.app.context_processor
-        def _injectShareStatus():
-            # Lets layout.html's nav show a "Compare" link only for users who
-            # have at least one usable accepted share, and the topbar badges
-            # show a count of share requests waiting on them plus a count of
-            # their own requests that were just accepted - computed here so
-            # every template gets all three without every route remembering
-            # to pass them. Memoized on g: one request can render several
-            # templates (the Wrapped AJAX endpoint renders six partials), and
-            # each render re-runs every context processor - these cheap
-            # queries must not repeat per partial. No is_user_logged_in
-            # check: that can cost a live Spotify round-trip, far too heavy
-            # per render, and a stale session's worst case is a nav
-            # link/badge that 302s to login like every other nav item would.
-            if "hasAcceptedShares" not in g:
-                username = session.get("username")
-                # The admin's instance-wide kill switch zeroes all three
-                # instead of skipping the queries below it - disabled means
-                # the nav link and both badges hide, not that a real pending/
-                # accepted share stops existing in the DB.
-                if self.repo.isDataSharingEnabled():
-                    g.hasAcceptedShares = self.repo.hasAnyAcceptedShare(username) if username else False
-                    g.pendingIncomingSharesCount = self.repo.getPendingIncomingSharesCount(username) if username else 0
-                    g.unseenAcceptedShareCount = self.repo.getUnseenAcceptedShareCount(username) if username else 0
-                else:
-                    g.hasAcceptedShares = False
-                    g.pendingIncomingSharesCount = 0
-                    g.unseenAcceptedShareCount = 0
-            return {
-                "hasAcceptedShares": g.hasAcceptedShares,
-                "pendingIncomingSharesCount": g.pendingIncomingSharesCount,
-                "unseenAcceptedShareCount": g.unseenAcceptedShareCount,
-            }
-
-        @self.app.context_processor
-        def _injectSpotifyReauthStatus():
-            # Topbar badge for "Web API backfill is stuck because the stored
-            # Spotify authorization is missing a scope" (see
-            # Listener.on_scope_status_change) - otherwise the only place
-            # this ever surfaces is the Connection Status card on /profile,
-            # which nothing prompts a user to go check. Gated on
-            # SPOTIFY_CALLBACK_URL like every other Spotify Developer API
-            # route/link: with it unset, /spotify-authorize 404s, so a badge
-            # pointing there would be a dead end. Memoized on g for the same
-            # reason as _injectShareStatus above.
-            if "spotifyNeedsReauthBadge" not in g:
-                username = session.get("username")
-                g.spotifyNeedsReauthBadge = (
-                    bool(os.environ.get(SPOTIFY_CALLBACK_URL_ENV_VAR))
-                    and bool(username)
-                    and self.repo.getSpotifyNeedsReauth(username)
-                )
-            return {"spotifyNeedsReauthBadge": g.spotifyNeedsReauthBadge}
-
-        @self.app.context_processor
-        def _injectMilestoneStatus():
-            # Topbar badge for unacknowledged achievement milestones (new
-            # play/listen-time/streak thresholds or a new #1 artist), cleared
-            # when the dashboard renders the Milestones card (markMilestonesSeen
-            # in routes/charts.py's dashboardIndex). Memoized on g like
-            # _injectShareStatus: one request can render several templates and
-            # each re-runs every context processor, so this cheap indexed count
-            # must not repeat per partial. That memo is also what lets the
-            # dashboard prime the count before clearing it - see
-            # primeMilestoneBadge, without which the badge would never render on
-            # the page that acknowledges it. No is_user_logged_in check, for the
-            # same reason _injectShareStatus skips it - the worst case is a
-            # badge that 302s to login like every other nav item. The admin kill
-            # switch (milestones_enabled) zeroes the count and hides the
-            # dashboard milestones row rather than deleting rows, mirroring how
-            # the data-sharing switch zeroes the share badges.
-            if "unseenMilestoneCount" not in g:
-                g.milestonesEnabled = self.repo.isMilestonesEnabled()
-                username = session.get("username")
-                g.unseenMilestoneCount = (
-                    self.repo.getUnseenMilestoneCount(username)
-                    if g.milestonesEnabled and username else 0
-                )
-            return {"unseenMilestoneCount": g.unseenMilestoneCount,
-                    "milestones_enabled": g.milestonesEnabled}
+        registerContextProcessors(self.app, self)
 
         registerSystemRoutes(self.app, self)
 
