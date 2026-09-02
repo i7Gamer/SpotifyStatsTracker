@@ -277,11 +277,19 @@
     //  is already encoded in its target and its URL
     var target = detail.target || byId(GENRES_RESULTS_ID);
     var pathInfo = detail.pathInfo || {};
-    var path = pathInfo.finalRequestPath || pathInfo.requestPath ||
+    //< and off the element that issued it (htmx stamps it on every event as
+    //  detail.elt), so htmx re-serialises the form's CURRENT values, runs the
+    //  configRequest veto/prune above and inherits its hx-replace-url - without
+    //  a source, a successful Retry left the address bar on the previous
+    //  period. That element's BARE hx-get path then, not the final one: htmx
+    //  appends the serialised values to whatever path it is handed, so the
+    //  final path would carry every form value twice.
+    var elt = detail.elt;
+    var path = (elt && pathInfo.requestPath) || pathInfo.finalRequestPath ||
       (window.location.pathname + window.location.search);
     if (!target) return;
     window.AjaxStatus.showBanner(function () {
-      htmx.ajax('GET', path, { target: target, swap: 'innerHTML' });
+      htmx.ajax('GET', path, { source: elt, target: target, swap: 'innerHTML' });
     });
   };
   document.body.addEventListener('htmx:responseError', reportGenresFailure);

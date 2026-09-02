@@ -195,12 +195,23 @@ document.body.addEventListener('htmx:configRequest', function (evt) {
 // Retry, so the numbers are never silently stale under a URL that says
 // otherwise. Scoped to the summary swap: the two deferred cards below fail
 // independently and keep their own placeholders rather than blanking this.
+//
+// The retry is issued off the FORM, not the address bar. A 4xx/5xx never
+// touches the URL (htmx updates history only inside its successful-swap
+// branch), so after a failed filter change the select already shows the new
+// choice while the URL still says the old one - and a retry of the URL rendered
+// the old range under the new selection, with nothing to say so. Re-serialising
+// the form requests what is on screen, runs the configRequest veto/prune above
+// (its elt is the form) and inherits hx-replace-url and hx-sync. The bare
+// hx-get path, because htmx appends the form's values to whatever path it is
+// handed.
 var reportDashboardFailure = function (evt) {
   var target = byId(DASHBOARD_SUMMARY_ID);
   if (!target || !window.AjaxStatus || !evt.detail || evt.detail.target !== target) return;
   window.AjaxStatus.renderInto(target, function () {
-    htmx.ajax('GET', window.location.pathname + window.location.search,
-              { target: '#' + DASHBOARD_SUMMARY_ID, swap: 'innerHTML' });
+    var form = byId(DASHBOARD_FORM_ID);
+    htmx.ajax('GET', form.getAttribute('hx-get'),
+              { source: form, target: '#' + DASHBOARD_SUMMARY_ID, swap: 'innerHTML' });
   });
 };
 document.body.addEventListener('htmx:responseError', reportDashboardFailure);

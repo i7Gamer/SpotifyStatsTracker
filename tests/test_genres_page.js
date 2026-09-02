@@ -340,6 +340,26 @@ run('a failed swap retries the request that actually failed', () => {
   assert.strictEqual(page.ajax[0].opts.target, target, 'not always the overview region');
 });
 
+// Without a source the retry bypassed the form's hx-replace-url, so after a
+// successful Retry the charts showed the new period under an address bar still
+// saying the old one. Off the element that failed, on its BARE hx-get path:
+// htmx appends the element's serialised values to whatever path it is given,
+// so the final path would carry every form value twice.
+run('the retry is issued off the element that failed, on its bare path', () => {
+  const form = makeElement({ id: 'genresFilters' });
+  const target = makeElement({ id: 'genresResults' });
+  const page = loadGenres({});
+
+  page.bodyListeners['htmx:responseError']({
+    detail: { elt: form, target, pathInfo: { requestPath: '/genres', finalRequestPath: '/genres?interval=today' } },
+  });
+  page.lastRetry();
+
+  assert.strictEqual(page.ajax[0].url, '/genres');
+  assert.strictEqual(page.ajax[0].opts.source, form);
+  assert.strictEqual(page.ajax[0].opts.target, target);
+});
+
 run('a send error with no path info falls back to the current URL', () => {
   const page = loadGenres({ search: '?interval=last-30-days', elements: { genresResults: makeElement() } });
 

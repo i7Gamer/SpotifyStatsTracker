@@ -197,13 +197,20 @@ run('the Time Period select syncs the history custom-range container', () => {
                          'the container id differs from the Top pages - a copy-paste would swap them');
 });
 
-run('a failed swap offers a retry that re-requests the current URL', () => {
-  const page = loadHistory({ search: '?q=liquid' });
+// Off the form, not the address bar: a 4xx/5xx never touches the URL (htmx
+// updates history only inside its successful-swap branch), so after a failed
+// filter change the controls show the new choice while the URL still says the
+// old one - and a retry of the URL rendered the old list under the new
+// selection.
+run('a failed swap offers a retry that re-serialises the form, not the stale URL', () => {
+  const form = { id: 'historyFilters', getAttribute(name) { return name === 'hx-get' ? '/history' : null; } };
+  const page = loadHistory({ search: '?q=liquid', elements: { historyFilters: form } });
   assert.strictEqual(page.swapFailure.targetId, 'historyResults');
 
   page.swapFailure.retry();
 
-  assert.strictEqual(page.ajax[0].url, '/history?q=liquid');
+  assert.strictEqual(page.ajax[0].url, '/history', 'the bare hx-get path: htmx appends the form values itself');
+  assert.strictEqual(page.ajax[0].opts.source, form);
   assert.strictEqual(page.ajax[0].opts.target, '#historyResults');
 });
 

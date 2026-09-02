@@ -189,13 +189,20 @@ run('a swap before charts.js has loaded does not throw', () => {
 
 // --------------------------------------------------------------- the retry
 
-run('a failed swap offers a retry that re-requests the current URL', () => {
-  const page = loadCharts({ search: '?interval=last-90-days' });
+// Off the form, not the address bar: a 4xx/5xx never touches the URL (htmx
+// updates history only inside its successful-swap branch), so after a failed
+// filter change the select shows the new choice while the URL still says the
+// old one - and a retry of the URL rendered the old range under the new
+// selection.
+run('a failed swap offers a retry that re-serialises the form, not the stale URL', () => {
+  const form = { id: 'chartsFilters', getAttribute(name) { return name === 'hx-get' ? '/charts' : null; } };
+  const page = loadCharts({ search: '?interval=last-90-days', elements: { chartsFilters: form } });
   assert.strictEqual(page.swapFailure.targetId, 'chartsCard');
 
   page.swapFailure.retry();
 
-  assert.strictEqual(page.ajax[0].url, '/charts?interval=last-90-days');
+  assert.strictEqual(page.ajax[0].url, '/charts', 'the bare hx-get path: htmx appends the form values itself');
+  assert.strictEqual(page.ajax[0].opts.source, form);
   assert.strictEqual(page.ajax[0].opts.target, '#chartsCard');
 });
 

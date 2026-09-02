@@ -298,4 +298,27 @@ function fireBodyEvent(type, detail) {
   });
 });
 
+// Off the form, not the address bar: a 4xx/5xx never touches the URL (htmx
+// updates history only inside its successful-swap branch), so after a failed
+// filter change the select shows the new choice while the URL still says the
+// old one - and a retry of the URL rendered the old range under the new
+// selection.
+run('the summary retry re-serialises the filter form, not the stale URL', () => {
+  const summary = {};
+  const form = { getAttribute(name) { return name === 'hx-get' ? '/' : null; } };
+  const ajax = [];
+  let retry = null;
+  elementsById = { dashboardSummary: summary, dashboardFilters: form };
+  global.window.AjaxStatus = { renderInto(target, onRetry) { retry = onRetry; } };
+  global.htmx = { ajax(method, url, opts) { ajax.push({ method, url, opts }); } };
+  fireBodyEvent('htmx:responseError', { target: summary });
+  retry();
+  elementsById = {};
+  delete global.window.AjaxStatus;
+  delete global.htmx;
+  assert.strictEqual(ajax[0].url, '/', 'the bare hx-get path: htmx appends the form values itself');
+  assert.strictEqual(ajax[0].opts.source, form);
+  assert.strictEqual(ajax[0].opts.target, '#dashboardSummary');
+});
+
 console.log('all dashboard-page tests passed');

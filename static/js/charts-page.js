@@ -97,9 +97,20 @@ if (typeof document !== 'undefined') {
   // expired session no longer arrives here at all: the server answers an htmx
   // request with HX-Redirect, so the browser navigates to /login instead of
   // this reporting a load failure.
+  //
+  // The retry is issued off the FORM, not the address bar. A 4xx/5xx never
+  // touches the URL (htmx updates history only inside its successful-swap
+  // branch), so after a failed filter change the select already shows the new
+  // choice while the URL still says the old one - and a retry of the URL
+  // rendered the old range under the new selection, with nothing to say so.
+  // Re-serialising the form requests what is on screen, runs the configRequest
+  // veto/prune above (its elt is the form) and inherits hx-replace-url and
+  // hx-sync. The bare hx-get path, because htmx appends the form's values to
+  // whatever path it is handed.
   HtmxFilters.onSwapFailure(CHARTS_TARGET_ID, function () {
-    htmx.ajax('GET', window.location.pathname + window.location.search,
-              { target: '#' + CHARTS_TARGET_ID, swap: 'innerHTML' });
+    var form = byId(CHARTS_FORM_ID);
+    htmx.ajax('GET', form.getAttribute('hx-get'),
+              { source: form, target: '#' + CHARTS_TARGET_ID, swap: 'innerHTML' });
   });
 }
 //< no module.exports: everything pure lives in static/js/htmx-filters.js, which
