@@ -37,7 +37,7 @@
       hx-replace-url writes it to the address bar, so an empty param here ends
       up in every link people copy - the hand-written builder dropped it. -#}
   {% for y in availableYears %}
-    <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
+    <a class="wrapped-year-badge{{ ' active' if y == year else '' }}"{% if y == year %} aria-current="page"{% endif %} href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
   {% endfor %}
 </nav>
 {% endif %}

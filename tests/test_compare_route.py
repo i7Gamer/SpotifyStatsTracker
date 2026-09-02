@@ -137,6 +137,22 @@ class TestCompareRoute(AppTestCase):
         self.assertTrue(all(pill.has_attr("aria-pressed") for pill in pills))
         self.assertEqual([pill["data-filter"] for pill in pills if pill["aria-pressed"] == "true"], ["all"])
 
+    def test_user_badges_mark_the_counterpart_with_aria_current(self):
+        """The selected badge was colour alone inside a <nav aria-label="Select
+        user to compare with"> (2026-09-02 review, UI-04); it now says
+        aria-current like the topbar and profile sub-nav."""
+        import bs4
+        self._accept("alice", "bob")
+        self._accept("alice", "carol")
+        client = self._loginAs("alice")
+
+        shell = client.get("/compare?with=carol").get_data(as_text=True)
+        badges = bs4.BeautifulSoup(shell, "html.parser").select("#compareUserBadges a")
+
+        self.assertEqual(len(badges), 2)
+        self.assertEqual([badge.get_text(strip=True) for badge in badges if badge.has_attr("aria-current")],
+                         ["carol"])
+
     def test_shows_empty_state_with_no_accepted_shares(self):
         """A real page pointing at Profile's Data Sharing section, not a bare
         404 - see routes/compare.py's comparePage() and compare_empty.html."""

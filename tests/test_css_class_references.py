@@ -210,6 +210,18 @@ class TestTheYearBadgeAndTheFilterButtonAreOnePill(unittest.TestCase):
 
         self.assertIn("var(--accent)", fills)
 
+    def test_a_current_picker_link_is_filled_without_the_class(self):
+        """The year / counterpart badges and the genre chips render
+        aria-current on the selected link (UI-04); the fill keys on the
+        attribute as well as on .active / .selected for the same reason as
+        aria-pressed above."""
+        for markup in ('<a class="wrapped-year-badge" aria-current="page"></a>',
+                       '<a class="genre-chip" aria-current="page"></a>'):
+            with self.subTest(markup=markup):
+                fills = [self.rules[order].declaration("background") for order in self._rulesHitting(markup)]
+
+                self.assertIn("var(--accent)", fills)
+
     def test_the_two_pill_rows_share_their_layout_rule(self):
         badges = self._rulesHitting('<nav class="wrapped-year-badges"></nav>')
         filters = self._rulesHitting('<nav class="wrapped-stats-filters"></nav>')

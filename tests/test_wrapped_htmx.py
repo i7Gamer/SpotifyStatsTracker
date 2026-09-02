@@ -285,6 +285,17 @@ class TestOutOfBandRegions(WrappedHtmxTestCase):
         active = badges[badges.index('wrapped-year-badge active"'):]
         self.assertIn(">2024<", active[:active.index("</a>") + len("</a>")])
 
+    def test_the_year_badges_mark_the_current_year_with_aria_current(self):
+        """The active badge was colour alone inside a <nav aria-label="Select
+        year"> (2026-09-02 review, UI-04); the topbar and profile sub-nav
+        already say aria-current, and now so does this picker."""
+        import bs4
+
+        body = self._fragment("?year=2024")
+        current = bs4.BeautifulSoup(body, "html.parser").select("#wrappedYearBadges a[aria-current]")
+
+        self.assertEqual([badge.get_text(strip=True) for badge in current], ["2024"])
+
     def test_the_forms_hidden_year_field_follows_the_year(self):
         """A later change to Items per category serializes the form, so a
         stale year field would silently ask for the year the user just left

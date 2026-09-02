@@ -26,6 +26,7 @@
     {# the badge SHOWS the display name but still selects by the real username:
        ?with= is matched against the accepted-share list server-side. #}
     <a class="wrapped-year-badge{{ ' active' if badge.username == withUsername else '' }}"
+       {% if badge.username == withUsername %}aria-current="page"{% endif %}
        id="compareUserBadge{{ loop.index }}"
        href="{{ badge.url }}">{{ badge.username | displayName }}</a>
   {% endfor %}

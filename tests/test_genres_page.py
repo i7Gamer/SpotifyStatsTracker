@@ -237,6 +237,20 @@ class GenresPageTestCase(AppTestCase):
         # Breadth ships as [label, value] pairs, ranked most-artists-first.
         self.assertIn(["rock", 12], self._island(resp, "genres-overview-data")["breadthPairs"])
 
+    def test_the_chip_row_marks_the_selected_genre_with_aria_current(self):
+        """The selected chip was colour alone (2026-09-02 review, UI-04); it
+        now says aria-current like the topbar and profile sub-nav."""
+        import bs4
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90),
+                          distribution={"rock": 120, "jazz": 40})
+
+        resp = self._getData(dash, db, query="?genre=jazz", headers=HX_EXPLORE_HEADERS)
+        chips = bs4.BeautifulSoup(resp.get_data(as_text=True), "html.parser").select(".genre-chip")
+
+        self.assertEqual(len(chips), 2)
+        self.assertEqual([chip["data-genre"] for chip in chips if chip.has_attr("aria-current")], ["jazz"])
+
     def test_a_chip_swap_returns_only_the_drill_down(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),

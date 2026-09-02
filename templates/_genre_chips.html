@@ -12,7 +12,8 @@
    validated filter state (chipArgs - interval, custom range, trend buckets), not
    just some of it: a filter missing here would silently reset itself on the next
    chip click. #}
+{# aria-current beside the class: the selected chip is otherwise colour alone. #}
 {% for name in genreNames %}
-  <a class="genre-chip {{ 'selected' if name == selectedGenre }}"
+  <a class="genre-chip {{ 'selected' if name == selectedGenre }}"{% if name == selectedGenre %} aria-current="page"{% endif %}
      href="{{ url_for('genresPage', genre=name, **chipArgs) }}" data-genre="{{ name }}">{{ name }}</a>
 {% endfor %}
