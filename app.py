@@ -90,12 +90,15 @@ def _trustedProxyCount() -> int:
         count = None
     if count is None and raw in TRUTHY_ENV_VALUES:
         return 1
+    if count is None and raw in FALSY_ENV_VALUES:
+        return 0
     if count is None or count < 0:
         # A typo ("2.0", "ture", "-1") lands here and disables the feature -
         # the per-IP auth limiter then shares one bucket across everyone
         # behind the proxy, which is what the variable exists to prevent. Say
         # so, the way Database.backup._envInt and wsgi._waitressThreads do;
-        # "0" is an explicit opt-out and stays silent.
+        # FALSY_ENV_VALUES ("0", "false", "no", "off") are explicit opt-outs
+        # and stay silent.
         logger.warning("Ignoring unrecognised %s=%r - X-Forwarded-* headers will NOT be trusted",
                        TRUST_PROXY_HEADERS_ENV_VAR, raw)
         return 0

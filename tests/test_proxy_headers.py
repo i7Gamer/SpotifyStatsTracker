@@ -75,6 +75,12 @@ class TestTrustedProxyCountParsing(unittest.TestCase):
             with self.subTest(raw=raw), self.assertNoLogs("app", level="WARNING"):
                 self.assertEqual(self._withEnv(raw), expected)
 
+    def test_falsy_values_are_silent_opt_outs(self):
+        """"false"/"no"/"off" are opt-outs like "0", not typos to warn about."""
+        for raw in ("false", "no", "off", "FALSE"):
+            with self.subTest(raw=raw), self.assertNoLogs("app", level="WARNING"):
+                self.assertEqual(self._withEnv(raw), 0)
+
 
 class _AppTestBase(AppTestCase):
     def _postLogin(self, client, ip, forwardedFor=None):

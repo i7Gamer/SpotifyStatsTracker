@@ -137,6 +137,9 @@ MOVEMENT_MAX_PAGE = 1_000_000
 # must be expressible in a query string now that the default is per-user.
 TOP_LIST_DEFAULT_WINDOW = "all time"
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+# The silent opt-outs - mirror of TRUTHY_ENV_VALUES above, for the flags where
+# "0" is joined by a spelled-out false/no/off rather than being the only one.
+FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 # The literal FLASK_SECRET_KEY shipped as a placeholder in docker-compose.yml.
 # Booting with it signs session cookies - and, when DATA_ENCRYPTION_KEY is unset,
 # encrypts every stored Spotify session/secret at rest - under a publicly-known
