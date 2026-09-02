@@ -304,6 +304,15 @@ class DependabotConfigTest(unittest.TestCase):
 
         self.assertEqual(wrong, [], f"{wrong} is not a valid `applies-to`.")
 
+    def test_every_group_declares_applies_to_version_updates(self):
+        missing = [f"{entry['ecosystem']}/{name}"
+                   for entry in self.entries
+                   for name, group in entry["groups"].items()
+                   if group.get("applies-to") != "version-updates"]
+
+        self.assertEqual(missing, [],
+                         f"{missing} does not explicitly declare `applies-to: version-updates`.")
+
     def test_majors_are_not_swept_into_the_grouped_pull_request(self):
         """See MAJORS_REVIEWED_ALONE. A group that omits `update-types`
         entirely takes ALL of them, so silence fails here too."""

@@ -10,9 +10,9 @@
 #
 # `groups` exist because the alternative is one PR per dependency: four
 # ecosystems at a limit of 5 is up to 20 open at once on a repo with one
-# maintainer. No group sets `applies-to`, so all of them default to
-# version-updates only - a SECURITY update still arrives as its own PR, which
-# is the one case where waiting for the weekly batch is wrong.
+# maintainer. All groups set `applies-to: version-updates`, so a SECURITY
+# update still arrives as its own PR, which is the one case where waiting for
+# the weekly batch is wrong.
 
 version: 2
 updates:
@@ -31,6 +31,7 @@ updates:
       # rollback - and that review does not survive being bundled with four
       # unrelated bumps. Minors and patches get the one weekly PR.
       python-minor-and-patch:
+        applies-to: version-updates
         patterns:
           - "*"
         update-types:
@@ -59,6 +60,7 @@ updates:
       # the tool learned a new opinion overnight (see .github/workflows/lint.yml).
       # A major there can add rules, so it gets its own PR.
       npm-minor-and-patch:
+        applies-to: version-updates
         patterns:
           - "*"
         update-types:
@@ -108,5 +110,6 @@ updates:
       # Dependabot ever proposes for it - filtering majors out would group
       # nothing and leave one PR per action, which is the thing this avoids.
       github-actions:
+        applies-to: version-updates
         patterns:
           - "*"
