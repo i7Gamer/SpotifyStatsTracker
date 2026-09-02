@@ -111,17 +111,29 @@ class MediaFetchMixin:
             chunks.append(chunk)
         return b"".join(chunks)
 
+    def _mediaGet(self, url: str, **kwargs):
+        """One GET through the process-wide media session (see
+        Database._mediaHttpSession) - the image downloads and the Web API
+        artist lookups below, nothing else. Also the seam the suite patches
+        in place of requests.get: a Session's get() is its own method, so a
+        patch on the module function would no longer intercept these."""
+        return self._mediaHttpSession.get(url, **kwargs)
+
     def _downloadImageTask(self, path: Path, url: str, imgId: str, kind: str):
         #< flipped the moment the image itself is proven good; from there on a
         #  failure is this host's, not the image's - see the storage note below
         imageIsGood = False
         try:
             # Held in a `with`: the body is streamed and _readCappedBody stops
-            # draining it the moment it blows the cap, and an undrained response
-            # never returns its connection to the pool - the next image download
-            # then pays a fresh TCP+TLS handshake. Closed before the decode/save
-            # work below, which no longer needs the socket.
-            with _dbmod.requests.get(url, timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS, stream=True) as response:
+            # draining it the moment it blows the cap. Closing the response
+            # promptly hands its socket back to the shared session's pool - or
+            # drops it when the body was left undrained, which is the right
+            # outcome for a refused one - instead of leaving it to GC while the
+            # decode/save work below runs. (Before the session, requests.get
+            # built and discarded a pool per call, so there was nothing to
+            # return the socket to; the `with` was right for the GC reason
+            # alone.)
+            with self._mediaGet(url, timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS, stream=True) as response:
                 response.raise_for_status()
                 content = self._readCappedBody(response)
             img = _dbmod.Image.open(_dbmod.BytesIO(content))
@@ -272,9 +284,9 @@ class MediaFetchMixin:
             if access_token:
                 try:
                     artistUrl = f"https://api.spotify.com/v1/artists/{artistId}"
-                    resp = _dbmod.requests.get(artistUrl,
-                                               headers={"Authorization": f"Bearer {access_token}"},
-                                               timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
+                    resp = self._mediaGet(artistUrl,
+                                          headers={"Authorization": f"Bearer {access_token}"},
+                                          timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
                     if resp.status_code == HTTP_STATUS_UNAUTHORIZED:
                         # The cached token died before its TTL (grant revoked,
                         # or the token invalidated server-side). Evict rather
@@ -289,9 +301,9 @@ class MediaFetchMixin:
                         self._webApiTokenCache = None
                         access_token = self._cachedWebApiAccessToken(creds)
                         if access_token:
-                            resp = _dbmod.requests.get(artistUrl,
-                                                       headers={"Authorization": f"Bearer {access_token}"},
-                                                       timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
+                            resp = self._mediaGet(artistUrl,
+                                                  headers={"Authorization": f"Bearer {access_token}"},
+                                                  timeout=MEDIA_FETCH_HTTP_TIMEOUT_SECONDS)
                     if resp.status_code == 200:
                         images = resp.json().get("images") or []
                         return images[0]["url"] if images else None

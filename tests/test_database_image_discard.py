@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import sys
 import os
 from pathlib import Path
@@ -7,7 +7,12 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# See tests/test_database_images.py for why this guard is needed.
+if isinstance(sys.modules.get("Database.database"), MagicMock):
+    del sys.modules["Database.database"]
+
 from conftest import DatabaseTestCase
+from Database.database import Database
 from Database.repository import IMAGE_KIND_TRACK, IMAGE_STATUS_FAILED
 
 
@@ -21,7 +26,7 @@ class TestDatabaseImageDiscard(DatabaseTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
 
-            with patch("Database.database.requests.get", side_effect=Exception("network error")), \
+            with patch.object(Database, "_mediaGet", side_effect=Exception("network error")), \
                  patch("builtins.print"):
                 db._downloadImageTask(imgDir, "https://example.com/bad", "failed-id", IMAGE_KIND_TRACK)
 

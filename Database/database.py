@@ -350,6 +350,17 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
     # event the same way.
     MEDIA_POOL_ATTRIBUTE_NAMES = ("_imageDownloadExecutor", "_artistBioFetchExecutor",
                                   "_albumBioFetchExecutor")
+    # The one HTTP session behind _imageDownloadExecutor's work - the CDN
+    # image downloads and the Web API artist lookups (MediaFetchMixin._mediaGet
+    # is the only reader). Module-level requests.get builds and discards a
+    # Session, pool included, on EVERY call, so a large import's hundreds of
+    # covers from one CDN host each paid a fresh TCP+TLS handshake. A Session
+    # opens no socket until used, keeps one per host afterwards, and is the
+    # usual idiom for concurrent plain GETs across a pool's threads. Retired
+    # and replaced by shutdownWorkerPools beside the executors it serves.
+    # Last.fm, the listener's backfill and the metadata backfiller keep their
+    # per-call requests.get deliberately (paced, or per poll).
+    _mediaHttpSession = requests.Session()
     _active_backfills = set()
     # The same idea for the ISRC queue, which drains the shared tracks table and
     # so has exactly the problem albums have. A separate set because these are
@@ -365,8 +376,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
     @classmethod
     def shutdownWorkerPools(cls) -> None:
-        """Stop the three process-wide media pools. Called from
-        SpotifyDashboardApp.shutdown().
+        """Stop the three process-wide media pools, and the image pool's HTTP
+        session with them. Called from SpotifyDashboardApp.shutdown().
 
         Without this the only thing that ever stops them is CPython's own
         concurrent.futures atexit hook, which appends its sentinel BEHIND the
@@ -412,6 +423,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                 # its two workers one at a time: one failure must not leave the
                 # other two running.
                 logger.error("Error stopping the %s thread pool: %s", name, e)
+        # The image pool's HTTP session goes the same way, and in the same
+        # order: a download still in flight keeps the object it already holds,
+        # a later one finds a live session rather than a closed one.
+        session = cls._mediaHttpSession
+        try:
+            cls._mediaHttpSession = requests.Session()
+            session.close()
+        except Exception as e:
+            logger.error("Error closing the media HTTP session: %s", e)
 
     @classmethod
     def configureWorkerPools(cls, repo) -> None:

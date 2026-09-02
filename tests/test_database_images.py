@@ -115,7 +115,7 @@ class TestImageWritesAreAtomic(DatabaseTestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir)
-            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()), \
+            with patch.object(Database, "_mediaGet", return_value=self._responseWithAnImage()), \
                  patch("PIL.Image.Image.save", truncatedWrite):
                 db._downloadImageTask(path, "http://example.com/i.png", "img1", "artist")
 
@@ -152,7 +152,7 @@ class TestImageWritesAreAtomic(DatabaseTestCase):
                     raise PermissionError("[WinError 32] used by another process")
                 return realUnlink(target, missing_ok=missing_ok)
 
-            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()), \
+            with patch.object(Database, "_mediaGet", return_value=self._responseWithAnImage()), \
                  patch("PIL.Image.Image.save", failingWrite), \
                  patch.object(Path, "unlink", unlinkThatLoses), \
                  self.assertLogs("Database.database", level="WARNING") as logs:
@@ -173,7 +173,7 @@ class TestImageWritesAreAtomic(DatabaseTestCase):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir)
-            with patch("Database.database.requests.get", return_value=self._responseWithAnImage()):
+            with patch.object(Database, "_mediaGet", return_value=self._responseWithAnImage()):
                 db._downloadImageTask(path, "http://example.com/i.png", "img1", "artist")
 
             self.assertEqual([p.name for p in path.iterdir()], ["img1.jpeg"])
@@ -186,7 +186,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             imagePath = Path(tmpdir) / "artist123.jpeg"
             imagePath.write_bytes(b"already-here")
 
-            with patch("Database.database.requests.get") as mock_get:
+            with patch.object(Database, "_mediaGet") as mock_get:
                 result = db.lazyFetchArtistImage("artist123", imagePath)
 
             self.assertTrue(result)
@@ -196,7 +196,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
         db = _bareDatabase()
         with tempfile.TemporaryDirectory() as tmpdir:
             imagePath = Path(tmpdir) / "0.jpeg"
-            with patch("Database.database.requests.get") as mock_get:
+            with patch.object(Database, "_mediaGet") as mock_get:
                 result = db.lazyFetchArtistImage("", imagePath)
 
             self.assertFalse(result)
@@ -224,7 +224,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             #< and the retry actually happens rather than being refused
             with patch.object(db, "_fetchArtistImageUrl",
                               return_value="https://i.scdn.co/image/abc"), \
-                 patch("Database.database.requests.get", return_value=_imageResponse(_pngBytes())):
+                 patch.object(Database, "_mediaGet", return_value=_imageResponse(_pngBytes())):
                 db.lazyFetchArtistImage("artist123", imagePath).result(timeout=5)
 
             self.assertEqual(db.repo.imageStatus("artist123", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
@@ -261,7 +261,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
 
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
-                 patch("Database.database.requests.get", side_effect=[apiResponse, imageResponse]) as mock_get, \
+                 patch.object(Database, "_mediaGet", side_effect=[apiResponse, imageResponse]) as mock_get, \
                  patch("Database.Spotify.Spotify") as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
@@ -286,7 +286,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             imageResponse = _imageResponse(_pngBytes())
 
             with patch("Database.Spotify.Spotify", return_value=mock_sp) as mock_sp_class, \
-                 patch("Database.database.requests.get", return_value=imageResponse) as mock_get:
+                 patch.object(Database, "_mediaGet", return_value=imageResponse) as mock_get:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
 
@@ -318,7 +318,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
             imageResponse = _imageResponse(_pngBytes())
 
             with patch("Database.Spotify.Spotify", return_value=mock_sp), \
-                 patch("Database.database.requests.get", return_value=imageResponse):
+                 patch.object(Database, "_mediaGet", return_value=imageResponse):
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
 
@@ -343,7 +343,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
 
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
-                 patch("Database.database.requests.get", side_effect=[apiResponse, imageResponse]), \
+                 patch.object(Database, "_mediaGet", side_effect=[apiResponse, imageResponse]), \
                  patch("Database.Spotify.Spotify", return_value=mock_sp) as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
@@ -369,7 +369,7 @@ class TestLazyFetchArtistImage(unittest.TestCase):
 
             with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                        return_value="mock_token"), \
-                 patch("Database.database.requests.get", return_value=apiResponse) as mock_get, \
+                 patch.object(Database, "_mediaGet", return_value=apiResponse) as mock_get, \
                  patch("Database.Spotify.Spotify") as mock_spotipy_class:
                 future = db.lazyFetchArtistImage("artist123", imagePath)
                 result = future.result(timeout=5)
@@ -560,7 +560,7 @@ class TestDownloadImageTaskExtension(DatabaseTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
 
-            with patch("Database.database.requests.get", return_value=self._makeResponse(self._pngBytes())):
+            with patch.object(Database, "_mediaGet", return_value=self._makeResponse(self._pngBytes())):
                 db._downloadImageTask(imgDir, "https://img.example/x", "img1", IMAGE_KIND_TRACK)
 
             self.assertTrue((imgDir / "img1.jpeg").exists())
@@ -575,7 +575,7 @@ class TestDownloadImageTaskExtension(DatabaseTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
 
-            with patch("Database.database.requests.get", return_value=self._makeResponse(self._pngBytes())):
+            with patch.object(Database, "_mediaGet", return_value=self._makeResponse(self._pngBytes())):
                 db._downloadImageTask(imgDir, "https://img.example/x", "img1", IMAGE_KIND_TRACK)
 
             self.assertEqual(db.repo.imageStatus("img1", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
@@ -646,7 +646,7 @@ class TestDownloadImageTaskErrorLog(DatabaseTestCase):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
-            with patch("Database.database.requests.get",
+            with patch.object(Database, "_mediaGet",
                        side_effect=req.exceptions.ConnectionError("timeout")), \
                  self.assertLogs("Database.database", level="ERROR") as logs:
                 db._downloadImageTask(imgDir, "https://img.example/x", "track-abc", IMAGE_KIND_TRACK)
@@ -701,7 +701,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
     def _artistAfter(self, db, tmpdir, failure):
         """Claim an artist image the way _saveImg does, then fail the download."""
         db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST)
-        with patch("Database.database.requests.get", **failure):
+        with patch.object(Database, "_mediaGet", **failure):
             db._downloadImageTask(Path(tmpdir), "https://img/x", "art-1", IMAGE_KIND_ARTIST)
 
     def test_a_connection_error_leaves_the_artist_retryable(self):
@@ -722,7 +722,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
     def test_a_server_error_is_transient_too(self):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get", side_effect=self._httpError(503)):
+            with patch.object(Database, "_mediaGet", side_effect=self._httpError(503)):
                 db._downloadImageTask(Path(tmpdir), "https://img/x", "t1", IMAGE_KIND_TRACK)
 
             self.assertIsNone(db.repo.imageStatus("t1", IMAGE_KIND_TRACK))
@@ -766,7 +766,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
         about that, and the same URL will not improve."""
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get",
+            with patch.object(Database, "_mediaGet",
                        return_value=_imageResponse(b"not-an-image")):
                 db._downloadImageTask(Path(tmpdir), "https://img/x", "t3", IMAGE_KIND_TRACK)
 
@@ -779,7 +779,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             oversize = _imageResponse(b"x" * 10)
             oversize.headers = {"Content-Length": str(10 * 1024 * 1024 * 10)}
-            with patch("Database.database.requests.get", return_value=oversize):
+            with patch.object(Database, "_mediaGet", return_value=oversize):
                 db._downloadImageTask(Path(tmpdir), "https://img/x", "t4", IMAGE_KIND_TRACK)
 
             self.assertEqual(db.repo.imageStatus("t4", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
@@ -792,7 +792,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
         temp directory and delegates everything else to the real function
         (same shape as test_a_cleanup_that_itself_fails's unlinkThatLoses)."""
         db.repo.tryClaimImageDownload("art-1", IMAGE_KIND_ARTIST)
-        with patch("Database.database.requests.get",
+        with patch.object(Database, "_mediaGet",
                    return_value=_imageResponse(_pngBytes())), \
              patch(target, boom):
             db._downloadImageTask(Path(tmpdir), "https://img/x", "art-1", IMAGE_KIND_ARTIST)
@@ -855,7 +855,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             truncated = _pngBytes40BytesShort()
-            with patch("Database.database.requests.get",
+            with patch.object(Database, "_mediaGet",
                        return_value=_imageResponse(truncated)):
                 db._downloadImageTask(Path(tmpdir), "https://img/x", "t5", IMAGE_KIND_TRACK)
 
@@ -867,7 +867,7 @@ class TestATransientDownloadFailureIsRetryable(DatabaseTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
             bad_response = _imageResponse(b"not-an-image")
-            with patch("Database.database.requests.get", return_value=bad_response), \
+            with patch.object(Database, "_mediaGet", return_value=bad_response), \
                  self.assertLogs("Database.database", level="ERROR") as logs:
                 db._downloadImageTask(imgDir, "https://img.example/x", "track-xyz", IMAGE_KIND_TRACK)
 
@@ -895,7 +895,7 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
     def test_an_oversized_body_is_refused_and_marked_failed(self):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get", return_value=self._oversizedResponse()),                  self.assertLogs("Database.database", level="ERROR"):
+            with patch.object(Database, "_mediaGet", return_value=self._oversizedResponse()),                  self.assertLogs("Database.database", level="ERROR"):
                 db._downloadImageTask(Path(tmpdir), "https://img.example/big", "track-big", IMAGE_KIND_TRACK)
 
         self.assertEqual(db.repo.imageStatus("track-big", IMAGE_KIND_TRACK), IMAGE_STATUS_FAILED)
@@ -909,7 +909,7 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
         response.iter_content = lambda chunk_size=None: read.append(1) or iter([])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get", return_value=response),                  self.assertLogs("Database.database", level="ERROR"):
+            with patch.object(Database, "_mediaGet", return_value=response),                  self.assertLogs("Database.database", level="ERROR"):
                 db._downloadImageTask(Path(tmpdir), "https://img.example/big", "track-big2", IMAGE_KIND_TRACK)
 
         self.assertEqual(read, [])   #< never started reading the body
@@ -918,7 +918,7 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             imgDir = Path(tmpdir)
-            with patch("Database.database.requests.get", return_value=_imageResponse(_pngBytes())):
+            with patch.object(Database, "_mediaGet", return_value=_imageResponse(_pngBytes())):
                 db._downloadImageTask(imgDir, "https://img.example/ok", "track-ok", IMAGE_KIND_TRACK)
 
             self.assertTrue((imgDir / "track-ok.jpeg").exists())
@@ -937,7 +937,7 @@ class TestMediaFetchRequestTimeouts(DatabaseTestCase):
 
         db = self._makeDb({}, [])
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get",
+            with patch.object(Database, "_mediaGet",
                        return_value=_imageResponse(_pngBytes())) as mock_get:
                 db._downloadImageTask(Path(tmpdir), "https://img.example/ok", "track-t", IMAGE_KIND_TRACK)
 
@@ -955,7 +955,7 @@ class TestMediaFetchRequestTimeouts(DatabaseTestCase):
         with patch.object(db, "getUserSpotifyCredentials", return_value=creds), \
              patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    return_value="access-token"), \
-             patch("Database.database.requests.get", return_value=response) as mock_get:
+             patch.object(Database, "_mediaGet", return_value=response) as mock_get:
             url = db._fetchArtistImageUrl("artist-1")
 
         self.assertEqual(url, "https://cdn.example/a.jpg")   #< the Web API path really was taken
@@ -964,10 +964,11 @@ class TestMediaFetchRequestTimeouts(DatabaseTestCase):
 
 class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
     """The download is streamed, and _readCappedBody deliberately STOPS draining
-    an oversized body - a response left undrained never returns its connection
-    to urllib3's pool, so the next image download pays a fresh TCP+TLS
-    handshake. Holding it in a `with` releases it on every exit path, not only
-    the one where the body happened to be read to the end."""
+    an oversized body - a response left open never returns its connection to
+    the shared media session's pool (Database._mediaHttpSession), so the next
+    image download pays a fresh TCP+TLS handshake. Holding it in a `with`
+    releases it on every exit path, not only the one where the body happened
+    to be read to the end."""
 
     def _refusedResponse(self):
         """A response whose body blows the cap, so _readCappedBody raises
@@ -986,7 +987,7 @@ class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
         db = self._makeDb({}, [])
         response = self._refusedResponse()
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get", return_value=response), \
+            with patch.object(Database, "_mediaGet", return_value=response), \
                  self.assertLogs("Database.database", level="ERROR"):
                 db._downloadImageTask(Path(tmpdir), "https://img.example/big", "track-big3", IMAGE_KIND_TRACK)
 
@@ -998,7 +999,7 @@ class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
         db = self._makeDb({}, [])
         response = _imageResponse(b"not an image")
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get", return_value=response), \
+            with patch.object(Database, "_mediaGet", return_value=response), \
                  self.assertLogs("Database.database", level="ERROR"):
                 db._downloadImageTask(Path(tmpdir), "https://img.example/junk", "track-junk", IMAGE_KIND_TRACK)
 
@@ -1009,7 +1010,7 @@ class TestImageDownloadReleasesTheConnection(DatabaseTestCase):
         db = self._makeDb({}, [])
         response = _imageResponse(_pngBytes())
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("Database.database.requests.get", return_value=response):
+            with patch.object(Database, "_mediaGet", return_value=response):
                 db._downloadImageTask(Path(tmpdir), "https://img.example/ok", "track-ok2", IMAGE_KIND_TRACK)
 
         self.assertTrue(response.__exit__.called)
@@ -1040,7 +1041,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    return_value="tok1") as refresh, \
-                patch("Database.database.requests.get", return_value=self._artistResponse()):
+                patch.object(Database, "_mediaGet", return_value=self._artistResponse()):
             db._fetchArtistImageUrl("a1")
             db._fetchArtistImageUrl("a2")
 
@@ -1051,7 +1052,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    side_effect=["tok1", "tok2"]) as refresh, \
-                patch("Database.database.requests.get", return_value=self._artistResponse()):
+                patch.object(Database, "_mediaGet", return_value=self._artistResponse()):
             db._fetchArtistImageUrl("a1")
             #< age the cache past its TTL rather than patching the clock -
             #  time.monotonic is process-wide and other threads read it
@@ -1065,7 +1066,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    side_effect=["tok1", "tok2"]) as refresh, \
-                patch("Database.database.requests.get", return_value=self._artistResponse()):
+                patch.object(Database, "_mediaGet", return_value=self._artistResponse()):
             db._fetchArtistImageUrl("a1")
             db.getUserSpotifyCredentials = MagicMock(return_value={
                 "client_id": "cid", "client_secret": "csecret",
@@ -1106,7 +1107,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    side_effect=["tok1", "tok2"]) as refresh, \
-                patch("Database.database.requests.get",
+                patch.object(Database, "_mediaGet",
                       side_effect=[self._unauthorizedResponse(), self._artistResponse()]) as get, \
                 patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()):
             url = db._fetchArtistImageUrl("a1")
@@ -1124,7 +1125,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    side_effect=["tok1", "tok2"]) as refresh, \
-                patch("Database.database.requests.get",
+                patch.object(Database, "_mediaGet",
                       side_effect=[self._unauthorizedResponse(), self._unauthorizedResponse()]) as get, \
                 patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()), \
                 self.assertLogs("Database.database", level="WARNING"):
@@ -1142,7 +1143,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    side_effect=["tok1", None]), \
-                patch("Database.database.requests.get",
+                patch.object(Database, "_mediaGet",
                       side_effect=[self._unauthorizedResponse()]) as get, \
                 patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()):
             url = db._fetchArtistImageUrl("a1")
@@ -1160,7 +1161,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         serverError.status_code = 500
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    return_value="tok1") as refresh, \
-                patch("Database.database.requests.get", side_effect=[serverError]), \
+                patch.object(Database, "_mediaGet", side_effect=[serverError]), \
                 patch("Database.Spotify.Spotify", return_value=self._cookieFallbackClient()):
             url = db._fetchArtistImageUrl("a1")
 
@@ -1176,7 +1177,7 @@ class TestWebApiTokenCache(unittest.TestCase):
         db = self._dbWithCreds()
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    return_value="tok1") as refresh, \
-                patch("Database.database.requests.get", return_value=self._artistResponse()):
+                patch.object(Database, "_mediaGet", return_value=self._artistResponse()):
             db._fetchArtistImageUrl("a1")
 
         self.assertEqual(refresh.call_args.kwargs.get("logUser"), db.user)
