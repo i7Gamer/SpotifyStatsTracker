@@ -40,7 +40,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Directories with no production code in them. tools/ and the migrators are
 # deliberately INCLUDED: a migrator runs against a live database at startup,
 # which is exactly when getting this wrong is least recoverable.
-SKIPPED_DIRECTORIES = {".venv", "tests", "__pycache__", ".git", "node_modules"}
+#< .claude/worktrees holds a COMPLETE second copy of the tree per agent worktree,
+#  so a root-anchored walk found every exempt site again under a path the
+#  allowlist does not name - the .dockerignore trap in a test's clothing.
+SKIPPED_DIRECTORIES = {".venv", "tests", "__pycache__", ".git", "node_modules", ".claude"}
 
 READ_KEYWORDS = ("SELECT", "PRAGMA", "WITH", "EXPLAIN")
 WRITE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "ALTER",
