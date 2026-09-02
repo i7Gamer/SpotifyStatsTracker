@@ -2019,5 +2019,45 @@ class TestPlayHistoryChartLegend(_DetailRouteTestBase):
             self.assertNotIn('id="timeSeriesLegend"', markup, f"{name} should not be keyed")
 
 
+class TestPlayHistoryChartAccessibleName(_DetailRouteTestBase):
+    """The chart canvas is a role="img" named for its page (2026-09-02 range
+    review, RR-4). Since ea79499 both pages render one template that reads
+    `entityKind` into the name; nothing pinned the interpolation, so a copy
+    hardcoding either kind would have passed every detail-page test."""
+
+    def _chartName(self, entityKind):
+        return f'aria-label="Play history for this {entityKind} over time"'.encode()
+
+    def test_the_artist_chart_is_named_for_an_artist(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getArtist.return_value = {"id": "a1", "name": "Artist A", "url": "u", "imageUrl": "",
+                                     "imageId": "a1", "plays": 5, "totalTimeListened": 50000,
+                                     "uniqueSongCount": 2, "firstListenedAt": 100}
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/artist/a1")
+
+        self.assertIn(self._chartName("artist"), resp.data)
+        self.assertNotIn(self._chartName("album"), resp.data)
+
+    def test_the_album_chart_is_named_for_an_album(self):
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getAlbum.return_value = {"id": "alb1", "name": "Album One", "url": "u", "imageId": "alb1",
+                                    "imageUrl": "", "totalTracks": 2, "releaseDate": 0, "artists": [],
+                                    "plays": 5, "totalTimeListened": 50000, "uniqueSongCount": 2,
+                                    "firstListenedAt": 100}
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+
+        resp = self._getPath(dash, db, "/album/alb1")
+
+        self.assertIn(self._chartName("album"), resp.data)
+        self.assertNotIn(self._chartName("artist"), resp.data)
+
+
 if __name__ == "__main__":
     unittest.main()
