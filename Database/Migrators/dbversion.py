@@ -71,8 +71,12 @@ def readDbVersion(dbPath: Path) -> str | None:
         ).fetchone() is not None
         if not tableExists:
             return None
+        # rowid alone: writeDbVersion only ever INSERTs (see its docstring),
+        # so this table is append-only and rowid order IS insertion order.
+        # applied_at is an audit column, not an ordering key - it stays for
+        # "when was this applied" but must never be allowed to reorder reads.
         row = conn.execute(
-            "SELECT version FROM schema_version ORDER BY applied_at DESC, rowid DESC LIMIT 1"
+            "SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
         return row[0] if row is not None else None
     finally:

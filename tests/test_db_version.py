@@ -59,6 +59,23 @@ class TestReadDbVersion(DbVersionTestCase):
         dbversion.writeDbVersion(self.dbPath, "1.19.0")
         self.assertEqual(dbversion.readDbVersion(self.dbPath), "1.19.0")
 
+    def test_orders_by_rowid_not_applied_at(self):
+        """The table is append-only (writeDbVersion only INSERTs), so rowid
+        order IS insertion order; applied_at is an audit column only and must
+        not be allowed to reorder reads if it's ever out of step with
+        insertion order (e.g. a clock correction between two writes)."""
+        conn = sqlite3.connect(self.dbPath)
+        conn.execute(dbversion.SCHEMA_VERSION_TABLE_SQL)
+        # Later rowid, earlier applied_at.
+        conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                     ("1.17.0", 2000.0))
+        conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                     ("1.18.0", 1000.0))
+        conn.commit()
+        conn.close()
+
+        self.assertEqual(dbversion.readDbVersion(self.dbPath), "1.18.0")
+
 
 class TestWriteDbVersion(DbVersionTestCase):
     def test_creates_the_table_if_missing(self):
