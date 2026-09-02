@@ -19,7 +19,7 @@ from config import MAX_UPLOAD_MB, EXPORT_FORMATS
 from Database.Spotify.formatting import openSpotifyUrl
 from Database.utils import versionTuple, now
 from routes._auth import makeRequiresUser
-from services.export import generateJsonExport, generateCsvExport
+from services.export import generateJsonExport, generateCsvExport, attachmentDisposition
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +222,9 @@ def register(app, dashboard):
             generator, mimetype = generateJsonExport(db), "application/json"
 
         response = Response(stream_with_context(generator), mimetype=mimetype)
-        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        #< Not an f-string: a username outside latin-1 (str.isalnum() lets
+        #  them through at creation) made the header unsendable under waitress.
+        response.headers["Content-Disposition"] = attachmentDisposition(filename)
         return response
     app.add_url_rule("/export-history", "exportHistory", exportHistory, methods=["GET"])
 

@@ -537,3 +537,78 @@ class TestExportLinksLiveOnTheImportPage(_AppTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheDownloadNameSurvivesANonLatin1Username(DatabaseTestCase, _AppTestBase):
+    """Usernames are minted from the email's local part with str.isalnum(),
+    which is Unicode-aware - so `łukasz@example.com` becomes the username
+    `łukasz`, verbatim. The export put that straight into
+    Content-Disposition, and waitress serializes the whole header block as
+    latin-1: for any letter outside Latin-1 (ł, š, ğ, Cyrillic,
+    CJK) the response could not be built at all, and the one in-app export was
+    unusable for that account. German umlauts happen to be Latin-1 and never
+    showed it.
+
+    The fix is the shape Werkzeug's own send_file uses (RFC 6266 / 5987): an
+    ASCII `filename` for old clients plus `filename*=UTF-8''...` carrying the
+    real name, and the header line is then latin-1 by construction."""
+
+    def _getAs(self, dash, db, path, username):
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value=username), \
+             patch.object(dash, 'get_user_db', return_value=db):
+            client = dash.app.test_client()
+            with client.session_transaction() as sess:
+                sess['email'] = username + '@example.com'
+            return client.get(path)
+
+    def test_a_non_latin1_username_still_gets_a_download(self):
+        dash = self._makeApp()
+        db = self._makeDb(_TRACKS, _ENTRIES, username="łukasz")
+
+        resp = self._getAs(dash, db, "/export-history?format=csv", "łukasz")
+
+        self.assertEqual(resp.status_code, 200)
+        disposition = resp.headers["Content-Disposition"]
+        # What waitress does with every header line (task.py: res.encode("latin-1")).
+        disposition.encode("latin-1")
+        self.assertIn("attachment", disposition)
+        self.assertIn("filename*=UTF-8''spotify_stats_export_%C5%82ukasz_", disposition)
+        self.assertIn("filename=spotify_stats_export_ukasz_", disposition)
+        self.assertTrue(disposition.endswith(".csv"))
+
+    def test_an_ascii_username_keeps_the_plain_filename(self):
+        dash = self._makeApp()
+        resp = self._getAs(dash, self._makeSeededDb(), "/export-history?format=json", "alice")
+
+        disposition = resp.headers["Content-Disposition"]
+        self.assertIn("filename=spotify_stats_export_alice_", disposition)
+        self.assertNotIn("filename*", disposition)
+        self.assertTrue(disposition.endswith(".json"))
+
+    def _makeSeededDb(self):
+        return self._makeDb(_TRACKS, _ENTRIES, username="alice")
+
+
+class TestAttachmentDisposition(unittest.TestCase):
+    """The pure helper behind the header, so the encoding rule is pinned
+    without a request."""
+
+    def test_ascii_names_are_emitted_plainly(self):
+        self.assertEqual(exportModule.attachmentDisposition("export_alice.csv"),
+                         "attachment; filename=export_alice.csv")
+
+    def test_non_ascii_names_get_the_rfc5987_form_and_a_latin1_safe_line(self):
+        value = exportModule.attachmentDisposition("export_łukasz.csv")
+        value.encode("latin-1")
+        self.assertEqual(value, "attachment; filename=export_ukasz.csv; "
+                                "filename*=UTF-8''export_%C5%82ukasz.csv")
+
+    def test_latin1_but_non_ascii_names_take_the_same_form(self):
+        """jürgen would encode as latin-1, but a bare non-ASCII `filename=`
+        is undefined by RFC 6266 and browsers disagree on it - the * form is
+        the one that is defined."""
+        value = exportModule.attachmentDisposition("export_jürgen.csv")
+        value.encode("latin-1")
+        self.assertIn("filename=export_jurgen.csv", value)
+        self.assertIn("filename*=UTF-8''export_j%C3%BCrgen.csv", value)

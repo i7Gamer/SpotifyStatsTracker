@@ -259,8 +259,9 @@ def _render_event_template(
     where to go in words, since there's nothing reliable to link to."""
     link = _eventLink(event_type, base_url)
     # Escaped for the HTML bodies only (the text bodies are text/plain).
-    # Usernames are sanitized to [A-Za-z0-9_-] at creation today, so no
-    # metacharacter can actually reach these f-strings - but the escaping
+    # Usernames are sanitized at creation to str.isalnum() plus - and _
+    # (Unicode-aware, so ł or Cyrillic survive but no HTML metacharacter
+    # does), so none can actually reach these f-strings - but the escaping
     # decision was made nowhere (while _ctaButton right below escapes its
     # link), and a future switch to display names, which allow spaces and
     # more, would have turned the interpolation live silently.

@@ -12,7 +12,11 @@ export never holds the whole history in memory.
 import csv
 import io
 import json
+import unicodedata
 from datetime import datetime, timezone
+from urllib.parse import quote
+
+from werkzeug.http import dump_options_header
 
 EXPORT_CHUNK_SIZE = 5000         #< plays hydrated per round-trip while streaming an export
 EXPORT_CSV_COLUMNS = ("played_at_utc", "track_name", "artists", "album", "ms_played", "spotify_track_uri", "played_from")
@@ -310,3 +314,31 @@ def generatePlaylistXspf(tracks: list[dict], title: str = "Spotify Tracker Playl
         yield '    </track>\n'
     yield '  </trackList>\n'
     yield '</playlist>\n'
+
+
+#< What RFC 5987 lets stand unescaped inside a filename* value - the same set
+#  werkzeug.utils.send_file uses.
+RFC5987_SAFE_CHARS = "!#$&+-.^_`|~"
+
+
+def attachmentDisposition(filename: str) -> str:
+    """The Content-Disposition value for a download called `filename`.
+
+    Usernames are minted from the email's local part with str.isalnum(), which
+    is Unicode-aware, so a name built from one can carry ł, š, ğ, Cyrillic or
+    CJK - and waitress serializes every header line as latin-1, so a raw
+    `filename="..."` holding any of those could not be sent at all: the one
+    in-app export was unusable for that account (German umlauts happen to be
+    latin-1 and never showed it). This is RFC 6266 / 5987's shape, the one
+    werkzeug.utils.send_file emits: an ASCII `filename=` for clients that read
+    only that, plus `filename*=UTF-8\'\'...` carrying the real name. ASCII
+    names stay exactly as they were."""
+    try:
+        filename.encode("ascii")
+    except UnicodeEncodeError:
+        simple = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode("ascii")
+        names = {"filename": simple,
+                 "filename*": f"UTF-8''{quote(filename, safe=RFC5987_SAFE_CHARS)}"}
+    else:
+        names = {"filename": filename}
+    return dump_options_header("attachment", names)
