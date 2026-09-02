@@ -171,6 +171,40 @@ run('a superseded response does not clear the loading state of the live one', as
   }
 });
 
+run('a non-ok response rejects with the http status', async () => {
+  // navigate()'s graceful degradation (init()'s catch -> location.href) only
+  // kicks in if this rejects; a fetch that lands but 500s used to have no
+  // covering case at all.
+  const { AdminPage, pending, restore } = setupNavigableWindow('http://localhost/admin');
+  try {
+    const navigated = AdminPage.navigate('/admin?tab=sync');
+    pending[0]({ ok: false, status: 500, text: () => Promise.resolve('') });
+
+    await assert.rejects(navigated, /HTTP 500/,
+      'a non-ok response must reject naming its status');
+  } finally {
+    restore();
+  }
+});
+
+run('a response whose parsed document has no tab body rejects', async () => {
+  const { AdminPage, pending, restore } = setupNavigableWindow('http://localhost/admin');
+  try {
+    // Override the default stub (which always hands back an element for
+    // admin-tab-body) with one that mimics a response missing that section.
+    global.DOMParser = function () {
+      this.parseFromString = () => ({ getElementById: () => null });
+    };
+    const navigated = AdminPage.navigate('/admin?tab=sync');
+    pending[0](tabResponse('<div>no tab body in this response</div>'));
+
+    await assert.rejects(navigated, /tab body not found in response/,
+      'a response without #admin-tab-body must reject rather than swap in nothing');
+  } finally {
+    restore();
+  }
+});
+
 run('init seeds its own state even when a foreign one is already present', () => {
   // `!history.state` also skipped the seed for an entry whose state was written
   // by somebody else, and the popstate handler only re-renders on state.adminTab
