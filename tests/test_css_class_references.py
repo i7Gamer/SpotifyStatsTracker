@@ -201,6 +201,15 @@ class TestTheYearBadgeAndTheFilterButtonAreOnePill(unittest.TestCase):
 
         self.assertIn("var(--accent)", fills)
 
+    def test_a_pressed_filter_button_is_filled_without_the_class(self):
+        """The scripts set aria-pressed beside .active (UI-03); keying the
+        fill on the attribute too means a pill whose state and class ever
+        disagree shows it rather than hiding it."""
+        fills = [self.rules[order].declaration("background")
+                 for order in self._rulesHitting('<a class="stats-filter-button" aria-pressed="true"></a>')]
+
+        self.assertIn("var(--accent)", fills)
+
     def test_the_two_pill_rows_share_their_layout_rule(self):
         badges = self._rulesHitting('<nav class="wrapped-year-badges"></nav>')
         filters = self._rulesHitting('<nav class="wrapped-stats-filters"></nav>')

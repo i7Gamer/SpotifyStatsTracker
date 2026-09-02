@@ -151,6 +151,22 @@ class TestFragmentBranch(WrappedHtmxTestCase):
         self.assertEqual(kwargs["startDate"].year, 2024)
 
 
+class TestStatsFilterPressedState(WrappedHtmxTestCase):
+    """The category pills are toggle buttons whose state used to be a class
+    alone - a screen reader heard seven identical buttons. The fragment now
+    renders aria-pressed on every pill, true on exactly the one showing
+    (2026-09-02 review, UI-03; wrapped.js keeps it in step on click)."""
+
+    def test_every_pill_carries_aria_pressed_and_all_stats_is_the_one_pressed(self):
+        import bs4
+
+        pills = bs4.BeautifulSoup(self._fragment(), "html.parser").select(".stats-filter-button")
+
+        self.assertTrue(pills)
+        self.assertTrue(all(pill.has_attr("aria-pressed") for pill in pills))
+        self.assertEqual([pill["data-filter"] for pill in pills if pill["aria-pressed"] == "true"], ["all"])
+
+
 class TestShell(WrappedHtmxTestCase):
     def test_the_page_serves_htmx_from_this_origin(self):
         """config.py's Content-Security-Policy allows script-src 'self' only,

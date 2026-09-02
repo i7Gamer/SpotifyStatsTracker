@@ -38,7 +38,9 @@ function makeClassList(initial) {
 function makeElement(extra) {
   return Object.assign({
     id: '', style: {}, value: '', textContent: '', innerHTML: null, className: '',
-    dataset: {}, classList: makeClassList(),
+    dataset: {}, classList: makeClassList(), attrs: {},
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; },
     addEventListener(type, fn) { (this.handlers = this.handlers || {})[type] = fn; },
     closest() { return null; },
     matches() { return false; },
@@ -194,6 +196,9 @@ run('All Stats shows every category on load', () => {
   assert.strictEqual(dom.songSection.classList.contains('visible'), true);
   assert.strictEqual(dom.podcastSection.classList.contains('visible'), true);
   assert.strictEqual(dom.all.classList.contains('active'), true);
+  //< the state a screen reader hears - written beside the class, every time
+  assert.strictEqual(dom.all.getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(dom.songs.getAttribute('aria-pressed'), 'false');
 });
 
 run('choosing a category shows only it', () => {
@@ -206,6 +211,8 @@ run('choosing a category shows only it', () => {
   assert.strictEqual(dom.podcastSection.classList.contains('visible'), false);
   assert.strictEqual(dom.songs.classList.contains('active'), true);
   assert.strictEqual(dom.all.classList.contains('active'), false);
+  assert.strictEqual(dom.songs.getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(dom.all.getAttribute('aria-pressed'), 'false');
 });
 
 run('a category the new year does not have falls back to All, not a blank page', () => {

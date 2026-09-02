@@ -149,8 +149,14 @@ if (typeof document !== 'undefined') {
     button.addEventListener('click', function () {
       var filter = button.dataset.filter;
 
-      compareFilterButtons.forEach(function (btn) { btn.classList.remove('active'); });
+      //< aria-pressed moves with the class: the pressed pill is otherwise
+      //  colour alone, and a toggle button's state is what a screen reader reads
+      compareFilterButtons.forEach(function (btn) {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-pressed', 'false');
+      });
       button.classList.add('active');
+      button.setAttribute('aria-pressed', 'true');
 
       compareCategoryDivs.forEach(function (div) {
         if (filter === 'all' || div.dataset.category === filter) {

@@ -1737,6 +1737,23 @@ class TestDetailPageDeferredBody(_DetailRouteTestBase):
                 self.assertTrue(body.strip().startswith(
                     '<section id="track-list" class="track-list">'), body[:120])
 
+    def test_the_body_tabs_carry_aria_pressed_for_the_open_view(self):
+        """The Top Songs / History tabs are toggle buttons whose state was a
+        class alone (2026-09-02 review, UI-03): the body renders aria-pressed
+        on both, true on the tab ?view= opened, and detail-history.js keeps
+        it in step on click."""
+        import bs4
+        for path, pressed in (("/artist/a1", "top-songs"), ("/album/alb1?view=history", "history")):
+            with self.subTest(path=path):
+                dash = self._makeApp()
+
+                body = self._getRaw(dash, self._db(), path, headers=HX_BODY_HEADERS).get_data(as_text=True)
+                tabs = bs4.BeautifulSoup(body, "html.parser").select(".stats-filter-button")
+
+                self.assertEqual(len(tabs), 2)
+                self.assertTrue(all(tab.has_attr("aria-pressed") for tab in tabs))
+                self.assertEqual([tab["data-filter"] for tab in tabs if tab["aria-pressed"] == "true"], [pressed])
+
     def test_the_shell_disables_the_bucket_select_until_the_body_lands(self):
         """Its ?ajax=true refetch targets a chart that isn't on the page yet,
         and its result would be overwritten by the body payload in flight."""

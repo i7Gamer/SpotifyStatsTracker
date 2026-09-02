@@ -33,7 +33,9 @@ function makeClassList() {
 
 function makeElement(extra) {
   return Object.assign({
-    dataset: {}, classList: makeClassList(), children: [],
+    dataset: {}, classList: makeClassList(), children: [], attrs: {},
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; },
     addEventListener(type, fn) { (this.handlers = this.handlers || {})[type] = fn; },
     contains(node) { return this.children.indexOf(node) !== -1; },
   }, extra || {});
@@ -100,6 +102,9 @@ run('switching to History shows its pane and marks its tab', () => {
   assert.strictEqual(dom.topSongsPane.classList.contains('visible'), false);
   assert.strictEqual(dom.history.classList.contains('active'), true);
   assert.strictEqual(dom.topSongs.classList.contains('active'), false);
+  //< the state a screen reader hears - written beside the class, every time
+  assert.strictEqual(dom.history.getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(dom.topSongs.getAttribute('aria-pressed'), 'false');
 });
 
 run('the tab is written into the URL by REPLACING, never pushing', () => {

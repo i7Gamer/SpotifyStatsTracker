@@ -45,7 +45,13 @@
   // replaceStates for the same reason every other update here does: Back must
   // leave the detail page rather than step back through its tab states.
   function activateView(view, replaceUrl) {
-    filterButtons.forEach(function (btn) { btn.classList.toggle('active', btn.dataset.filter === view); });
+    filterButtons.forEach(function (btn) {
+      var pressed = btn.dataset.filter === view;
+      btn.classList.toggle('active', pressed);
+      //< aria-pressed moves with the class: the pressed tab is otherwise
+      //  colour alone, and a toggle button's state is what a screen reader reads
+      btn.setAttribute('aria-pressed', String(pressed));
+    });
     categoryDivs.forEach(function (div) { div.classList.toggle('visible', div.dataset.category === view); });
     if (replaceUrl) {
       var params = new URLSearchParams(window.location.search);

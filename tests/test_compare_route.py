@@ -122,6 +122,21 @@ class TestCompareRoute(AppTestCase):
         _, data = self._ajax(client, url)
         return shellResp.data.decode("utf-8") + self._ajaxHtml(data)
 
+    def test_filter_pills_carry_aria_pressed_with_all_stats_pressed(self):
+        """The category pills are toggle buttons whose state was a class alone
+        (2026-09-02 review, UI-03); the shell renders aria-pressed on each,
+        true on All Stats only, and compare.js keeps it in step on click."""
+        import bs4
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        shell = client.get("/compare").get_data(as_text=True)
+        pills = bs4.BeautifulSoup(shell, "html.parser").select(".stats-filter-button")
+
+        self.assertTrue(pills)
+        self.assertTrue(all(pill.has_attr("aria-pressed") for pill in pills))
+        self.assertEqual([pill["data-filter"] for pill in pills if pill["aria-pressed"] == "true"], ["all"])
+
     def test_shows_empty_state_with_no_accepted_shares(self):
         """A real page pointing at Profile's Data Sharing section, not a bare
         404 - see routes/compare.py's comparePage() and compare_empty.html."""

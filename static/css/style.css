@@ -3266,8 +3266,11 @@ input[type="checkbox"], input[type="radio"] {
   background: var(--accent-glow);
 }
 
+/* The filter buttons also key the fill on aria-pressed, which the page
+   scripts set beside the class, so the two cannot drift apart unnoticed. */
 .wrapped-year-badge.active,
-.stats-filter-button.active {
+.stats-filter-button.active,
+.stats-filter-button[aria-pressed="true"] {
   background: var(--accent);
   color: #111;
 }

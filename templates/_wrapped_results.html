@@ -113,13 +113,13 @@
    nav always leads with All Stats, and wrapped.js re-applies whatever the user
    had chosen (see applyStatsFilter). #}
 <nav class="wrapped-stats-filters" aria-label="Filter statistics by category">
-  <button class="stats-filter-button active" data-filter="all">All Stats</button>
-  <button class="stats-filter-button" data-filter="top-songs">Top Songs</button>
-  <button class="stats-filter-button" data-filter="top-artists">Top Artists</button>
-  <button class="stats-filter-button" data-filter="top-albums">Top Albums</button>
-  <button class="stats-filter-button" data-filter="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>Discovered Songs</button>
-  <button class="stats-filter-button" data-filter="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>Discovered Artists</button>
-  <button class="stats-filter-button" data-filter="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>Discovered Albums</button>
+  <button class="stats-filter-button active" aria-pressed="true" data-filter="all">All Stats</button>
+  <button class="stats-filter-button" aria-pressed="false" data-filter="top-songs">Top Songs</button>
+  <button class="stats-filter-button" aria-pressed="false" data-filter="top-artists">Top Artists</button>
+  <button class="stats-filter-button" aria-pressed="false" data-filter="top-albums">Top Albums</button>
+  <button class="stats-filter-button" aria-pressed="false" data-filter="discoveries-songs" {% if not discoveredSongs %}style="display: none;"{% endif %}>Discovered Songs</button>
+  <button class="stats-filter-button" aria-pressed="false" data-filter="discoveries-artists" {% if not discoveredArtists %}style="display: none;"{% endif %}>Discovered Artists</button>
+  <button class="stats-filter-button" aria-pressed="false" data-filter="discoveries-albums" {% if not discoveredAlbums %}style="display: none;"{% endif %}>Discovered Albums</button>
 </nav>
 
 <div data-category="top-songs">

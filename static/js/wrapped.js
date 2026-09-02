@@ -92,7 +92,11 @@ if (typeof document !== 'undefined') {
     }
     activeStatsFilter = filter;
     document.querySelectorAll('.stats-filter-button').forEach(function (button) {
-      button.classList.toggle('active', button.dataset.filter === filter);
+      var pressed = button.dataset.filter === filter;
+      button.classList.toggle('active', pressed);
+      //< aria-pressed moves with the class: the pressed pill is otherwise
+      //  colour alone, and a toggle button's state is what a screen reader reads
+      button.setAttribute('aria-pressed', String(pressed));
     });
     document.querySelectorAll('[data-category]').forEach(function (div) {
       div.classList.toggle('visible', filter === STATS_FILTER_ALL || div.dataset.category === filter);
