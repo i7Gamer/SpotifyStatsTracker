@@ -24,6 +24,7 @@ import os
 import random
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -186,18 +187,33 @@ class BackupWorker(WorkerTelemetryMixin):
         return sorted(p for p in self.backupDir.iterdir()
                       if p.is_file() and p.name.startswith(BACKUP_FILENAME_PREFIX) and p.suffix == ".db")
 
-    def newestBackupTime(self) -> float | None:
+    def _newestBackupFile(self) -> Path | None:
         files = self._backupFiles()
-        return files[-1].stat().st_mtime if files else None
+        return files[-1] if files else None
+
+    def newestBackupTime(self) -> float | None:
+        newestFile = self._newestBackupFile()
+        return newestFile.stat().st_mtime if newestFile is not None else None
 
     def isDue(self) -> bool:
         if not self.isEnabled():
             return False
-        newest = self.newestBackupTime()
-        if newest is None:
+        newestFile = self._newestBackupFile()
+        if newestFile is None:
             return True
-        import time
-        return time.time() - newest >= self.intervalHours * 3600
+        elapsed = time.time() - newestFile.stat().st_mtime
+        if elapsed < 0:
+            # A clock that stepped backward (or a snapshot with a bogus future
+            # mtime) would otherwise wedge this into "never due again": the
+            # delta only grows more negative, so the interval threshold below
+            # is never crossed again. Treat it as due instead of silently
+            # stopping scheduled backups forever.
+            logger.warning(
+                "Newest backup %s has a timestamp ahead of the system clock "
+                "(mtime is %.0fs in the future); treating a backup as due",
+                newestFile, -elapsed)
+            return True
+        return elapsed >= self.intervalHours * 3600
 
     def isBackupRunning(self) -> bool:
         """True while a snapshot is in progress anywhere in this process.

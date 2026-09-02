@@ -417,6 +417,23 @@ class TestIsDue(BackupWorkerTestCase):
 
         self.assertTrue(worker.isDue())
 
+    def test_due_when_the_newest_backup_is_ahead_of_the_system_clock(self):
+        """A clock that stepped backward (or a file with a bogus future mtime)
+        must not permanently wedge isDue() into "never due again" - the naive
+        `time.time() - newest` comparison never crosses the interval threshold
+        again once the delta goes negative, so a skewed clock would silently
+        stop scheduled backups forever."""
+        worker = self._makeWorker(intervalHours=1)
+        backupPath = worker.runBackup()
+        futureTime = time.time() + 24 * 3600
+        os.utime(backupPath, (futureTime, futureTime))
+
+        with self.assertLogs(backupModule.logger, level="WARNING") as logs:
+            self.assertTrue(worker.isDue())
+
+        self.assertTrue(any(str(backupPath) in message for message in logs.output),
+                        f"expected a warning naming {backupPath} in {logs.output}")
+
 
 class TestConfiguration(BackupWorkerTestCase):
     def test_disabled_via_zero_interval(self):
