@@ -65,6 +65,10 @@ ENV_VAR_NAMES_WITH_CONSTANTS = frozenset({
     "DATA_ENCRYPTION_KEY", "FLASK_SECRET_KEY",
     "SPOTIFY_CALLBACK_URL", "SKIP_EMAIL_VERIFICATION", "IMPORT_KEYWORD",
 })
+# Read by the app without a *_ENV_VAR constant: FLASK_DEBUG through its one
+# reader (the gate above), WAITRESS_THREADS by wsgi.py at the last moment
+# before serve(). Listed so the documentation gate still knows about them.
+ENV_VAR_NAMES_WITHOUT_CONSTANTS = frozenset({"FLASK_DEBUG", "WAITRESS_THREADS"})
 
 
 def _productionSources():
@@ -192,3 +196,19 @@ class TestEnvVarNamesAreSpelledOnce(unittest.TestCase):
             offenders, [],
             "env var names must be read through their *_ENV_VAR constant, not "
             f"spelled as a literal:\n" + "\n".join(offenders))
+
+
+class TestEveryEnvVarIsDocumented(unittest.TestCase):
+    """An operator learns what the app reads from README.md's compose snippet
+    (one commented `#<` line per optional knob), not from the source. Two
+    knobs - WAITRESS_THREADS and SPOTIFY_TOTP_AUTO_RECOVER - were readable
+    only by grepping os.environ. Structural, for the same reason as the gates
+    above: an undocumented variable misbehaves nowhere."""
+
+    def test_the_readme_names_every_variable_the_app_reads(self):
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        names = set(TestEnvVarNamesAreSpelledOnce._definitions()) | ENV_VAR_NAMES_WITHOUT_CONSTANTS
+
+        self.assertEqual(
+            sorted(name for name in names if name not in readme), [],
+            "these env vars are read by the app but never mentioned in README.md")

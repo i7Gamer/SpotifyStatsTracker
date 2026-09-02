@@ -14,8 +14,10 @@ services:
       # - SPOTIFY_CALLBACK_URL=http://localhost:5000/spotify-callback  #< Uncomment and set to your public callback URL to enable Spotify Web API backfilling
       # - IMPORT_KEYWORD=Weekly       #< Uncomment to auto-import only files whose name contains this keyword
       # - FLASK_DEBUG=1               #< Verbose Flask logging - enable when reporting an issue
+      # - WAITRESS_THREADS=16         #< Request-handling threads; default 16 (each dashboard page fans out several requests per user), floor 1. Only worth raising if pages queue up with many people browsing at once
       # - SKIP_EMAIL_VERIFICATION=1   #< Uncomment to disable the "do these cookies belong to this email" check at login (only do this if you trust everyone who can reach this instance - it's what stops one user from claiming another's account, AND what stops /reset-password from letting anyone set a new password on any account)
       # - SPOTIFY_TOTP_SECRET=61:44,55,...  #< Emergency override for the pinned Spotify TOTP secret. Only needed if Spotify rotates it and logins start failing instance-wide before a fixed release is out - the log line at that point tells you so. Format is "<version>:<comma-separated bytes>"; a malformed value is ignored (with an error logged) rather than taking login offline.
+      # - SPOTIFY_TOTP_AUTO_RECOVER=0 #< On by default: once 3 session-token requests in a row fail (the sign Spotify rotated that secret) the app reads the current one from Spotify's own web player and adopts it, retrying at most every 15 minutes. Set to 0 if you would rather nothing touched authentication on its own - then only SPOTIFY_TOTP_SECRET or a fixed release gets logins back.
     restart: always
     # Shutdown stops every user's listener, watchdog and five periodic workers,
     # each on a bounded join, one user after another - more than Docker's
