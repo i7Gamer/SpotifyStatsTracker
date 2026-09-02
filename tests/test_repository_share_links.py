@@ -127,6 +127,71 @@ class TestExpiredShareLinkLazyDeletion(RepositoryShareLinksTestCase):
         self.assertIsNotNone(self.repo.getShareLink(liveToken))
 
 
+class TestOneExpirySweep(RepositoryShareLinksTestCase):
+    """The lazy expiry DELETE used to be spelled three times across two query
+    modules (getShareLink by token, getShareLinksForUser by username, and
+    the admin card's getActiveShareLinksCount over every row - that one in
+    settings.py, away from the table it sweeps), with nothing pinning the
+    three to each other or to countActiveShareLinksForBucket's inverse
+    predicate. One ShareQueries._purgeExpiredShareLinks now carries the
+    predicate; the readers only narrow it (2026-09-02 review, R8)."""
+
+    _EXPIRED = -10
+
+    def test_every_reader_sees_an_expired_link_as_gone(self):
+        expiredToken = self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=self._EXPIRED)
+
+        self.assertIsNone(self.repo.getShareLink(expiredToken))
+        self.assertEqual(self.repo.getShareLinksForUser("alice"), [])
+        self.assertEqual(self.repo.getActiveShareLinksCount(), 0)
+        self.assertEqual(self.repo.countActiveShareLinksForBucket("alice", "wrapped", 2026), 0)
+
+    def test_the_count_lives_beside_the_table_it_sweeps(self):
+        self.assertIn("getActiveShareLinksCount", sharesModule.ShareQueries.__dict__)
+
+    def test_the_three_readers_share_the_helper(self):
+        """Patched at the class so the repo's own bound call is what is
+        recorded; the narrowing clause each reader passes is what keeps the
+        by-token and by-username sweeps from becoming an instance-wide one."""
+        token = self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=None)
+        with patch.object(Repository, "_purgeExpiredShareLinks") as purge:
+            self.repo.getShareLink(token)
+            self.repo.getShareLinksForUser("alice")
+            self.repo.getActiveShareLinksCount()
+
+        self.assertEqual(purge.call_count, 3)
+        byToken, byUser, everything = purge.call_args_list
+        self.assertEqual(byToken.kwargs.get("params"), (token,))
+        self.assertIn("token", byToken.kwargs.get("extraWhere", ""))
+        self.assertEqual(byUser.kwargs.get("params"), ("alice",))
+        self.assertIn("username", byUser.kwargs.get("extraWhere", ""))
+        self.assertEqual(everything.kwargs.get("extraWhere", ""), "")
+
+    def test_the_helper_only_purges_what_its_clause_selects(self):
+        """A narrowed sweep must leave every other user's expired rows for
+        their own readers to purge - the instance-wide sweep is the admin
+        card's alone."""
+        self.repo.createShareLink("alice", "wrapped", 2025, expiresInSeconds=self._EXPIRED)
+        self.repo.createShareLink("bob", "wrapped", 2025, expiresInSeconds=self._EXPIRED)
+        conn = self.repo._conn()
+
+        self.repo._purgeExpiredShareLinks(conn, extraWhere=" AND username=?", params=("alice",))
+        remaining = [r["username"] for r in conn.execute("SELECT username FROM share_links").fetchall()]
+        self.assertEqual(remaining, ["bob"])
+
+        self.repo._purgeExpiredShareLinks(conn)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM share_links").fetchone()[0], 0)
+
+    def test_the_helper_leaves_unexpired_and_never_expiring_rows(self):
+        self.repo.createShareLink("alice", "wrapped", 2025, expiresInSeconds=None)
+        self.repo.createShareLink("alice", "wrapped", 2026, expiresInSeconds=3600)
+        conn = self.repo._conn()
+
+        self.repo._purgeExpiredShareLinks(conn)
+
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM share_links").fetchone()[0], 2)
+
+
 class TestGetShareLinksForUser(RepositoryShareLinksTestCase):
     def test_orders_newest_year_first(self):
         self.repo.createShareLink("alice", "wrapped", 2023, expiresInSeconds=None)

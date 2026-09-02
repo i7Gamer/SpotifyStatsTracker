@@ -589,16 +589,3 @@ class SettingQueries:
             if row["status"] in counts:
                 counts[row["status"]] = row["c"]
         return counts
-
-    def getActiveShareLinksCount(self) -> int:
-        """How many public Wrapped share links are currently live (not
-        expired) across every user. Lazily deletes expired rows first, same
-        pattern as getShareLink/getShareLinksForUser."""
-        conn = self._conn()
-        now = time.time()
-        with conn:
-            conn.execute("DELETE FROM share_links WHERE expires_at IS NOT NULL AND expires_at < ?", (now,))
-        row = conn.execute(
-            "SELECT COUNT(*) FROM share_links WHERE expires_at IS NULL OR expires_at >= ?", (now,)
-        ).fetchone()
-        return row[0]

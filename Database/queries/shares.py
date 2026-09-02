@@ -234,6 +234,23 @@ class ShareQueries:
                 return None
             return self.createShareLink(username, kind, year, expiresInSeconds)
 
+    def _purgeExpiredShareLinks(self, conn, extraWhere: str = "", params: tuple = ()) -> None:
+        """The lazy expiry sweep every share_links reader runs first - see
+        the table comment in Database/db.py for why there is no background
+        sweep. `extraWhere` is an `AND ...` clause (with its `params`) that
+        narrows the sweep to the rows the caller is about to read: by token
+        for getShareLink, by username for getShareLinksForUser, and nothing
+        for the admin card's instance-wide getActiveShareLinksCount. The ONE
+        spelling of "expired" - countActiveShareLinksForBucket filters on
+        the inverse, so a change to the rule (a grace period, say) is those
+        two sites, not four. Self-committing (`with conn:`), like every
+        share-link write."""
+        with conn:
+            conn.execute(
+                "DELETE FROM share_links WHERE expires_at IS NOT NULL AND expires_at < ?" + extraWhere,
+                (time.time(), *params),
+            )
+
     def getShareLink(self, token: str) -> dict | None:
         """None for an unknown, revoked, or expired token - all three look
         identical to a caller, so the public route can't leak which case it
@@ -241,11 +258,7 @@ class ShareQueries:
         a background sweep - see the share_links table comment in
         Database/db.py."""
         conn = self._conn()
-        with conn:
-            conn.execute(
-                "DELETE FROM share_links WHERE token=? AND expires_at IS NOT NULL AND expires_at < ?",
-                (token, time.time()),
-            )
+        self._purgeExpiredShareLinks(conn, extraWhere=" AND token=?", params=(token,))
         row = conn.execute(
             "SELECT id, token, username, kind, year, created_at, expires_at FROM share_links WHERE token=?",
             (token,),
@@ -260,17 +273,25 @@ class ShareQueries:
         getShareLink) - otherwise an expired link would keep showing here as
         if still active, even though visiting it would already 404."""
         conn = self._conn()
-        with conn:
-            conn.execute(
-                "DELETE FROM share_links WHERE username=? AND expires_at IS NOT NULL AND expires_at < ?",
-                (username, time.time()),
-            )
+        self._purgeExpiredShareLinks(conn, extraWhere=" AND username=?", params=(username,))
         rows = conn.execute(
             "SELECT id, token, kind, year, created_at, expires_at FROM share_links "
             "WHERE username=? ORDER BY year DESC, created_at DESC",
             (username,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def getActiveShareLinksCount(self) -> int:
+        """How many public Wrapped share links are currently live (not
+        expired) across every user - the admin page's instance-wide card.
+        Lazily deletes expired rows first, same pattern as getShareLink/
+        getShareLinksForUser but unnarrowed."""
+        conn = self._conn()
+        self._purgeExpiredShareLinks(conn)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM share_links WHERE expires_at IS NULL OR expires_at >= ?", (time.time(),)
+        ).fetchone()
+        return row[0]
 
     def countActiveShareLinksForBucket(self, username: str, kind: str, year: int | None) -> int:
         """How many still-active (non-expired) links exist for one user's
@@ -281,7 +302,9 @@ class ShareQueries:
         all-years bucket (year IS NULL) and a specific year without a
         CASE/OR. Doesn't lazily delete expired rows first like getShareLink/
         getShareLinksForUser do - an expired row already fails the
-        expires_at filter below so it can't inflate the count."""
+        expires_at filter below so it can't inflate the count. That filter
+        is the INVERSE of _purgeExpiredShareLinks's predicate; change the
+        two together."""
         conn = self._conn()
         row = conn.execute(
             "SELECT COUNT(*) AS n FROM share_links WHERE username=? AND kind=? AND year IS ? "
