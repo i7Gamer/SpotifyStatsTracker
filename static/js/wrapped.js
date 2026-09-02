@@ -231,7 +231,8 @@ if (typeof document !== 'undefined') {
   // Escape dropped it from the now display:none button to <body>. Same rule as
   // layout-chrome.js's drawer. The fallback is the Share button, for a dialog
   // the server rendered open (?openShareModal=1) that nothing on the page
-  // opened.
+  // opened - that case is focused on load too, right below, since opening it
+  // never runs through openShareModal().
 
   var shareModalOpener = null;
 
@@ -263,6 +264,16 @@ if (typeof document !== 'undefined') {
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeShareModal();
   });
+
+  // ?openShareModal=1 renders the dialog already open (share-link create,
+  // revoke and rate-limit redirects all use it) - nothing on the page called
+  // openShareModal() to focus it, so a keyboard user lands with focus still on
+  // <body> and role="dialog" never gets announced. Leave shareModalOpener
+  // null: closing this one still falls back to the Share button, same as today.
+  var serverOpenedModal = byId('shareLinkModal');
+  if (serverOpenedModal && serverOpenedModal.style.display === 'flex') {
+    serverOpenedModal.querySelector('.share-modal-close')?.focus();
+  }
 
   var showShareLinkError = function (message) {
     var panelBody = byId('shareLinkPanelBody');

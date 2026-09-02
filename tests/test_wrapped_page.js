@@ -321,16 +321,20 @@ run('an unknown theme falls back to the default rather than drawing nothing', ()
 // ----------------------------------------------------------- share modal
 
 function modalSetup(options) {
+  options = options || {};
   const closeBtn = makeElement();
   const modal = makeElement({
     id: 'shareLinkModal',
     querySelector(selector) { return selector === '.share-modal-close' ? closeBtn : null; },
   });
+  //< ?openShareModal=1 renders the modal already open - set before loadWrapped
+  //  requires the script, so wrapped.js sees it exactly as it would on load
+  if (options.serverOpened) modal.style.display = 'flex';
   const openBtn = makeElement();
   const panelBody = makeElement();
   const page = loadWrapped(Object.assign({
     elements: { shareLinkModal: modal, shareWrappedBtn: openBtn, shareLinkPanelBody: panelBody },
-  }, options || {}));
+  }, options));
   return { page, modal, openBtn, panelBody, closeBtn };
 }
 
@@ -392,10 +396,18 @@ run('every close path returns focus to whatever opened the dialog', () => {
   assert.strictEqual(dom.openBtn.focused, 3, 'the overlay');
 });
 
+run('a dialog the server opened is focused on load', () => {
+  //< ?openShareModal=1 renders it open with focus still on <body> - nothing
+  //  on the page called openShareModal() to move it there
+  const dom = modalSetup({ serverOpened: true });
+
+  assert.strictEqual(dom.closeBtn.focused, 1);
+});
+
 run('a dialog the server opened returns focus to the Share button', () => {
-  //< ?openShareModal=1 renders it open, so nothing on the page opened it
-  const dom = modalSetup();
-  dom.modal.style.display = 'flex';
+  //< ?openShareModal=1 renders it open, so nothing on the page opened it -
+  //  shareModalOpener stays null and Escape must still fall back
+  const dom = modalSetup({ serverOpened: true });
 
   dom.page.docListeners.keydown({ key: 'Escape' });
 
