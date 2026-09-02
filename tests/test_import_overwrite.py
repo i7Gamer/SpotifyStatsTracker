@@ -14,7 +14,8 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from conftest import DatabaseTestCase, normalizeTrackForTest
+from conftest import DatabaseTestCase, RecordingConnection, normalizeTrackForTest
+from Database.database import Database
 from Database.utils import getTimezone
 
 
@@ -341,6 +342,76 @@ class TestOverwriteGating(_OverwriteTestBase):
         self._runBatch(db, {"file 2019": ((_ts(2019, 2), _ts(2019, 11), {2019}), lambda: iter([]))})
 
         self.assertEqual(self._cachedYears(db), {2015})
+
+
+class TestOverwriteStagingProgress(_OverwriteTestBase):
+    """Phase 1 of an overwrite (parse + Spotify metadata fetch, the
+    limiter-paced phase that dominates a big export) used to hand
+    _stageImportData a no-op reporter, so the row read "File 1/1: Fetching
+    metadata" at 0% from the first lookup to the last and then jumped to
+    complete. The no-op exists for Phase 2 only - writeProgress self-commits,
+    and nothing may self-commit while the covered-range delete and the
+    staged rows sit uncommitted on the connection (the INVARIANT in
+    Database/import_service.py). Staging holds no transaction, so the real
+    reporter is safe there (2026-09-02 review, CORE-5).
+
+    The second test pins that invariant structurally, with the recording
+    technique test_guard_transactions uses: every import_progress write must
+    run with NO transaction open, so a reporter handed to Phase 2 by mistake
+    shows up as a write inside one."""
+
+    ENTRY_COUNT = 3 * Database.PROGRESS_UPDATE_INTERVAL
+    _PLAY_SPACING_SECONDS = 600   #< well past the near-time dedup tolerance
+
+    def _fileSpecsWithEntries(self):
+        metas = [_meta("tX", _ts(2019, 3) + i * self._PLAY_SPACING_SECONDS)
+                 for i in range(self.ENTRY_COUNT)]
+        return {"file 2019": ((_ts(2019, 1, 5), _ts(2019, 12, 20), {2019}),
+                              lambda: iter(metas))}
+
+    def _mockImporter(self, fileSpecs):
+        """The base mock parses every file to ONE entry; staging counts
+        progress against len(parsedHistory), so the file has to parse to as
+        many entries as the generator yields."""
+        importer = super()._mockImporter(fileSpecs)
+        importer._convertToList.side_effect = lambda content: ([{}] * self.ENTRY_COUNT, "spotifyExtendedExport")
+        return importer
+
+    def test_the_bar_moves_per_entry_while_metadata_is_fetched(self):
+        db = self._makeDb({}, [])
+        with patch.object(db, "writeProgress", wraps=db.writeProgress) as progress:
+            outcomes = self._runBatch(db, self._fileSpecsWithEntries())
+
+        self.assertEqual(outcomes, ["imported"])
+        messages = [call.args[3] for call in progress.call_args_list]
+        fetching = next(i for i, m in enumerate(messages) if "Fetching metadata" in m)
+        applying = next(i for i, m in enumerate(messages) if m.startswith("Overwrite: applying"))
+        entryRows = [(call.args[1], call.args[2]) for call in progress.call_args_list[fetching + 1:applying]
+                     if call.args[2] == self.ENTRY_COUNT and call.args[1] > 0]
+        interval = Database.PROGRESS_UPDATE_INTERVAL
+        self.assertEqual(entryRows, [(interval, self.ENTRY_COUNT), (2 * interval, self.ENTRY_COUNT),
+                                     (self.ENTRY_COUNT, self.ENTRY_COUNT)])
+        self.assertEqual(db.readProgress()["status"], "complete")
+
+    def test_no_progress_write_runs_inside_the_overwrite_transaction(self):
+        db = self._makeDb({}, [
+            {"id": "old19", "playedAt": _ts(2019), "timePlayed": 60000},   #< something for Phase 2 to delete
+        ])
+        log = []
+        proxy = RecordingConnection(db.repo._conn(), log)
+        #< instance attribute shadowing the class method; `del` restores the
+        #  class lookup exactly (the test_guard_transactions pattern)
+        db.repo._conn = lambda: proxy
+        try:
+            outcomes = self._runBatch(db, self._fileSpecsWithEntries())
+        finally:
+            del db.repo._conn
+
+        self.assertEqual(outcomes, ["imported"])
+        progressWrites = [inTx for sql, inTx in log if "import_progress" in sql.lower()]
+        self.assertGreater(len(progressWrites), 2, "the fixture reported no per-entry progress")
+        self.assertTrue(any(inTx for _, inTx in log), "Phase 2 never opened a transaction")
+        self.assertFalse(any(progressWrites), "a progress write ran inside the overwrite transaction")
 
 
 class TestOverwriteAbortsOnAmbiguousMatches(_OverwriteTestBase):

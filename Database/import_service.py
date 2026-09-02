@@ -202,9 +202,9 @@ class ImportMixin:
         transaction per file, so writeProgress's self-commits are safe here.
         The atomic overwrite batch never comes through this method - it
         drives _stageImportData/_applyImportData directly with
-        deferCommit=True and its own no-op progress reporter, because a
-        self-commit would flush a prior file's staged writes mid-batch (see
-        _importHistoryBatchOverwriteLocked). A deferCommit parameter used to
+        deferCommit=True, handing the APPLY phase a no-op progress reporter
+        because a self-commit there would flush a prior file's staged writes
+        mid-batch (see _importHistoryBatchOverwriteLocked). A deferCommit parameter used to
         exist here for that batch and was never called with it; had it been,
         the staging-failure rollback below would have discarded a prior
         file's staged writes in a transaction this method does not own."""
@@ -286,10 +286,12 @@ class ImportMixin:
             stagedTracks[track["id"]] = track
             stagedPlays.append(entry)
             if deferCommit:
-                # saveImagesFromTrack -> tryClaimImageDownload self-commits (same
-                # INVARIANT as reportProgress) and a deferCommit batch may already
-                # have rows staged - claim images only after the final commit,
-                # see _importHistoryBatchOverwriteLocked.
+                # saveImagesFromTrack -> tryClaimImageDownload self-commits (the
+                # INVARIANT the overwrite batch's apply phase protects; harmless
+                # here, where no transaction is open - reportProgress is the
+                # real writeProgress on this path for that reason) - the batch
+                # claims images only after its final commit, see
+                # _importHistoryBatchOverwriteLocked.
                 runState.pendingImageTracks[track["id"]] = track
             else:
                 # Safe here: Phase 2 hasn't run, so nothing is staged on the
@@ -297,7 +299,9 @@ class ImportMixin:
                 self.saveImagesFromTrack(track)
 
             if index % self.PROGRESS_UPDATE_INTERVAL == 0 or index == total:
-                reportProgress("running", index, total, f"{progressPrefix}Imported {index} of {total}")
+                #< "Fetched", not "Imported": nothing is written until Phase 2,
+                #  and in an overwrite batch that is after EVERY file's fetch
+                reportProgress("running", index, total, f"{progressPrefix}Fetched {index} of {total}")
 
         # A file nothing could be read from fails as loudly as an unrecognized
         # one, and for the same reason. _convertToList types a file from its
@@ -771,6 +775,10 @@ class ImportMixin:
             return ["failed"] * total
         minStart, maxEnd, coveredYears = coverage
 
+        # Phase 2's reporter ONLY. writeProgress self-commits, and the apply
+        # phase holds the covered-range delete and every file's rows
+        # uncommitted on the connection (the INVARIANT below) - so it gets a
+        # no-op, and its per-file completion lines never surface.
         def noProgress(*args, **kwargs):
             return None
 
@@ -778,6 +786,10 @@ class ImportMixin:
         # memory. Holds NO write transaction, so these network-bound lookups
         # can't block other writers. writeProgress here is safe: nothing is
         # staged on the connection during staging, only in-memory structures.
+        # So staging gets the REAL reporter, as the non-overwrite path's
+        # importHistory gives it: this limiter-paced phase dominates a big
+        # export, and with the no-op it sat at "Fetching metadata" and 0%
+        # from the first lookup to the last, then jumped to complete.
         runState = _dbmod._ImportRunState()
         importer = None
         try:
@@ -788,7 +800,7 @@ class ImportMixin:
                 progressPrefix = f"File {index}/{total}: "
                 self.writeProgress("running", index - 1, total, f"{progressPrefix}Fetching metadata")
                 staged = self._stageImportData(importer, content, progressPrefix,
-                                               False, noProgress, runState, deferCommit=True,
+                                               False, self.writeProgress, runState, deferCommit=True,
                                                knownTracks=knownTracks)
                 if staged is not None:
                     # Feed this file's fetched tracks forward so a later file
@@ -889,8 +901,9 @@ class ImportMixin:
                 _dbmod.logger.warning("Overwrite import committed, but queueing cover art for track %s "
                                       "failed: %s", track.get("id"), _dbmod.parseError(e))
 
-        # Per-file progress is routed to noProgress in overwrite mode, so this
-        # line is the only place a permanent drop can surface at all.
+        # Phase 2's per-file completion lines are routed to noProgress in
+        # overwrite mode, so this line is the only place a permanent drop can
+        # surface at all.
         summary = f"Overwrite import complete: {total}/{total} files imported"
         permanentDropped = droppedStats.get("droppedNoTrack", 0)
         if permanentDropped:
