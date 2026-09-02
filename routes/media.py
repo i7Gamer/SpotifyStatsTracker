@@ -8,13 +8,22 @@ user (Database.imgDir_* are class-level, not per user) - the <username> segment
 is only the authorization check, not a directory selector.
 """
 import os
+import re
 from pathlib import Path
 
 from flask import make_response, session, send_from_directory
 
 from config import IMAGE_CACHE_CONTROL, IMAGE_CACHE_MAX_AGE_SECONDS
 from Database.database import Database
+from Database.db import SPOTIFY_TRACK_ID_LENGTH
 from Database.repository import IMAGE_KIND_ARTIST, IMAGE_KIND_TRACK
+
+# What a Spotify entity id looks like - every kind shares the track id's shape
+# (22 base62 characters, see SPOTIFY_TRACK_ID_LENGTH). The artist route's lazy
+# fetch is gated on this BEFORE the catalog read: the client names the id, and
+# a fetch for an unknown one costs two outbound Spotify requests (one on the
+# deliberately unlimited pathfinder path) plus an images row, per distinct id.
+SPOTIFY_ID_RE = re.compile(rf"[0-9A-Za-z]{{{SPOTIFY_TRACK_ID_LENGTH}}}")
 
 
 def sendCacheableImage(directory, filename):
@@ -87,7 +96,11 @@ def register(app, dashboard):
         if not os.path.exists(imagePath):
             artistId = _imageIdFromFilename(filename)
             db = _forgetMissingImage(username, artistId, IMAGE_KIND_ARTIST)
-            if db and artistId:
+            # Only an artist the catalog knows is worth asking Spotify about;
+            # templates never reference any other. Shape first (free), then the
+            # indexed-PK read - see SPOTIFY_ID_RE for what an unknown id costs.
+            if (db and artistId and SPOTIFY_ID_RE.fullmatch(artistId)
+                    and db.repo.artistExists(artistId)):
                 db.lazyFetchArtistImage(artistId, Path(imagePath))
 
         return sendCacheableImage(imageDir, filename)

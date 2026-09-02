@@ -493,6 +493,11 @@ class TrackQueries:
         row = conn.execute("SELECT 1 FROM tracks WHERE id=?", (trackId,)).fetchone()
         return row is not None
 
+    def artistExists(self, artistId: str) -> bool:
+        conn = self._conn()
+        row = conn.execute("SELECT 1 FROM artists WHERE id=?", (artistId,)).fetchone()
+        return row is not None
+
     @staticmethod
     def _albumRowToDict(albumRow) -> dict:
         return {

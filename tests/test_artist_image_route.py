@@ -14,6 +14,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 
+#< 22 base62 characters: the lazy fetch is gated on the id's shape (and on the
+#  catalog, which the MagicMock Database answers for) - see test_artist_image_fetch_gate
+_REAL_SHAPED_ARTIST_ID = "0OdUWJ0sBjDrqHygGUXeCF"
+
 
 class TestServeArtistImageRoute(AppTestCase):
     def setUp(self):
@@ -33,7 +37,7 @@ class TestServeArtistImageRoute(AppTestCase):
         mock_send.return_value = "OK"
 
         dash = self._makeApp()
-        fakeDb = MagicMock()
+        fakeDb = MagicMock()   #< its repo.artistExists answers truthy, so the catalog gate passes
         dash.user_databases["alice"] = fakeDb
 
         client = dash.app.test_client()
@@ -41,15 +45,16 @@ class TestServeArtistImageRoute(AppTestCase):
              patch.object(dash, 'get_username_for_email', return_value='alice'):
             with client.session_transaction() as sess:
                 sess['email'] = 'alice@example.com'
-            resp = client.get('/img/alice/artists/artist123.jpeg')
+            resp = client.get(f'/img/alice/artists/{_REAL_SHAPED_ARTIST_ID}.jpeg')
 
         self.assertEqual(resp.status_code, 200)
         fakeDb.lazyFetchArtistImage.assert_called_once()
         calledArtistId, calledPath = fakeDb.lazyFetchArtistImage.call_args[0]
-        self.assertEqual(calledArtistId, "artist123")
+        self.assertEqual(calledArtistId, _REAL_SHAPED_ARTIST_ID)
         # Images are shared across every user now, not stored per user - the path
         # is under the shared Media/artists dir, with no username segment.
-        self.assertTrue(str(calledPath).endswith(os.path.join("Media", "artists", "artist123.jpeg")))
+        self.assertTrue(str(calledPath).endswith(
+            os.path.join("Media", "artists", f"{_REAL_SHAPED_ARTIST_ID}.jpeg")))
 
     @patch('routes.media.send_from_directory')
     @patch('routes.media.os.path.exists')
