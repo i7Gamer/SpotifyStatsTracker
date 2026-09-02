@@ -47,7 +47,11 @@ def controlLabels():
     """(template, label) for every <button> and every <a> styled as one."""
     found = []
     for path in sorted(glob.glob(_TEMPLATES_GLOB)):
-        for tag, attrs, inner in _CONTROL.findall(_readFile(path)):
+        #< Jinja comments and blocks are stripped BEFORE the tag scan, not only
+        #  from the matched inner text: a {# #} comment that spells out "<button>"
+        #  (the export button's does, explaining its type attribute) otherwise
+        #  opens a match that swallows the comment and the real control behind it.
+        for tag, attrs, inner in _CONTROL.findall(_JINJA.sub("", _readFile(path))):
             if tag == "a" and "button" not in attrs:
                 continue
             label = _labelText(inner)
