@@ -53,7 +53,11 @@ START = 1_700_000_000.0
 END = START + 474.0
 
 
-class SweepTestCase(unittest.TestCase):
+class _SweepBase(unittest.TestCase):
+    """Fixture and helpers shared by the three pairings' test classes. Defines
+    no tests on purpose: a subclass inherits every test_ method, so tests here
+    would run once per pairing class (they did - 12 tests, three times)."""
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -91,6 +95,11 @@ class SweepTestCase(unittest.TestCase):
             "SELECT played_at FROM plays WHERE username=? ORDER BY played_at", (username,)
         ).fetchall()
         return [r["played_at"] for r in rows]
+
+
+class TestSweepEndTimeDuplicates(_SweepBase):
+    """The first pairing: a backfill row whose played_at sits within tolerance
+    of a same-user same-track listener row's created_at (the observed end)."""
 
     def test_pause_stretched_backfill_copy_is_found(self):
         self._insertPlay("t1", START, createdAt=END, created_reason=LISTENER_REASON)
@@ -223,7 +232,7 @@ class SweepTestCase(unittest.TestCase):
         self.assertEqual(len(self._playedAts()), 7, "every backfill copy should be gone")
 
 
-class TestSweepSkipDuplicates(SweepTestCase):
+class TestSweepSkipDuplicates(_SweepBase):
     """The second pairing: a backfill row sitting on a same-track SKIP.
 
     A backfill row is is_skip=0 by construction (no ms_played from the Web API,
@@ -332,7 +341,7 @@ class TestSweepSkipDuplicates(SweepTestCase):
         self.assertEqual(self._playedAts(), [START, START + 3])
 
 
-class TestSweepCrossReleaseDuplicates(SweepTestCase):
+class TestSweepCrossReleaseDuplicates(_SweepBase):
     """The third pairing: the two copies do not even share a track id.
 
     Spotify hands the connect player_state and the recently-played endpoint

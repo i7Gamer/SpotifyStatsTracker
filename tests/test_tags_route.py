@@ -29,7 +29,11 @@ def makeTrack(trackId="t1", name="Song One", albumId="alb1", artistId="art1"):
     }
 
 
-class TestTagsRoutes(AppTestCase):
+class _TagsRoutesBase(AppTestCase):
+    """Fixture and helpers the tag-route classes share. Defines no tests on
+    purpose: a subclass inherits every test_ method, so tests here would run
+    once per subclass (they did - 14 tests, twice)."""
+
     def setUp(self):
         self.dash = self._makeApp()   #< registers shutdown(): get_user_db below starts real threads
         self.client = self.dash.app.test_client()
@@ -61,6 +65,8 @@ class TestTagsRoutes(AppTestCase):
             sess["email"] = self.email
             sess["username"] = self.username
 
+
+class TestTagsRoutes(_TagsRoutesBase):
     def test_unauthenticated_api_returns_401(self):
         resp = self.client.get("/api/tags")
         self.assertEqual(resp.status_code, 401)
@@ -356,7 +362,7 @@ class TestTagsFeatureDisabled(AppTestCase):
         self.assertEqual(resp.status_code, 400)
 
 
-class TestTagMutationRoutes(TestTagsRoutes):
+class TestTagMutationRoutes(_TagsRoutesBase):
     """Rename and delete only had coverage of their feature-disabled 404s - the
     success paths (param names, URL encoding, what actually changed in the DB)
     were never driven through the routes."""
