@@ -77,27 +77,35 @@ function run(name, fn) { results.push({ name, fn }); }
 
 // ------------------------------------------------------------ jump to page
 
-run('a page jump replaces the history entry and never pushes one', () => {
+// htmx does the replacing (its `replace` option is forwarded into the same
+// history update hx-replace-url feeds), and only inside its successful-swap
+// branch. The address bar used to be rewritten HERE, before the request, so a
+// failed jump left it claiming a page the list never showed.
+run('a page jump lets htmx replace the URL on success and never pushes one', () => {
   const page = loadTopList({ search: '?interval=last-30-days' });
 
   page.window.__paginationAjaxHandler(4);
 
-  assert.strictEqual(page.replaced.length, 1);
-  assert.deepStrictEqual(page.pushed, [], 'a push would make Back walk page numbers');
+  assert.deepStrictEqual(page.replaced, [], 'rewritten before the request = a failed jump lies');
+  assert.deepStrictEqual(page.pushed, []);
+  assert.strictEqual(page.ajax[0].opts.replace, page.ajax[0].url);
+  assert.strictEqual(page.ajax[0].opts.push, undefined, 'a push would make Back walk page numbers');
 });
 
 run('a page jump keeps the other filters in both the URL and the request', () => {
-  const page = loadTopList({ search: '?q=mf+doom&sortBy=plays&page=2' });
+  const container = { id: 'topListResults' };
+  const page = loadTopList({ search: '?q=mf+doom&sortBy=plays&page=2', elements: { topListResults: container } });
 
   page.window.__paginationAjaxHandler(5);
 
-  const url = new URL(page.replaced[0], 'http://localhost');
+  const url = new URL(page.ajax[0].url, 'http://localhost');
   assert.strictEqual(url.pathname, '/top-songs');
   assert.strictEqual(url.searchParams.get('page'), '5', 'the old page is overwritten, not appended');
   assert.strictEqual(url.searchParams.get('q'), 'mf doom');
   assert.strictEqual(url.searchParams.get('sortBy'), 'plays');
-  assert.strictEqual(page.ajax[0].url, page.replaced[0], 'the swap asks for the URL just published');
-  assert.strictEqual(page.ajax[0].opts.target, '#topListResults');
+  //< the container's hx-target/hx-swap/hx-sync are inherited from it, so a
+  //  jump during an in-flight filter change is serialised like every swap
+  assert.strictEqual(page.ajax[0].opts.source, container);
 });
 
 // -------------------------------------------------------- the request veto

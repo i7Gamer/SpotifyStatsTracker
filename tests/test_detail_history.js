@@ -150,16 +150,25 @@ run('a body that has not arrived yet leaves the full-reload fallback in place', 
                      'there is no list to swap, so navigating is the right behaviour');
 });
 
-run('a page jump replaces the URL and swaps only the list', () => {
+// htmx does the replacing (its `replace` option is forwarded into the same
+// history update hx-replace-url feeds), and only inside its successful-swap
+// branch. The address bar used to be rewritten HERE, before the request, so a
+// failed jump left it claiming a page the list never showed.
+run('a page jump lets htmx replace the URL on success and is issued off the list', () => {
   const dom = tabSetup({ search: '?view=history' });
 
   dom.page.window.__paginationAjaxHandler(3);
 
-  const url = new URL(dom.page.replaced[0], 'http://localhost');
+  const url = new URL(dom.page.ajax[0].url, 'http://localhost');
   assert.strictEqual(url.searchParams.get('page'), '3');
   assert.strictEqual(url.searchParams.get('view'), 'history');
+  assert.deepStrictEqual(dom.page.replaced, [], 'rewritten before the request = a failed jump lies');
   assert.deepStrictEqual(dom.page.pushed, []);
-  assert.strictEqual(dom.page.ajax[0].opts.target, '#detailHistoryResults');
+  assert.strictEqual(dom.page.ajax[0].opts.replace, dom.page.ajax[0].url);
+  assert.strictEqual(dom.page.ajax[0].opts.push, undefined);
+  //< the list's hx-target/hx-swap/hx-sync are inherited from it, so a jump
+  //  during an in-flight sort change is serialised like every swap into it
+  assert.strictEqual(dom.page.ajax[0].opts.source, dom.list);
 });
 
 // --------------------------------------------------- telling the swaps apart

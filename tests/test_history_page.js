@@ -120,24 +120,33 @@ run('two flips return to exactly where they started', () => {
 
 // ------------------------------------------------------------ jump to page
 
-run('a page jump replaces the history entry and never pushes one', () => {
+// htmx does the replacing (its `replace` option is forwarded into the same
+// history update hx-replace-url feeds), and only inside its successful-swap
+// branch. The address bar used to be rewritten HERE, before the request, so a
+// failed jump left it claiming a page the list never showed.
+run('a page jump lets htmx replace the URL on success and never pushes one', () => {
   const page = loadHistory({ search: '?interval=last-7-days' });
 
   page.window.__paginationAjaxHandler(3);
 
-  assert.strictEqual(page.replaced.length, 1);
+  assert.deepStrictEqual(page.replaced, [], 'rewritten before the request = a failed jump lies');
   assert.deepStrictEqual(page.pushed, []);
+  assert.strictEqual(page.ajax[0].opts.replace, page.ajax[0].url);
+  assert.strictEqual(page.ajax[0].opts.push, undefined, 'a push would make Back walk page numbers');
 });
 
-run('a page jump keeps the other filters and targets the history list', () => {
-  const page = loadHistory({ search: '?q=liquid&page=9' });
+run('a page jump keeps the other filters and is issued off the history list', () => {
+  const container = { id: 'historyResults' };
+  const page = loadHistory({ search: '?q=liquid&page=9', elements: { historyResults: container } });
 
   page.window.__paginationAjaxHandler(2);
 
-  const url = new URL(page.replaced[0], 'http://localhost');
+  const url = new URL(page.ajax[0].url, 'http://localhost');
   assert.strictEqual(url.searchParams.get('page'), '2');
   assert.strictEqual(url.searchParams.get('q'), 'liquid');
-  assert.strictEqual(page.ajax[0].opts.target, '#historyResults');
+  //< the container's hx-target/hx-swap/hx-sync are inherited from it, so a
+  //  jump during an in-flight filter change is serialised like every swap
+  assert.strictEqual(page.ajax[0].opts.source, container);
 });
 
 // -------------------------------------------------------- the request veto

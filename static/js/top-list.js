@@ -47,14 +47,19 @@ if (typeof document !== 'undefined') {
   //
   // replaceState, never push - the same rule the hx-replace-url attributes
   // encode, and tests/test_pagination_ajax_handler.py asserts for this file.
-  // htmx.ajax has no replace-url option, so the URL is updated here and the swap
-  // requested separately.
+  // htmx does the replacing: the `replace` option is forwarded into the same
+  // history update hx-replace-url feeds (a path is used as given; only "true"
+  // means "the request path"), and that update runs only inside the
+  // successful-swap branch. The address bar used to be rewritten here, BEFORE
+  // the request, so a failed jump left it claiming a page the list never
+  // showed. Issued off the container so the request inherits its hx-target /
+  // hx-swap / hx-sync, and a jump during an in-flight filter change is
+  // serialised like every other swap into it.
   var goToTopListPage = function (page) {
     var params = new URLSearchParams(window.location.search);
     params.set('page', page);
     var url = window.location.pathname + '?' + params.toString();
-    window.history.replaceState({}, '', url);
-    htmx.ajax('GET', url, { target: '#' + TOP_LIST_RESULTS_ID, swap: 'innerHTML' });
+    htmx.ajax('GET', url, { source: document.getElementById(TOP_LIST_RESULTS_ID), replace: url });
   };
   window.__paginationAjaxHandler = goToTopListPage;
 
