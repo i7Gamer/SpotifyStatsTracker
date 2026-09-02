@@ -27,13 +27,14 @@
   var drawSparseXLabels = CU.drawSparseXLabels;
 
   // Consts still needed by the charts-only helpers (valueAxisPadding, the
-  // time-series/mirror label spacing). They mirror the same-named constants in
-  // chart-utils.js - GRID_LINE_COUNT in particular must match the grid drawn by
-  // ChartUtils.drawYAxisGrid so valueAxisPadding sizes for the labels actually rendered.
-  var GRID_LINE_COUNT = 4;
-  var MIN_AXIS_LABEL_SPACING_PX = 70;
-  var Y_AXIS_LABEL_FONT = '11px sans-serif';
-  var Y_AXIS_LABEL_GAP_PX = 8;     //< space between a y-axis label's right edge and the axis line
+  // time-series/mirror label spacing), read off the library like the functions
+  // above rather than re-declared: GRID_LINE_COUNT in particular has to be the
+  // grid ChartUtils.drawYAxisGrid draws, so valueAxisPadding sizes for the
+  // labels actually rendered - a local copy could drift from it silently.
+  var GRID_LINE_COUNT = CU.GRID_LINE_COUNT;
+  var MIN_AXIS_LABEL_SPACING_PX = CU.MIN_AXIS_LABEL_SPACING_PX;
+  var Y_AXIS_LABEL_FONT = CU.Y_AXIS_LABEL_FONT;
+  var Y_AXIS_LABEL_GAP_PX = CU.Y_AXIS_LABEL_GAP_PX;
   var Y_AXIS_MIN_PADDING_PX = 34;  //< floor so narrow labels (e.g. "0m") still get consistent left padding
 
   function msToShortLabel(ms) {
@@ -545,21 +546,8 @@
     renderAllCharts();
   }
 
-  var RESIZE_REDRAW_MS = 150;       //< coalesce a drag-resize into one repaint
-  var THEME_REDRAW_MS = 50;         //< let the new theme's CSS variables land first
-
-  var resizeTimer;
-  window.addEventListener('resize', function () {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderAllCharts, RESIZE_REDRAW_MS);
-  });
-
-  //< the canvas reads its colours from the CSS variables at paint time, so a
-  //  theme change needs an explicit repaint. This listened on '#theme-selector'
-  //  instead - an element that exists only on /profile, a page with no charts,
-  //  so it had never fired. chrome-common.js raises this event when another
-  //  tab switches the theme, which is the only way it can change under a chart.
-  window.addEventListener('themechange', function () {
-    setTimeout(renderAllCharts, THEME_REDRAW_MS);
-  });
+  //< the resize debounce and the theme-change repaint (see bindRepaint's
+  //  comment in chart-utils.js for why the latter waits, and for the
+  //  '#theme-selector' listener that never fired)
+  CU.bindRepaint(renderAllCharts);
 })();

@@ -42,6 +42,7 @@ function makeChartUtils(calls) {
     drawDonutChart(canvas, slices, total) { calls.donuts.push({ canvas, slices, total }); },
     renderMultiLineChart(canvas, legend, data) { calls.lines.push({ canvas, legend, data }); },
     renderHeatmap(canvas, data) { calls.heatmaps.push({ canvas, data }); },
+    bindRepaint(repaint) { calls.repaint = repaint; },
   };
 }
 
@@ -371,23 +372,16 @@ run('a send error with no path info falls back to the current URL', () => {
 
 // ------------------------------------------------------------- repaints
 
-run('a resize is coalesced into one debounced repaint', () => {
+// The resize debounce and the theme-change wait are the library's now
+// (ChartUtils.bindRepaint, pinned in tests/test_chart_repaint.js); what this
+// page owns is handing it the right renderer.
+run('the resize and theme repaints are bound to this page\'s renderer', () => {
   const page = loadGenres({});
+  const before = page.palettes;
 
-  page.windowListeners.resize();
-  page.windowListeners.resize();
+  page.repaint();
 
-  assert.deepStrictEqual(page.timeouts.map(t => t.ms), [150, 150]);
-});
-
-// See the same test in test_charts_render.js: this stubbed a '#theme-selector'
-// that only exists on /profile, so it pinned a listener that could never fire.
-run('a theme change repaints after letting the new CSS variables land', () => {
-  const page = loadGenres({});
-
-  page.windowListeners.themechange();
-
-  assert.deepStrictEqual(page.timeouts.map(t => t.ms), [50]);
+  assert.strictEqual(page.palettes, before + 1, 'renderAll re-reads the palette first');
 });
 
 (async () => {

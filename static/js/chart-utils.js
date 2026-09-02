@@ -3,9 +3,10 @@
 
 /* Shared hand-rolled canvas-chart primitives (no external dependencies, so the
  * app stays self-contained for offline/Docker use). Exposed as window.ChartUtils
- * for pages that build their own charts - currently the Genres page (genres.js).
- * The older /charts + /compare charts.js still carries its own private copies of
- * these primitives; converging it onto this library is tracked separately. */
+ * and consumed by charts.js (/charts + /compare, plus the Wrapped and detail
+ * time series) and genres.js, which keep only the charts each page draws
+ * itself. Exported constants are read by charts.js rather than restated there,
+ * so an axis sized here and a grid drawn here cannot drift apart. */
 (function () {
   // Fallback if a theme's --chart-N vars are ever missing (e.g. stale cached CSS).
   var FALLBACK_PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
@@ -15,11 +16,14 @@
   // distinct, theme-appropriate color for every category instead of cycling
   // through a handful of colors that repeat and never adapt to the theme.
   var CHART_COLOR_VAR_COUNT = 12;
-  var PALETTE = ['#FB717B', '#5DD97C', '#5AC8FA', '#FFD166', '#C77DFF', '#FF9F45'];
+  //< a copy, not the fallback itself: refreshPalette mutates PALETTE in place
+  var PALETTE = FALLBACK_PALETTE.slice();
   var GRID_LINE_COUNT = 4;
   var MIN_AXIS_LABEL_SPACING_PX = 70;
   var Y_AXIS_LABEL_FONT = '11px sans-serif';
-  var Y_AXIS_LABEL_GAP_PX = 8;
+  var Y_AXIS_LABEL_GAP_PX = 8;     //< space between a y-axis label's right edge and the axis line
+  var RESIZE_REDRAW_MS = 150;       //< coalesce a drag-resize into one repaint
+  var THEME_REDRAW_MS = 50;         //< let the new theme's CSS variables land first
 
   // Re-reads --chart-1..--chart-N from the current theme into PALETTE in place
   // (mutated, not reassigned, so existing `CU.PALETTE` references stay live).
@@ -40,6 +44,25 @@
   // tests of the pure helpers; in the browser this still primes the palette.
   if (typeof document !== 'undefined') {
     refreshPalette();
+  }
+
+  // The two repaints that are not swaps, bound once per page for its renderer.
+  // The canvas reads its colours from the CSS variables at paint time, so a
+  // theme change needs an explicit repaint - after a short wait for the new
+  // variables to land, or it reads the OLD ones. 'themechange' is what
+  // chrome-common.js raises when another tab switches the theme, the only way
+  // it can change under a chart; both pages once listened on '#theme-selector'
+  // instead, an element that exists only on /profile, a page with no charts,
+  // so it had never fired.
+  function bindRepaint(repaint) {
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(repaint, RESIZE_REDRAW_MS);
+    });
+    window.addEventListener('themechange', function () {
+      setTimeout(repaint, THEME_REDRAW_MS);
+    });
   }
 
   // Where clicking a time-series bucket takes the user: the play-history list,
@@ -273,7 +296,7 @@
   }
 
   /* Vertical bar chart from [label, value] pairs. opts.emptyMessage,
-   * opts.fitLabel(key, slotWidth), opts.valueSuffix (tooltip). */
+   * opts.valueSuffix (tooltip), opts.height. */
   function renderBarsFromPairs(canvas, pairs, opts) {
     opts = opts || {};
     if (!canvas) return;
@@ -307,12 +330,11 @@
       var y = paddingTop + plotHeight - barHeight;
       ctx.fillStyle = PALETTE[i % PALETTE.length];
       ctx.fillRect(x, y, barWidth, barHeight);
-      var label = opts.fitLabel ? opts.fitLabel(key, rawBarWidth) : key;
       ctx.fillStyle = '#b0b0b0';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(label, x + barWidth / 2, paddingTop + plotHeight + 8);
+      ctx.fillText(key, x + barWidth / 2, paddingTop + plotHeight + 8);
       return { key: key, value: val, x: x, y: y, w: barWidth, h: barHeight };
     });
 
@@ -340,7 +362,7 @@
     opts = opts || {};
     if (!canvas) return;
     pairs = pairs || [];
-    var rowHeight = opts.rowHeight || 40;   //< label line + bar + gap
+    var rowHeight = 40;                     //< label line + bar + gap
     var padTop = 6, padBottom = 6;
     var valueColWidth = 34;                 //< reserved right column for the value number
     var barHeight = 11, labelGap = 3;
@@ -675,6 +697,11 @@
     PALETTE: PALETTE,
     TIME_SERIES_PLAY_COLOR_INDEX: TIME_SERIES_PLAY_COLOR_INDEX,
     TIME_SERIES_SKIP_COLOR_INDEX: TIME_SERIES_SKIP_COLOR_INDEX,
+    GRID_LINE_COUNT: GRID_LINE_COUNT,
+    MIN_AXIS_LABEL_SPACING_PX: MIN_AXIS_LABEL_SPACING_PX,
+    Y_AXIS_LABEL_FONT: Y_AXIS_LABEL_FONT,
+    Y_AXIS_LABEL_GAP_PX: Y_AXIS_LABEL_GAP_PX,
+    bindRepaint: bindRepaint,
     maxSkipsIn: maxSkipsIn,
     skipAxisMax: skipAxisMax,
     timeSeriesLegendItems: timeSeriesLegendItems,

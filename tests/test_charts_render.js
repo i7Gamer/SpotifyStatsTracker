@@ -55,16 +55,28 @@ function makeChartUtils(calls) {
     PALETTE: ['#1', '#2', '#3', '#4', '#5', '#6'],
     TIME_SERIES_PLAY_COLOR_INDEX: 0,
     TIME_SERIES_SKIP_COLOR_INDEX: 1,
+    //< deliberately NOT the library's real values: the constants test below
+    //  can only tell "read from ChartUtils" apart from "re-declared locally"
+    //  if the stub disagrees with the copy
+    GRID_LINE_COUNT: 5,
+    MIN_AXIS_LABEL_SPACING_PX: 77,
+    Y_AXIS_LABEL_FONT: '9px test',
+    Y_AXIS_LABEL_GAP_PX: 3,
+    bindRepaint(repaint) { calls.repaint = repaint; },
     refreshPalette() { calls.order.push('refreshPalette'); },
     getAccentColor() { return '#FB717B'; },
     parseHex() { return { r: 1, g: 2, b: 3 }; },
     escapeHtml(s) { return String(s); },
     bucketDrilldownUrl() { return '/history?x=1'; },
     drawEmptyState() { calls.emptyStates += 1; },
-    drawSparseXLabels() {}, drawYAxisGrid() {},
-    setupCanvas(canvas) { return canvas ? permissiveContext() : null; },
+    drawSparseXLabels() { calls.labelSpacings.push(arguments[arguments.length - 1]); },
+    drawYAxisGrid() {},
+    //< the real one answers { ctx, width, height }; the time-series renderer
+    //  is the one caller here that reads all three
+    setupCanvas(canvas) { return canvas ? { ctx: permissiveContext(), width: 600, height: 300 } : null; },
     showTooltip() {}, hideTooltip() {},
-    maxSkipsIn() { return 1; }, skipAxisMax() { return 1; },
+    maxSkipsIn() { return 1; },
+    skipAxisMax(maxSkips, gridLines) { calls.skipGridLines.push(gridLines); return 1; },
     timeSeriesHasNothingToDraw(data) { return !data || !data.length; },
     timeSeriesLegendItems() { return []; },
     renderLegend() {},
@@ -78,7 +90,10 @@ function makeChartUtils(calls) {
 
 function loadCharts(options) {
   options = options || {};
-  const calls = { order: [], horizontal: [], emptyStates: 0, timeouts: [], windowListeners: {} };
+  const calls = {
+    order: [], horizontal: [], emptyStates: 0, timeouts: [], windowListeners: {},
+    labelSpacings: [], skipGridLines: [],
+  };
   const elements = options.elements || {};
 
   global.window = {
@@ -239,27 +254,43 @@ run('the skip bars are labelled as a share of encounters, not of plays', () => {
 
 // ------------------------------------------------------------- repaints
 
-run('a resize is coalesced into one debounced repaint', () => {
+// The resize debounce and the theme-change wait are the library's now
+// (ChartUtils.bindRepaint, pinned in tests/test_chart_repaint.js); what this
+// page owns is handing it the right renderer. (This once stubbed a
+// '#theme-selector' element into existence and pinned a listener that could
+// never fire - that element lives only on /profile, a page with no charts.)
+run('the resize and theme repaints are bound to renderAllCharts', () => {
   const page = loadCharts({ defer: true });
 
-  page.windowListeners.resize();
-  page.windowListeners.resize();
+  page.repaint();
 
-  assert.deepStrictEqual(page.timeouts.map(t => t.ms), [150, 150]);
+  assert.strictEqual(page.order[0], 'refreshPalette', 'the bound function is the real renderer');
 });
 
-// This used to stub a '#theme-selector' element into existence and fire its
-// change handler - which passed, and pinned nothing: that element lives only on
-// /profile, a page with no charts, so the listener could never fire in a real
-// browser. The event chrome-common.js raises on a cross-tab theme change is the
-// one that reaches this page, and stubbing it is no longer possible to get
-// wrong: there is no element to invent.
-run('a theme change waits for the new CSS variables before repainting', () => {
-  const page = loadCharts({ defer: true });
+// ------------------------------------------------------ the shared constants
 
-  page.windowListeners.themechange();
+// GRID_LINE_COUNT and the label spacing used to be re-declared here under a
+// "must match chart-utils.js" comment. A copy that drifts desyncs the axis
+// padding from the grid it sizes for, silently; so the stub above disagrees
+// with the library on purpose and this checks the disagreement is what reaches
+// the drawing calls.
+run('the skip axis and the x-label spacing come from the library\'s constants', () => {
+  const page = loadCharts({
+    defer: true,
+    chartData: {
+      showSkips: true,
+      timeSeries: [
+        { label: '2026-07-01', totalTimeListened: 60000, plays: 1, skips: 1 },
+        { label: '2026-07-02', totalTimeListened: 30000, plays: 1, skips: 0 },
+      ],
+    },
+    elements: { timeSeriesChart: makeCanvas() },
+  });
 
-  assert.deepStrictEqual(page.timeouts.map(t => t.ms), [50]);
+  page.window.renderAllCharts();
+
+  assert.deepStrictEqual(page.skipGridLines, [5]);
+  assert.deepStrictEqual(page.labelSpacings, [77]);
 });
 
 (async () => {

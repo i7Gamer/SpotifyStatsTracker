@@ -47,8 +47,6 @@
   var DETAIL_DATA_ID = 'genres-detail-data';
 
   var GENRE_BREADTH_LIMIT = 8;      //< keep the horizontal breadth chart to a readable height
-  var RESIZE_REDRAW_MS = 150;       //< coalesce a drag-resize into one repaint
-  var THEME_REDRAW_MS = 50;         //< let the new theme's CSS variables land first
 
   window.__genreData = window.__genreData || {};
 
@@ -297,18 +295,10 @@
 
   // ---- Repaints that are not swaps -----------------------------------------
 
-  var resizeTimer;
-  window.addEventListener('resize', function () {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderAll, RESIZE_REDRAW_MS);
-  });
-
-  //< see charts.js: this listened on '#theme-selector', which lives only on
-  //  /profile - a page with no charts - so it had never fired. chrome-common.js
-  //  raises this when another tab switches the theme.
-  window.addEventListener('themechange', function () {
-    setTimeout(renderAll, THEME_REDRAW_MS);
-  });
+  //< the resize debounce and the theme-change repaint (see bindRepaint's
+  //  comment in chart-utils.js for why the latter waits, and for the
+  //  '#theme-selector' listener that never fired)
+  CU.bindRepaint(renderAll);
 })();
 //< no module.exports: the pure filter helpers moved to static/js/htmx-filters.js,
 //  which is where the plain-node unit test points (tests/test_htmx_filters.js)

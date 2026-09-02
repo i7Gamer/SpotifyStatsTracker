@@ -6,10 +6,12 @@ const assert = require('assert');
 const {
   maxSkipsIn, skipAxisMax, timeSeriesHasNothingToDraw, timeSeriesLegendItems, legendHtml,
   escapeHtml, PALETTE, TIME_SERIES_PLAY_COLOR_INDEX, TIME_SERIES_SKIP_COLOR_INDEX,
+  GRID_LINE_COUNT,
 } = require('../static/js/chart-utils.js');
 
-// Same grid the chart draws (charts.js's GRID_LINE_COUNT).
-const GRID_LINES = 4;
+// The grid drawYAxisGrid draws and charts.js sizes its axes for - read off the
+// export rather than restated, so this cannot drift from the chart.
+const GRID_LINES = GRID_LINE_COUNT;
 
 function run(name, fn) {
   try {
