@@ -282,8 +282,8 @@ run('_parse returns a queryable document', () => {
   assert.ok(doc.querySelector('.profile-subnav'), 'subnav should be found');
 });
 
-/* Node has no DOMParser; test _extractBody/_extractNav via a stub. */
-run('_extractBody and _extractNav work with a stub document', () => {
+/* Node has no DOMParser; test _extractBody via a stub. */
+run('_extractBody works with a stub document', () => {
   // Simulate what DOMParser would produce.
   const nav     = { outerHTML: '<nav class="profile-subnav"></nav>' };
   const sec1    = { outerHTML: '<section class="profile-section"><h2>A</h2></section>' };
@@ -307,9 +307,6 @@ run('_extractBody and _extractNav work with a stub document', () => {
   const body = ProfilePage._extractBody(doc);
   assert.ok(body.includes('<section'), 'should contain section markup: ' + body);
   assert.ok(!body.includes('profile-logout-row'), 'should not include logout row: ' + body);
-
-  const navHtml = ProfilePage._extractNav(doc);
-  assert.ok(navHtml.includes('profile-subnav'), 'should include subnav: ' + navHtml);
 });
 
 run('_extractBody returns null when subnav is missing', () => {

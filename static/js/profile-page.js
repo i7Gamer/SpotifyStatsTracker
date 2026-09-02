@@ -4,10 +4,11 @@
 /* Profile page AJAX tab switcher.
  *
  * Clicking a .profile-subnav link fetches the target page, extracts the
- * section content and the updated sub-nav HTML from the response, swaps them
- * into the current DOM, and updates the browser URL via pushState.  The page
- * header (identity block) and the log-out row never change between tabs so
- * they are left untouched.
+ * section content from the response, swaps it into the current DOM, re-syncs
+ * the sub-nav's active tab in place (_syncNav - the nav element itself is
+ * never replaced: init() binds the click interception on it), and updates the
+ * browser URL via pushState.  The page header (identity block) and the log-out
+ * row never change between tabs so they are left untouched.
  *
  * Graceful degradation: if fetch fails, or the user has JS disabled, the
  * ordinary full-page navigation takes over silently.
@@ -41,12 +42,6 @@
       return new DOMParser().parseFromString(html, 'text/html');
     }
     return null;
-  }
-
-  /** Extract only the subnav + inter-nav-logout siblings from a parsed doc. */
-  function _extractNav(doc) {
-    var nav = doc.querySelector(SUBNAV_SEL);
-    return nav ? nav.outerHTML : null;
   }
 
   /** Extract tab body sections from a parsed doc as raw HTML string. */
@@ -278,7 +273,6 @@
 
     /* Exposed for testing. */
     _parse:             _parse,
-    _extractNav:        _extractNav,
     _extractBody:       _extractBody,
     _swapBody:          _swapBody,
     _syncNav:           _syncNav,
