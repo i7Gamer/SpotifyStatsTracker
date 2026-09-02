@@ -186,7 +186,17 @@ def fromtimestamp(ts, tz=None) -> datetime.datetime:
     tz = _tzOrDefault(tz, default=datetime.timezone.utc)
     with suppress(OSError, ValueError):
         return datetime.datetime.fromtimestamp(ts, tz)
-    return datetime.datetime(1970, 1, 1, tzinfo=tz) + datetime.timedelta(seconds=ts)
+    #< Anchored at the epoch ITSELF (midnight 1970-01-01 UTC) and then converted.
+    #  Midnight 1970-01-01 IN `tz` is the epoch only when tz is UTC; the old
+    #  `datetime(1970, 1, 1, tzinfo=tz) + delta` spelling came back one
+    #  utcoffset early for every zone east of it (an hour in Berlin's winter,
+    #  two in its summer). Where the zone cannot express the instant at all
+    #  (year 9999 pushed east of UTC), the UTC value is the answer -
+    #  convertToDatetime treats a raise from here as "no date", which is worse.
+    utc = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=ts)
+    with suppress(OverflowError, ValueError):
+        return utc.astimezone(tz)
+    return utc
 
 
 def epoch(tz=None):

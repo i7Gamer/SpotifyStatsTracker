@@ -344,3 +344,78 @@ class TestABareYearIsAYearNotAnEpochOffset(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class _RefusingDatetime(datetime.datetime):
+    """datetime.datetime whose fromtimestamp always refuses, the way Windows'
+    C runtime does for negative and far-future stamps - so fromtimestamp's
+    fallback arm runs on every platform, not only the one the live instance
+    happens to use (a Linux CI runner takes the direct path for these inputs
+    and would never see the fallback)."""
+
+    @classmethod
+    def fromtimestamp(cls, ts, tz=None):
+        raise OSError("refused, as the Windows C runtime does")
+
+
+class _DatetimeModuleThatRefusesFromtimestamp:
+    #< the module attributes Database.utils reads; `datetime` LAST, because a
+    #  class body runs top to bottom and the earlier lines still need the real
+    #  module under that name
+    timedelta = datetime.timedelta
+    timezone = datetime.timezone
+    tzinfo = datetime.tzinfo
+    datetime = _RefusingDatetime
+
+
+class TestFromtimestampFallbackAnchorsAtTheEpoch(unittest.TestCase):
+    """The fallback used to add the seconds to `datetime(1970, 1, 1, tzinfo=tz)`
+    - midnight of 1970-01-01 IN THAT ZONE, which is the Unix epoch only when
+    the zone is UTC. For Europe/Berlin every pre-1970 or far-future stamp came
+    back one utcoffset early (an hour in winter, two in summer), and its own
+    docstring said "offsetting from the epoch". Expected values below are
+    literal instants, not the arithmetic under test."""
+
+    def setUp(self):
+        patcher = patch.object(utilsModule, "datetime", _DatetimeModuleThatRefusesFromtimestamp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _berlin(self):
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/Berlin")
+
+    def test_a_pre_1970_stamp_lands_on_the_right_local_instant(self):
+        berlin = self._berlin()
+        got = utilsModule.fromtimestamp(-86400, tz=berlin)
+
+        #< -86400 is 1969-12-31T00:00:00Z, i.e. 01:00 in Berlin (CET, +01:00)
+        self.assertEqual(got, datetime.datetime(1969, 12, 31, 1, 0, tzinfo=berlin))
+        self.assertEqual(got.utcoffset(), datetime.timedelta(hours=1))
+        self.assertIs(got.tzinfo, berlin)
+
+    def test_a_far_future_stamp_lands_on_the_right_local_instant(self):
+        berlin = self._berlin()
+        got = utilsModule.fromtimestamp(40_000_000_000, tz=berlin)
+
+        #< 3237-07-19T23:06:40Z, i.e. 01:06:40 the next day in Berlin (CEST, +02:00)
+        self.assertEqual(got, datetime.datetime(3237, 7, 20, 1, 6, 40, tzinfo=berlin))
+        self.assertEqual(got.utcoffset(), datetime.timedelta(hours=2))
+
+    def test_the_default_zone_is_still_utc(self):
+        got = utilsModule.fromtimestamp(-86400)
+
+        self.assertEqual(got, datetime.datetime(1969, 12, 31, tzinfo=datetime.timezone.utc))
+        self.assertEqual(got.utcoffset(), datetime.timedelta(0))
+
+    def test_an_instant_the_zone_cannot_express_comes_back_in_utc_rather_than_raising(self):
+        """9999-12-31T23:00Z pushed two hours east is past datetime.max. The
+        old arithmetic silently produced the wrong instant here; the epoch
+        anchor cannot, so the one thing left to decide is not to raise -
+        convertToDatetime already treats an OverflowError from this call as
+        'no date', and a UTC value keeps the instant."""
+        east = datetime.timezone(datetime.timedelta(hours=2))
+        got = utilsModule.fromtimestamp(253402297200, tz=east)
+
+        self.assertEqual(got, datetime.datetime(9999, 12, 31, 23, 0, tzinfo=datetime.timezone.utc))
+        self.assertEqual(got.utcoffset(), datetime.timedelta(0))
