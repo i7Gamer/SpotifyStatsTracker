@@ -234,12 +234,6 @@ button {
   font-weight: 700;
 }
 
-.filter-search input[type="search"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
-}
-
 .page {
   width: min(1400px, 100%);
   margin: 0 auto;
@@ -644,11 +638,6 @@ button {
   font-size: 1.3rem;
 }
 
-.card-content {
-  display: grid;
-  gap: 14px;
-}
-
 .import-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -770,12 +759,6 @@ button {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-glow);
-}
-
-.filter-group input[type="date"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow), 0 0 0 2px var(--accent-glow);
 }
 
 #import-form label {
@@ -1093,32 +1076,9 @@ progress::-moz-progress-bar {
   opacity: 0.9;
 }
 
-.track-row,
-.rank-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.track-meta,
-.rank-row div div {
+.track-meta {
   color: var(--muted);
   font-size: 0.95rem;
-}
-
-.track-name {
-  font-weight: 600;
-}
-
-.track-time,
-.rank {
-  color: var(--muted);
-  font-size: 0.95rem;
-  white-space: nowrap;
 }
 
 .track-summary-grid {
@@ -1578,14 +1538,7 @@ progress::-moz-progress-bar {
   }
 }
 
-.profile-grid {
-  display: grid;
-  gap: 12px 4px;
-  grid-template-columns: auto 1fr;
-}
-
-.loading,
-.error-card {
+.loading {
   color: var(--muted);
 }
 
@@ -3252,39 +3205,13 @@ input[type="checkbox"], input[type="radio"] {
   box-shadow: 0 0 8px rgba(255, 74, 74, 0.5);
 }
 
-.wrapped-year-badges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  margin: 24px 0 32px;
-}
-
-.wrapped-year-badge {
-  padding: 10px 20px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
-  border-radius: 999px;
-  font-weight: 600;
-  font-size: 0.95rem;
-  text-decoration: none;
-  transition: all 0.2s ease;
-}
-
-.wrapped-year-badge:active {
-  transform: scale(0.94);
-}
-
-.wrapped-year-badge:hover {
-  background: var(--accent-glow);
-}
-
-.wrapped-year-badge.active {
-  background: var(--accent);
-  color: #111;
-}
-
+/* The accent pill and its row, shared by the Wrapped year / Compare user
+   pickers (<a class="wrapped-year-badge">) and the stats-filter tabs
+   (<button class="stats-filter-button">). One selector list on purpose: they
+   were two verbatim copies that had to be edited in step, and drifted. The
+   <a>-only and <button>-only declarations (text-decoration; cursor and
+   font-family) are harmless on the other element, so both stay. */
+.wrapped-year-badges,
 .wrapped-stats-filters {
   display: flex;
   flex-wrap: wrap;
@@ -3293,6 +3220,7 @@ input[type="checkbox"], input[type="radio"] {
   margin: 24px 0 32px;
 }
 
+.wrapped-year-badge,
 .stats-filter-button {
   padding: 10px 20px;
   border: 1px solid var(--accent);
@@ -3301,19 +3229,23 @@ input[type="checkbox"], input[type="radio"] {
   border-radius: 999px;
   font-weight: 600;
   font-size: 0.95rem;
+  text-decoration: none;
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: inherit;
 }
 
+.wrapped-year-badge:active,
 .stats-filter-button:active {
   transform: scale(0.94);
 }
 
+.wrapped-year-badge:hover,
 .stats-filter-button:hover {
   background: var(--accent-glow);
 }
 
+.wrapped-year-badge.active,
 .stats-filter-button.active {
   background: var(--accent);
   color: #111;
@@ -3799,11 +3731,6 @@ html.theme-red {
 }
 
 /* --- THEME SELECTOR DROPDOWN --- */
-.theme-select-container {
-  display: flex;
-  align-items: center;
-}
-
 .theme-selector {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -4835,14 +4762,6 @@ html.theme-red {
 /* Genres page */
 #genreDetail {
   transition: opacity 0.15s ease;
-}
-
-/* DEAD as of the htmx migration - kept here only long enough to say so. The
-   genre detail region's loading state is now .htmx-fade-target on #genreExplore
-   (htmx sets .htmx-request on it for the life of the request); nothing sets
-   .is-loading any more. Delete this rule with the next CSS pass. */
-#genreDetail.is-loading {
-  opacity: 0.45;
 }
 
 .genre-chip-row {
