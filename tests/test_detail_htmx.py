@@ -414,3 +414,54 @@ class TestMissingEntitySwap(DetailHtmxTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
+    """?offset= and ?page= on the song play log were parsed with a bare int()
+    and bound straight into LIMIT ? OFFSET ?; sqlite3 refuses anything above
+    2**63-1 with OverflowError and the route had no handler for it, so
+    /song/<id>?offset=99999999999999999999 (or the same ?page=) answered the
+    play-log swap with a 500. The sibling ?limit= got its ceiling
+    (MAX_DETAIL_HISTORY_PAGES) for exactly this footgun; these two were left
+    behind. Now the offset is clamped against the row count (an offset past the
+    end legitimately renders the empty "nothing more" batch) and the page goes
+    through _positivePageArg's digit cap before any arithmetic."""
+
+    def _db(self):
+        db = super()._db()
+        db.getEntriesCount.return_value = 3
+        db.getEntriesFromNew.return_value = []
+        return db
+
+    def _startIndex(self, db):
+        db.getEntriesFromNew.assert_called_once()
+        return db.getEntriesFromNew.call_args.kwargs["startIndex"]
+
+    def test_an_absurd_offset_is_clamped_to_the_row_count(self):
+        for raw in ("99999999999999999999", "9223372036854775808"):
+            with self.subTest(offset=raw):
+                db = self._db()
+                resp = self._swap("/song/t1?offset=" + raw, HX_LIST_HEADERS, db=db)
+
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(self._startIndex(db), 3)
+
+    def test_an_absurd_page_starts_at_the_first_page(self):
+        db = self._db()
+        resp = self._swap("/song/t1?page=99999999999999999999", HX_LIST_HEADERS, db=db)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self._startIndex(db), 0)
+
+    def test_a_real_offset_and_page_still_pass_through(self):
+        from routes.charts import PAGE_SIZE
+
+        db = self._db()
+        resp = self._swap("/song/t1?offset=2", HX_LIST_HEADERS, db=db)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self._startIndex(db), 2)
+
+        db = self._db()
+        db.getEntriesCount.return_value = 10 * PAGE_SIZE
+        self._swap("/song/t1?page=3", HX_LIST_HEADERS, db=db)
+        self.assertEqual(self._startIndex(db), 2 * PAGE_SIZE)

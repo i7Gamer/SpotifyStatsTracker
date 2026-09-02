@@ -55,9 +55,10 @@ DETAIL_MORE_TARGET = "timelineActions"       #< "Show more": one appended batch
 
 #< How many pages' worth of rows one ?limit= may ask for. The detail history's
 #  "Show more" grows its batch, so limit legitimately exceeds PAGE_SIZE - but it
-#  was the one pagination parameter in the codebase with no ceiling at all, so
-#  ?limit=500000 fetched and rendered half a million rows. Own data only, so this
-#  is a footgun rather than a hole, and every other pager is already clamped.
+#  had no ceiling at all, so ?limit=500000 fetched and rendered half a million
+#  rows. Own data only, so this is a footgun rather than a hole, and every other
+#  pager is already clamped. (?offset= and ?page= beside it had none either, and
+#  overflowed sqlite3's bind into a 500 - see _detailHistoryContext.)
 MAX_DETAIL_HISTORY_PAGES = 10
 
 
@@ -1225,11 +1226,12 @@ def register(app, dashboard):
             skipsParam = request.args.get("skips", "true").lower()
             showSkips = skipsParam != "false"
 
-            try:
-                pageParam = int(request.args.get("page", 1))
-                defaultOffset = (pageParam - 1) * PAGE_SIZE if pageParam > 1 else 0
-            except (ValueError, TypeError):
-                defaultOffset = 0
+            #< _positivePageArg rather than a bare int(): its digit cap is what
+            #  keeps (page - 1) * PAGE_SIZE - and the OFFSET it turns into -
+            #  inside what sqlite3 will bind. Junk and absurd pages start at the
+            #  first page, as they always did.
+            pageParam = _positivePageArg()
+            defaultOffset = (int(pageParam) - 1) * PAGE_SIZE if pageParam else 0
 
             try:
                 offset = max(0, int(request.args.get("offset", defaultOffset)))
@@ -1243,6 +1245,12 @@ def register(app, dashboard):
                 limit = PAGE_SIZE
 
             totalCount = db.getEntriesCount(trackId=trackId, includeSkips=showSkips)
+            #< Clamped against the count rather than a fixed ceiling: an offset
+            #  past the end is a legitimate "nothing more" batch, whereas one
+            #  above 2**63-1 was an OverflowError out of sqlite3's bind and a
+            #  500 - the same footgun MAX_DETAIL_HISTORY_PAGES closed for
+            #  ?limit=, left open for the two parameters beside it.
+            offset = min(offset, totalCount)
             fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
             plays = fetchEntries(count=limit, startIndex=offset,
                                  trackId=trackId, includeSkips=showSkips)
