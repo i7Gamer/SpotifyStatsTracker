@@ -145,6 +145,8 @@ The admin console has an optional **"Restart app to apply"** button — used aft
 
 Listening history, tracks, images, and login sessions all live in one SQLite file at `Database/Data/spotify_stats.db`.
 
+The cover and artist image files themselves live beside it in `Database/Data/Media/` and travel with the database: keep that folder in the same backup. A database restored without it still works, but every image is re-downloaded on demand, one at a time as it is next viewed (or, for covers, next played).
+
 **Automatic backups are on by default**: the app snapshots the database every 24 hours into `Database/Data/Backups/` (covered by the standard volume mount) and keeps the newest 7 snapshots. Tune or disable via environment variables:
 
 ```yaml

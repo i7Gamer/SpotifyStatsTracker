@@ -574,6 +574,28 @@ class TrackQueries:
             conn.execute("DELETE FROM images WHERE id=? AND kind=? AND status=?",
                          (imageId, kind, IMAGE_STATUS_PENDING))
 
+    def forgetImageStatus(self, imageId: str, kind: str) -> None:
+        """Forget an 'ok' verdict whose file is no longer on disk.
+
+        'ok' means "downloaded, and the JPEG is at its final path" - and both
+        fetch gates trust it without looking at the disk (lazyFetchArtistImage
+        returns before any reclaim; tryClaimImageDownload refuses to re-claim
+        it). A database restored without Database/Data/Media therefore lost
+        every image it had ever fetched, permanently. The image routes call
+        this where the missing file is already detected, returning the row to
+        never-attempted so the next claim goes through.
+
+        Only an 'ok' row, and in one guarded statement rather than a
+        SELECT-then-DELETE: `with conn:` does not BEGIN, so a read-then-write
+        here would hold no lock, and a claim landing in the gap would be
+        deleted with the stale verdict. A 'pending' row is left alone - it may
+        be mid-write, and deleteStalePendingImages owns those at boot - and so
+        is 'failed', which is a verdict about the image, not about the disk."""
+        conn = self._conn()
+        with conn:
+            conn.execute("DELETE FROM images WHERE id=? AND kind=? AND status=?",
+                         (imageId, kind, IMAGE_STATUS_OK))
+
     def markImageStatus(self, imageId: str, kind: str, status: str) -> None:
         conn = self._conn()
         with conn:

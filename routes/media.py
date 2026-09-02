@@ -14,6 +14,7 @@ from flask import make_response, session, send_from_directory
 
 from config import IMAGE_CACHE_CONTROL, IMAGE_CACHE_MAX_AGE_SECONDS
 from Database.database import Database
+from Database.repository import IMAGE_KIND_ARTIST, IMAGE_KIND_TRACK
 
 
 def sendCacheableImage(directory, filename):
@@ -48,10 +49,33 @@ def register(app, dashboard):
             return None
         return dashboard.get_username_for_email(email)
 
+    def _imageIdFromFilename(filename):
+        """The `<imageId>` of an `<imageId>.jpeg` filename, or None for
+        anything else - the ids are alphanumeric, so a stem that is not one
+        names no image and must reach neither the images table nor a fetch."""
+        stem, _extension = os.path.splitext(filename)
+        return stem if stem.isalnum() else None
+
+    def _forgetMissingImage(username, imageId, kind):
+        """The file is not on disk: if the images table still says 'ok' for
+        it, that verdict is stale - a database restored without
+        Database/Data/Media - and both fetch gates would honour it forever.
+        Forget it here, where the gap is already known, so the artist path
+        below claims and fetches on this request and the listener's next
+        saveTrackImg re-claims the cover. See Repository.forgetImageStatus for
+        why only 'ok' rows go."""
+        db = dashboard.user_databases.get(username)
+        if db and imageId:
+            db.repo.forgetImageStatus(imageId, kind)
+        return db
+
     def serveTrackImage(username, filename):
         if username != _authorized_image_username() or filename != os.path.basename(filename):
             return "", 404
-        return sendCacheableImage(Database.imgDir_tracks, filename)
+        imageDir = Database.imgDir_tracks
+        if not os.path.exists(os.path.join(imageDir, filename)):
+            _forgetMissingImage(username, _imageIdFromFilename(filename), IMAGE_KIND_TRACK)
+        return sendCacheableImage(imageDir, filename)
     app.add_url_rule('/img/<username>/tracks/<filename>', 'serveTrackImage', serveTrackImage)
 
     def serveArtistImage(username, filename):
@@ -61,12 +85,10 @@ def register(app, dashboard):
         imagePath = os.path.join(imageDir, filename)
 
         if not os.path.exists(imagePath):
-            parts = os.path.splitext(filename)
-            if len(parts) == 2 and parts[0].isalnum():
-                artistId = parts[0]
-                db = dashboard.user_databases.get(username)
-                if db:
-                    db.lazyFetchArtistImage(artistId, Path(imagePath))
+            artistId = _imageIdFromFilename(filename)
+            db = _forgetMissingImage(username, artistId, IMAGE_KIND_ARTIST)
+            if db and artistId:
+                db.lazyFetchArtistImage(artistId, Path(imagePath))
 
         return sendCacheableImage(imageDir, filename)
     app.add_url_rule('/img/<username>/artists/<filename>', 'serveArtistImage', serveArtistImage)
