@@ -186,6 +186,22 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
 
         self.assertEqual(db.listener_error_count, 0)  #< error-free poll resets the count
 
+    def test_the_listener_degrades_only_past_the_named_error_threshold(self):
+        """The DEGRADED cut-off is LISTENER_DEGRADED_ERROR_THRESHOLD consecutive
+        errored batches - exceeded, not reached. Driven off the constant so
+        the test follows a retune instead of pinning a literal."""
+        db = _bareDatabase()
+        db.appendTrackData.side_effect = Exception("insert failed")
+        items = self._items()[:1]
+
+        for _ in range(Database.LISTENER_DEGRADED_ERROR_THRESHOLD):
+            db._addToDatabaseFromListener(items)
+        self.assertEqual(db.listener_health, "HEALTHY")
+        self.assertEqual(db.listener_error_count, Database.LISTENER_DEGRADED_ERROR_THRESHOLD)
+
+        db._addToDatabaseFromListener(items)
+        self.assertEqual(db.listener_health, "DEGRADED")
+
     def test_skips_future_played_at_and_handles_string_timestamps(self):
         db = _bareDatabase()
         import time

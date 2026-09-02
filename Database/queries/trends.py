@@ -20,8 +20,6 @@ from config import (
     TREND_FORGOTTEN_FALLBACK_MIN_PLAYS,
 )
 
-SECONDS_PER_DAY = 86400
-
 
 class TrendQueries:
     """TrendQueries: SQL queries for Dashboard Obsession, Rediscovery, Fresh

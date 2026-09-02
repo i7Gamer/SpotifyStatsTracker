@@ -39,12 +39,16 @@ try:
                              BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH, UNKNOWN_ALBUM_NAME)
     from Database.secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
                                        keyFingerprint)
+    #< the one home of the day constant; star-exported from here to every
+    #  query mixin like the names above (utils takes part in no import cycle)
+    from Database.utils import SECONDS_PER_DAY
 except ModuleNotFoundError:
     import db
     from db import (ConnectionManager, SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
                     BEHAVIORAL_COLUMNS, SPOTIFY_TRACK_ID_LENGTH, UNKNOWN_ALBUM_NAME)
     from secret_store import (encryptSecret, decryptSecret, isEncrypted, isForeignKeyed,
                               keyFingerprint)
+    from utils import SECONDS_PER_DAY
 
 IMAGE_KIND_TRACK = "track"
 IMAGE_KIND_ARTIST = "artist"
@@ -217,7 +221,6 @@ GENRE_BACKFILL_RETRY_DAYS_KEY = "genre_backfill_retry_days"
 BIO_BACKFILL_RETRY_DAYS_KEY = "bio_backfill_retry_days"
 BACKFILL_RETRY_DAYS_MIN = 1
 BACKFILL_RETRY_DAYS_MAX = 365
-SECONDS_PER_DAY = 24 * 3600
 
 # The ISRC matcher's daily slot. It used to run on every metadata-backfill
 # cycle - a few minutes apart, and once per user - which was fine while a run

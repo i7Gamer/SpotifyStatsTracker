@@ -103,7 +103,7 @@ class ListenerMixin:
             if had_errors:
                 self.listener_error_count += 1
                 self.listener_last_error = "One or more tracks failed to add from listener"
-                if self.listener_error_count > 5:
+                if self.listener_error_count > self.LISTENER_DEGRADED_ERROR_THRESHOLD:
                     self.listener_health = "DEGRADED"
                     _dbmod.logger.warning("Listener error count exceeded threshold, marking as DEGRADED")
             else:

@@ -28,7 +28,7 @@ try:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH
+    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH, SECONDS_PER_DAY
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
@@ -42,7 +42,7 @@ except ModuleNotFoundError:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH
+    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH, SECONDS_PER_DAY
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 #< after the shim above on purpose: on a direct `python Database/database.py`
@@ -62,8 +62,6 @@ logger = logging.getLogger(__name__)
 # getGenreCoverage). The overall percentage is the mean across these, so the
 # count must track this tuple - never a bare literal.
 GENRE_COVERAGE_CATEGORIES = ("song", "album", "artist")
-
-SECONDS_PER_DAY = 86400
 
 # How far back getCurrentStreak scans for the ongoing daily streak. A live
 # streak is always far shorter; this only bounds the bucket query so it never
@@ -279,6 +277,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                                 #  listener (the contamination check) rather than as clock or
                                                 #  timezone skew. A day, because skew is hours at worst and a
                                                 #  wrongly-dropped play cannot be recovered
+
+    LISTENER_DEGRADED_ERROR_THRESHOLD = 5      #< consecutive listener batches with a failed insert before the
+                                                #  listener reports DEGRADED (exceeded, not reached); one clean
+                                                #  batch resets the count - see _addToDatabaseFromListener
 
     BACKFILLER_MIN_START_DELAY = 30            #< random startup-offset bounds for the metadata backfiller,
     BACKFILLER_MAX_START_DELAY = 90            #  in seconds - staggers per-user threads after a restart
