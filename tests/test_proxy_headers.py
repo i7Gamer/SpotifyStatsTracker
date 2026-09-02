@@ -54,6 +54,27 @@ class TestTrustedProxyCountParsing(unittest.TestCase):
     def test_junk_means_disabled(self):
         self.assertEqual(self._withEnv("banana"), 0)
 
+    def test_unrecognised_value_is_warned_about(self):
+        """A typo resolves to 0 - ProxyFix is never installed and the auth
+        limiter collapses into one shared bucket for everyone behind the
+        proxy, exactly what the variable exists to prevent. The operator must
+        be able to find the ignored setting in the log, the way the sibling
+        parsers (Database.backup._envInt, wsgi._waitressThreads) already
+        say so."""
+        for raw in ("2.0", "ture", "-1", "1e2"):
+            with self.subTest(raw=raw):
+                with self.assertLogs("app", level="WARNING") as captured:
+                    self.assertEqual(self._withEnv(raw), 0)
+                self.assertEqual(len(captured.records), 1)
+                self.assertIn(appModule.TRUST_PROXY_HEADERS_ENV_VAR, captured.output[0])
+                self.assertIn(repr(raw), captured.output[0])
+
+    def test_recognised_values_are_not_warned_about(self):
+        """"0" is an explicit opt-out, not a typo - no warning for it."""
+        for raw, expected in (("3", 3), ("true", 1), ("0", 0)):
+            with self.subTest(raw=raw), self.assertNoLogs("app", level="WARNING"):
+                self.assertEqual(self._withEnv(raw), expected)
+
 
 class _AppTestBase(AppTestCase):
     def _postLogin(self, client, ip, forwardedFor=None):

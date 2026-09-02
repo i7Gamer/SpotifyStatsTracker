@@ -85,9 +85,21 @@ def _trustedProxyCount() -> int:
     if not raw:
         return 0
     try:
-        return max(0, int(raw))
+        count = int(raw)
     except ValueError:
-        return 1 if raw in TRUTHY_ENV_VALUES else 0
+        count = None
+    if count is None and raw in TRUTHY_ENV_VALUES:
+        return 1
+    if count is None or count < 0:
+        # A typo ("2.0", "ture", "-1") lands here and disables the feature -
+        # the per-IP auth limiter then shares one bucket across everyone
+        # behind the proxy, which is what the variable exists to prevent. Say
+        # so, the way Database.backup._envInt and wsgi._waitressThreads do;
+        # "0" is an explicit opt-out and stays silent.
+        logger.warning("Ignoring unrecognised %s=%r - X-Forwarded-* headers will NOT be trusted",
+                       TRUST_PROXY_HEADERS_ENV_VAR, raw)
+        return 0
+    return count
 
 
 def _hstsEnabled() -> bool:
