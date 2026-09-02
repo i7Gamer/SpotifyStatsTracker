@@ -73,13 +73,15 @@ def _readFile(path):
 
 class _Rule:
     """One `selector-list { body }`, with its nesting depth (0 = top level,
-    1 = inside an @media block) and source order."""
+    1 = inside an @media block), the prelude of the at-rule enclosing it
+    ("" at top level) and source order."""
 
-    def __init__(self, order, depth, selectorText, body):
+    def __init__(self, order, depth, selectorText, body, enclosing):
         self.order = order
         self.depth = depth
         self.selectors = [" ".join(part.split()) for part in selectorText.split(",")]
         self.body = body
+        self.enclosing = " ".join(enclosing.split())
 
     def declaration(self, prop):
         found = re.search(r"(?:^|;)\s*" + re.escape(prop) + r"\s*:\s*([^;]+)", self.body)
@@ -118,7 +120,8 @@ def _parseRules(css):
             buf = []
             depth -= 1
             if text and not text.startswith("@"):
-                rules.append(_Rule(len(rules), depth, text, body))
+                enclosing = pendingSelector[-1] if pendingSelector else ""
+                rules.append(_Rule(len(rules), depth, text, body, enclosing))
         else:
             buf.append(ch)
     return rules

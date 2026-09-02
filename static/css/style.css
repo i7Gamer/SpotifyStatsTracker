@@ -2731,6 +2731,17 @@ input[type="checkbox"], input[type="radio"] {
     overflow: hidden;
   }
 
+  /* The scroll-to-top button is position: fixed in the ROOT stacking context
+     (z-index 99), and the drawer is inside the sticky .topbar, whose own
+     z-index makes it a stacking context - so 99 beats the whole topbar subtree
+     and the button floated over the drawer's bottom-right corner, where its
+     last row sits. visibility rather than display: chrome-common.js writes
+     display inline on every scroll tick, which only !important could beat. */
+  body.nav-open .scroll-to-top {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   /* These are the only controls on the screen while the drawer is open, so
      they get full-strength text and a real touch target - --muted at ~34px
      read as secondary text you had to aim at. */
