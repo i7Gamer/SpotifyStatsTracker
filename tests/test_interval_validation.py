@@ -180,5 +180,46 @@ class TestOutOfBoundsCustomDates(unittest.TestCase):
         self.assertEqual(label, "Custom range: 1970-01-01 to 2100-12-31")
 
 
+class TestInvertedCustomDates(unittest.TestCase):
+    """A custom range whose start is AFTER its end is treated exactly like an
+    unparseable one: the data falls back to the default window and the label
+    never claims the range. The filter card already refuses the same input
+    (static/js/htmx-filters.js's RANGE_INVERTED), so a shared or hand-edited
+    URL with the dates reversed used to be the only way in - and it rendered
+    an empty "No history tracks found" state under a
+    "Custom range: 2024-06-01 to 2020-01-01" heading, blaming the library for
+    a window that can never match (2026-09-02 review, CORE-4). The dates are
+    NOT swapped: the server and the client should agree that the input is
+    invalid, not disagree about what it meant."""
+
+    _INVERTED = ("2024-06-01", "2020-01-01")
+
+    def test_the_data_falls_back_to_the_default_window(self):
+        dash = makeApp()
+        with _frozenNow():
+            got = dash._getDateRange("custom", customStart=self._INVERTED[0],
+                                     customEnd=self._INVERTED[1], default="week", tz=timezone.utc)
+            expected = dash._getDateRange("week", default="week", tz=timezone.utc)
+        self.assertIsNotNone(got[0])   #< neither all-time nor the empty inverted window
+        self.assertEqual(got, expected)
+
+    def test_the_label_does_not_claim_the_inverted_range(self):
+        dash = makeApp()
+        label = dash._getIntervalLabel("custom", customStart=self._INVERTED[0],
+                                       customEnd=self._INVERTED[1], default="week")
+        self.assertEqual(label, "Last Week")
+
+    def test_a_same_day_range_is_still_valid(self):
+        """`>`, not `>=`: start == end is the one-day range the filter card
+        submits for a single day."""
+        dash = makeApp()
+        start, end = dash._getDateRange("custom", customStart="2020-01-01", customEnd="2020-01-01",
+                                        default="week", tz=timezone.utc)
+        self.assertEqual(start.date().isoformat(), "2020-01-01")
+        self.assertEqual(end.date().isoformat(), "2020-01-02")   #< half-open: end date + 1 day
+        label = dash._getIntervalLabel("custom", customStart="2020-01-01", customEnd="2020-01-01")
+        self.assertEqual(label, "Custom range: 2020-01-01 to 2020-01-01")
+
+
 if __name__ == "__main__":
     unittest.main()

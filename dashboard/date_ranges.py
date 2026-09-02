@@ -112,6 +112,8 @@ class DateRangeMixin:
                     endLocal = self._parseCustomRangeDate(customEnd, tz=tz)
                     if startLocal is None or endLocal is None:
                         raise ValueError("Invalid custom date")
+                    if self._customRangeIsInverted(startLocal, endLocal):
+                        raise ValueError("Custom range start is after its end")
 
                     startDate = startLocal
                     endDate = endLocal + timedelta(days=1)
@@ -119,7 +121,14 @@ class DateRangeMixin:
                     # Unparseable dates used to fall through to the all-time
                     # branch below, showing the user's ENTIRE history under a
                     # "Custom range: x to y" label. Fall back to the default
-                    # interval instead; _getIntervalLabel does the same.
+                    # interval instead; _getIntervalLabel does the same. An
+                    # INVERTED pair (start after end) takes the same exit: the
+                    # filter card already refuses it (htmx-filters.js's
+                    # RANGE_INVERTED), so only a shared or hand-edited URL
+                    # carries one, and honouring it rendered an empty window
+                    # under a label claiming the range. Not swapped - the
+                    # server and the client should agree the input is invalid,
+                    # not disagree about what it meant.
                     interval = default
             if not startDate:
                 if interval == "today":
@@ -161,6 +170,16 @@ class DateRangeMixin:
             return None
         return parsed
 
+    @staticmethod
+    def _customRangeIsInverted(startLocal, endLocal) -> bool:
+        """Whether a parsed custom pair has its start AFTER its end - the
+        second way a custom range is refused, beside _parseCustomRangeDate's
+        None. Strictly `>`: start == end is the one-day range the filter card
+        submits for a single day. Same rule as htmx-filters.js's
+        RANGE_INVERTED check; _getDateRange and _getIntervalLabel both go
+        through here so the data and the label cannot disagree."""
+        return startLocal > endLocal
+
     def _getIntervalLabel(self, interval: str = None, customStart: str = None, customEnd: str = None, default: str = "day"):
         # Match _getDateRange: an unrecognized interval takes `default`, so the
         # label can't disagree with the data (junk no longer reads "Yesterday"
@@ -177,12 +196,15 @@ class DateRangeMixin:
         }
 
         if interval == "custom" and customStart and customEnd:
-            # Only claim a custom range if those dates actually parsed AND fell
-            # inside the sanity window - _getDateRange falls back to `default`
-            # otherwise (same _parseCustomRangeDate), and the label must not
-            # promise a range the data doesn't cover.
-            if (self._parseCustomRangeDate(customStart) is not None
-                    and self._parseCustomRangeDate(customEnd) is not None):
+            # Only claim a custom range if those dates actually parsed, fell
+            # inside the sanity window AND are not inverted - _getDateRange
+            # falls back to `default` otherwise (same _parseCustomRangeDate and
+            # _customRangeIsInverted), and the label must not promise a range
+            # the data doesn't cover.
+            startLocal = self._parseCustomRangeDate(customStart)
+            endLocal = self._parseCustomRangeDate(customEnd)
+            if (startLocal is not None and endLocal is not None
+                    and not self._customRangeIsInverted(startLocal, endLocal)):
                 return f"Custom range: {customStart} to {customEnd}"
             return labels.get(default, "Yesterday")
 

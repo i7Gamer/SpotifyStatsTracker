@@ -244,4 +244,14 @@ class TestShell(ChartsHtmxTestCase):
         dateInput = body[body.index('id="startDate"'):]
         self.assertNotIn("disabled", dateInput[:dateInput.index(">")])
 
+    def test_an_inverted_custom_range_is_not_claimed_by_the_heading(self):
+        """start > end is refused server-side exactly like an unparseable
+        date (dashboard/date_ranges.py, CORE-4): the fragment renders the
+        default window under the default window's heading, not
+        "Custom range: 2024-06-01 to 2020-01-01" over empty charts."""
+        body = self._fragment("?interval=custom&startDate=2024-06-01&endDate=2020-01-01").get_data(as_text=True)
+
+        self.assertNotIn("Custom range:", body)
+        self.assertIn("Last Month", body)   #< the mocked default_dashboard_window
+
 
