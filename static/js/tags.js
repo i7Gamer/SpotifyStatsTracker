@@ -59,9 +59,18 @@ if (typeof window !== 'undefined') (function() {
       errorLine.style.display = 'none';
     }
 
+    //< which submit is the latest. Nothing disables the form or the chips for
+    //  the round trip, so two updates can be in flight at once, and each
+    //  answer carries the server's full list AS OF that request: the one that
+    //  lands last used to paint the row - an older list over a newer one, so a
+    //  tag the server had stored vanished until reload. Same guard as
+    //  wrapped.js's shareSubmitSeq and playlists.js's previewToken.
+    var tagSeq = 0;
+
     // One request path for add and remove - they differ only in HTTP method,
     // the tag sent, and what happens after a successful apply.
     function submitTagUpdate(method, tag, fallbackMessage, onApplied) {
+      var seq = ++tagSeq;
       fetch('/api/tags', {
         method: method,
         headers: {
@@ -86,6 +95,10 @@ if (typeof window !== 'undefined') (function() {
       })
       .then(function(outcome) {
         if (!outcome) return;   //< navigating to /login
+        /* Checked AFTER the 401 peel above and never before it: a 401 is news
+           about the SESSION, which every in-flight submit shares, so whichever
+           one notices acts on it (see wrapped.js, same rule). */
+        if (seq !== tagSeq) return;
         if (outcome.apply) {
           hideTagError();
           onApplied(outcome.tags);
@@ -95,6 +108,9 @@ if (typeof window !== 'undefined') (function() {
       })
       .catch(function(err) {
         console.error('Tag update failed:', err);
+        //< gated too: an error about a request the user has already moved past
+        //  is as wrong as a stale repaint
+        if (seq !== tagSeq) return;
         showTagError(fallbackMessage);
       });
     }
