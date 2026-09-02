@@ -168,9 +168,11 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
         """Either through the shared helper (the normal way) or, for a loader
         whose response handling genuinely differs, by calling the check itself.
 
-        detail-page.js is the one exception: it has to read a 404's body to find
-        the redirectUrl the route sends when an entity no longer resolves, so it
-        cannot delegate to a helper that throws on every non-2xx."""
+        detail-page.js used to be the exception (it read a 404's body for the
+        redirectUrl the route sends when an entity no longer resolves); it moved
+        to htmx and that answer became a header. detail-chart.js has the same
+        need for its ?ajax=true mode and meets it by peeling the 404 off AHEAD
+        of the helper, so the 401 still goes through readJsonOrThrow."""
         missing = sorted(name for name in EXPECTED_PAGE_LOADERS
                          if "readJsonOrThrow" not in self.files[name]
                          and "redirectIfUnauthorized" not in self.files[name])
@@ -189,7 +191,13 @@ class AjaxLoaderErrorHandlingTestCase(unittest.TestCase):
         should send the visitor - which no helper that throws on every non-2xx
         can do. The detail pages moved to htmx and that answer became a header
         (HX-Redirect, see _missingEntityResponse), so the branch, the fetch and
-        the exception all went at once."""
+        the exception all went at once.
+
+        The same need is back in detail-chart.js - _missingEntityResponse still
+        answers its ?ajax=true mode with 404 {redirectUrl}, and for a while
+        nothing read it - but it is NOT an exception: the loader peels the 404
+        off first and hands every other status to readJsonOrThrow, so the
+        convention this pins still holds (behaviour in tests/test_detail_chart.js)."""
         HAND_ROLLED_EXCEPTIONS = set()
 
         handRolled = sorted(name for name in EXPECTED_PAGE_LOADERS - HAND_ROLLED_EXCEPTIONS

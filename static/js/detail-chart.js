@@ -9,6 +9,7 @@
  * Loaded after charts.js (window.renderTimeSeriesChart, window.__chartData). */
 (function () {
   var DETAIL_FADE_MS = 200;
+  var HTTP_NOT_FOUND = 404;
 
   //< the play log (detail-history.js) reports through the same banner slot;
   //  naming this loader keeps one's success from clearing the other's failure
@@ -62,6 +63,25 @@
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       signal: controller.signal
     }).then(function (resp) {
+      // A 404 here is the route saying the entity no longer resolves (an
+      // overwrite import or a merge removed it after the page loaded) and
+      // WHERE to go instead - the JSON twin of the HX-Redirect the deferred
+      // body gets (routes/charts.py's _missingEntityResponse). Peeled off
+      // ahead of the shared helper, which throws on every non-2xx before
+      // reading a body: left to it, the banner's Retry failed identically
+      // forever while a reload of the same URL redirected to the top list.
+      if (resp.status === HTTP_NOT_FOUND) {
+        return resp.json().then(function (body) {
+          if (body && body.redirectUrl) {
+            window.location.href = body.redirectUrl;
+            //< the "we're leaving the page" sentinel the catch already skips;
+            //  the redirect is not about the session, only the outcome is shared
+            throw new Error(window.AjaxStatus.UNAUTHORIZED_ERROR);
+          }
+          //< a 404 with nowhere to go is the plain failure it always was
+          return window.AjaxStatus.readJsonOrThrow(resp, 'detail chart');
+        });
+      }
       //< the Group-by select has already moved, so a swallowed non-2xx would
       //  leave the PREVIOUS series on screen labelled as the new one
       return window.AjaxStatus.readJsonOrThrow(resp, 'detail chart');

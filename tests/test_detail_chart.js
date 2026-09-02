@@ -259,6 +259,44 @@ run('the chart claims its banner and clears only its own', async () => {
                          "a chart success must not take down the play log's banner");
 });
 
+// An entity removed after the page loaded (an overwrite import or a merge
+// mid-session) answers the bucket change with 404 {redirectUrl} - the JSON
+// twin of the HX-Redirect the deferred body gets (routes/charts.py's
+// _missingEntityResponse, pinned by tests/test_detail_htmx.py -k json_404).
+// The shared helper throws on every non-2xx before reading a body, so the
+// loader used to show "couldn't load" with a Retry that failed identically
+// forever, while a reload of the same URL redirected to the top list.
+
+function notFound(body) {
+  return { status: 404, ok: false, json: () => Promise.resolve(body) };
+}
+
+run('a 404 carrying a redirectUrl navigates there and shows no banner', async () => {
+  const page = freshPage();
+
+  page.load('day');
+  page.pendingFetches[0].resolve(notFound({ redirectUrl: '/top-songs' }));
+  await settle();
+
+  assert.strictEqual(global.window.location.href, '/top-songs');
+  assert.strictEqual(page.calls.banners.length, 0, 'leaving the page is not a failure to retry');
+  assert.strictEqual(page.calls.errors.length, 0, 'nor one to log');
+  assert.strictEqual(page.chartData.timeSeries, INITIAL_SERIES);
+});
+
+run('a 404 without a redirectUrl still gets the banner', async () => {
+  const page = freshPage();
+
+  page.load('day');
+  page.pendingFetches[0].resolve(notFound({ error: 'not found' }));
+  await settle();
+
+  assert.strictEqual(global.window.location.href, '/song/t1?groupBy=day', 'nowhere to go');
+  assert.strictEqual(page.calls.banners.length, 1);
+  assert.match(String(page.calls.errors[0]), /detail chart fetch failed: 404/,
+               'the shared helper still names the failure');
+});
+
 run("the previous load's abort is neither logged nor reported", async () => {
   /* What a real fetch() does to the load a newer bucket change aborted: reject
    * with an AbortError. The catch filters it by name - the reason the
