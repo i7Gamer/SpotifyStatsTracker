@@ -486,6 +486,19 @@ button {
   line-height: 1.15;
 }
 
+/* The genre drill-down's stat strip (_genre_detail.html) uses h3 here, not
+   h2: those four cards sit inside the selected genre's own h3 section, and an
+   h2 there would outrank it in the document outline (2026-09-02 review,
+   WP-3). Same look as .summary-card h2 above - only the heading level moved. */
+.genre-stat-strip .summary-card h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.15;
+}
+
 .summary-card p,
 .summary-card ul {
   margin: 0;

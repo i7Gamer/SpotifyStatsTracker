@@ -17,19 +17,19 @@
   {% if genreStats %}
   <div class="dashboard-summary genre-stat-strip">
     <div class="summary-card">
-      <h2>Plays</h2>
+      <h3>Plays</h3>
       <p class="summary-value">{{ "{:,}".format(genreStats.plays) }}</p>
     </div>
     <div class="summary-card">
-      <h2>Listen time</h2>
+      <h3>Listen time</h3>
       <p class="summary-value">{{ genreStats.listenText }}</p>
     </div>
     <div class="summary-card">
-      <h2>Share of tagged plays</h2>
+      <h3>Share of tagged plays</h3>
       <p class="summary-value">{{ genreStats.sharePercent }}%</p>
     </div>
     <div class="summary-card">
-      <h2>First heard</h2>
+      <h3>First heard</h3>
       <p class="summary-value">{{ genreStats.firstPlayedText }}</p>
     </div>
   </div>
