@@ -256,6 +256,41 @@ class TestStaleReasonReporting(unittest.TestCase):
 
         onStale.assert_called_once_with(reason=STALE_REASON_UNRECORDED_PLAYBACK)
 
+    def test_a_change_the_feed_recorded_does_not_arm_the_evidence(self):
+        """The ORDINARY transition, which must not read as unrecorded playback.
+
+        current_user_recently_played() is a local in-process buffer (see
+        Database/Spotify/client.py), and the poll loop writes the connect state
+        for the INCOMING track before _applyStateToTracking appends the
+        OUTGOING one. So the tick that first sees a finished track's feed entry
+        already reads its replacement - and skipping the playback observation
+        on that tick (the feed-change branch returns early) left
+        _lastPlayingUri on the finished track. The next quiet tick then
+        registered the transition with a timestamp AFTER the feed had already
+        moved, which is exactly _staleFeedBrokenReason's "a play finished and
+        never arrived" arm.
+
+        So every ordinary track change armed it, and the first 30-minute quiet
+        stretch after one - someone stopping listening, or a long track -
+        rebuilt the session: the per-user rebuild loop this whole check exists
+        to prevent, plus the risk of killing the in-flight track() lookup for
+        the play it was protecting."""
+        listener, onStale = self._listener(), MagicMock()
+
+        self._poll(listener, 200.0, _playingState(self.TRACK_A), onStale)
+        #< the transition: A's entry lands in the feed on the same tick the
+        #  connect state already names B
+        listener.sp.current_user_recently_played.return_value = [{"played_at": 1}, {"played_at": 2}]
+        self._poll(listener, 201.0, _playingState(self.TRACK_B), onStale)
+        #< the next quiet tick, well inside the continuity window
+        self._poll(listener, 202.0, _playingState(self.TRACK_B), onStale)
+        #< then listening simply stops, past the stale timeout and its grace
+        self._poll(listener, 201.0 + LISTENER_STALE_TIMEOUT_SECONDS
+                   + LISTENER_UNRECORDED_CHANGE_GRACE_SECONDS + 1,
+                   _playingState(self.TRACK_B), onStale)
+
+        onStale.assert_not_called()
+
     def test_the_catch_up_grace_defers_the_hard_ceiling_too(self):
         """The grace exists because a finished play is normally still resolving
         its metadata when the track change is first seen, and rebuilding inside

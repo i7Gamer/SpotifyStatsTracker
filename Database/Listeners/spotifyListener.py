@@ -1336,20 +1336,39 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 raise  # Trigger rate limit backoff in startListener
             raise  # Let startListener handle other errors
 
+        # BEFORE the feed-change branch below, and that ordering is the whole
+        # point. current_user_recently_played() is a local in-process buffer
+        # (Database/Spotify/client.py), and the poll loop writes the connect
+        # state for the INCOMING track before _applyStateToTracking appends the
+        # OUTGOING one - so the tick that first sees a finished track's feed
+        # entry already reads its replacement.
+        #
+        # This used to sit under that branch, on the reasoning that a moving
+        # feed is "alive by definition". It is, but skipping the sighting left
+        # _lastPlayingUri on the track that just finished, so the NEXT quiet
+        # tick registered the transition with a timestamp AFTER the feed had
+        # moved - which is precisely _staleFeedBrokenReason's "a play finished
+        # and never arrived" arm. Every ordinary track change armed it, and the
+        # first quiet 30 minutes afterwards rebuilt the session: the per-user
+        # rebuild loop that check exists to prevent.
+        #
+        # Still after _validateCurrentUser and the feed read, which the
+        # docstring depends on: an error on either skips the sighting and the
+        # loop backs off, so a gap we did not observe is never claimed as
+        # witnessed.
+        self._observePlaybackForStaleness()
+
         if recentlyPlayed != self.recentlyPlayed_Z1:
             newItems = self.getNewItems(recentlyPlayed)
             if newItems:
                 logger.info("Listener callback: %d new items for user %s", len(newItems), self.logUser)
             callback(newItems)
             self.recentlyPlayed_Z1 = recentlyPlayed
+            # Stamped after the sighting above, never before it: the two are
+            # compared with a strict > , so a change seen alongside its own
+            # feed entry has to land at or before this to read as recorded.
             self._lastChangeTime = time.monotonic()
             return True
-
-        # The feed is quiet: from here on, what playback is doing is the only
-        # thing that can explain why (see _observePlaybackForStaleness). While
-        # the feed IS changing the branch above returns first - it's alive by
-        # definition then, and _lastChangeTime is the whole record needed.
-        self._observePlaybackForStaleness()
 
         if onStale is None:
             return True
