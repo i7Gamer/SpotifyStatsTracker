@@ -353,5 +353,77 @@ class GenresPageTestCase(AppTestCase):
         db.getGenreCoverage.assert_not_called()
 
 
+class GenresEmptyRangeTestCase(AppTestCase):
+    """2026-09-02 review, UT-9: an unlocked user whose SELECTED RANGE has zero
+    genre-tagged plays used to see a blank chip row and a blank drill-down -
+    genreNames/distributionPairs are both empty exactly when the range has no
+    genre plays (they derive from the same resolveGenreDistribution call), and
+    selectedGenre is None exactly when genreNames is empty. Neither
+    _genre_chips.html's for loop nor _genre_detail.html's `if selectedGenre`
+    guard rendered anything to say why.
+
+    A plain AppTestCase, not a GenresPageTestCase subclass: inheriting a class
+    that already carries tests would re-run its whole suite under this class
+    too (see tests/test_sweep_backfill_duplicates.py's _SweepBase for why that
+    pattern was fixed elsewhere in this project) - so the three tiny request
+    helpers are duplicated here instead, matching this test file's own
+    established convention of not sharing helpers across files."""
+
+    def _makeDb(self, coverage, distribution):
+        db = MagicMock()
+        db.repo.getUserSettings.return_value = {"default_dashboard_window": "all time", "timezone": None}
+        db.getGenreCoverage.return_value = coverage
+        db.getGenreDistribution.return_value = distribution
+        db.getGenreTrends.return_value = {"buckets": [], "series": []}
+        db.getGenreStats.return_value = {"plays": 0, "listenMs": 0, "firstPlayedTs": None, "sharePercent": 0.0}
+        db.getTopArtistsForGenre.return_value = []
+        db.getTopTracksForGenre.return_value = []
+        db.getGenreHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+        db.getGenreArtistCounts.return_value = {}
+        return db
+
+    def _getData(self, dash, db, query="", headers=None):
+        client = dash.app.test_client()
+        with patch.object(dash, 'is_user_logged_in', return_value=True), \
+             patch.object(dash, 'get_username_for_email', return_value='alice'), \
+             patch.object(dash, 'get_user_db', return_value=db):
+            with client.session_transaction() as sess:
+                sess['email'] = 'alice@example.com'
+            return client.get(f"/genres{query}", headers=headers or HX_HEADERS)
+
+    def test_full_fragment_shows_an_empty_state_for_a_genreless_range(self):
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={})
+
+        resp = self._getData(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_data(as_text=True)
+        self.assertIn('class="empty-state"', body)
+        self.assertIn("No genre data for this time period.", body)
+
+    def test_chip_click_drill_down_also_shows_the_empty_state(self):
+        """The chip-click fragment shares _genre_explore.html with the full
+        one, so it must degrade the same way - though a chip only exists to
+        click when the range has at least one genre, this pins the shared
+        partial rather than relying on that being unreachable."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={})
+
+        resp = self._getData(dash, db, query="?genre=rock", headers=HX_EXPLORE_HEADERS)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("No genre data for this time period.", resp.get_data(as_text=True))
+
+    def test_a_range_with_genres_shows_no_empty_state(self):
+        """Negative control: the guard must not fire when there IS data."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 120})
+
+        resp = self._getData(dash, db)
+
+        self.assertNotIn("No genre data for this time period.", resp.get_data(as_text=True))
+
+
 if __name__ == "__main__":
     unittest.main()

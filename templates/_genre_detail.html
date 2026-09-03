@@ -11,6 +11,12 @@
    The artist/track links below are why hx-boost is scoped to the chip row and
    not to the whole drill-down: boosting these would swap a detail PAGE into
    this card instead of navigating to it. #}
+{# selectedGenre is None exactly when genreNames (the distribution the chip
+   row loops over) is empty - routes/genres.py falls back to None only when
+   there is no top genre to default to. So this else covers the one case
+   that matters: the selected time range has no genre-tagged plays at all,
+   for either an unconfigured Last.fm key or a genuinely quiet range
+   (2026-09-02 review, UT-9). #}
 {% if selectedGenre %}
   <h3 class="genre-selected-title">{{ selectedGenre }}</h3>
 
@@ -85,4 +91,6 @@
       {% endif %}
     </div>
   </div>
+{% else %}
+  <p class="empty-state">No genre data for this time period.</p>
 {% endif %}
