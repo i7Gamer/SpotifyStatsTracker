@@ -38,9 +38,29 @@ var HISTORY_RESULTS_ID = 'historyResults';
 // "is this range worth a request" would eventually disagree. Loaded before this
 // file (see templates/history.html).
 var RANGE_OK = HtmxFilters.RANGE_OK;
+var RANGE_INVERTED = HtmxFilters.RANGE_INVERTED;
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
+
+  // #dateError's role="alert" and aria-describedby (templates/history.html)
+  // only cover "announce this text when it appears" - they say nothing about
+  // WHICH fields are wrong. aria-invalid on the two date inputs is that half,
+  // and it is driven from the same `problem` value showRangeError reads
+  // rather than by re-reading #dateError's text back off the DOM, so the two
+  // can never disagree about what "invalid" means. Removed rather than set to
+  // "false" when clear: an absent attribute is what a screen reader treats as
+  // "no opinion", matching every other field on the page that was never
+  // marked invalid at all.
+  var syncDateAriaInvalid = function (problem) {
+    var invalid = problem === RANGE_INVERTED;
+    ['startDate', 'endDate'].forEach(function (id) {
+      var field = byId(id);
+      if (!field) return;
+      if (invalid) field.setAttribute('aria-invalid', 'true');
+      else field.removeAttribute('aria-invalid');
+    });
+  };
 
   // Called from the Time Period select's onchange. Runs before htmx's own
   // listener does (an inline on*= handler fires at the target, htmx's is on the
@@ -50,7 +70,10 @@ if (typeof document !== 'undefined') {
   // `disabled`, not merely hidden: a disabled control is not serialized, which
   // is what keeps a stale custom range out of the request - and therefore out
   // of the URL - after switching back to a named interval.
-  window.updateHistoryInterval = function () { HtmxFilters.syncCustomRange('historyCustomDates'); };
+  window.updateHistoryInterval = function () {
+    HtmxFilters.syncCustomRange('historyCustomDates');
+    syncDateAriaInvalid(HtmxFilters.rangeProblemFromDom());
+  };
 
   // The Date sort toggle: flips newest-first (default) <-> oldest-first. The
   // value lives in a hidden form field so htmx builds the query string from one
@@ -96,6 +119,7 @@ if (typeof document !== 'undefined') {
     if (!evt.detail.elt || evt.detail.elt.id !== HISTORY_FORM_ID) return;
     var problem = HtmxFilters.rangeProblemFromDom();
     HtmxFilters.showRangeError(problem);
+    syncDateAriaInvalid(problem);
     if (problem !== RANGE_OK) {
       evt.preventDefault();
       return;

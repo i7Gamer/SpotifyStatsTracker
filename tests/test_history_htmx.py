@@ -209,6 +209,17 @@ class TestShell(HistoryHtmxTestCase):
         trigger = trigger[:trigger.index('"')]
         self.assertIn("submit", [part.strip() for part in trigger.split(",")])
 
+    def test_the_date_error_is_announced_and_tied_to_its_inputs(self):
+        """UT-4 (2026-09-02 review): #dateError was a plain span, so a screen
+        reader never announced static/js/history-page.js's inverted-range
+        message, and neither date input said which control it was about.
+        aria-invalid is the other half of the fix and lives in JS (see
+        tests/test_history_page.js), since it toggles at runtime."""
+        body = self._loggedInShell()
+
+        self.assertIn('id="dateError" class="date-error" role="alert"', body)
+        self.assertEqual(body.count('aria-describedby="dateError"'), 2)
+
     def test_every_swap_dims_the_list_while_it_loads(self):
         """The indicator has to sit on the container, not only on the filter
         form: a boosted pagination link would otherwise mark ITSELF as busy and

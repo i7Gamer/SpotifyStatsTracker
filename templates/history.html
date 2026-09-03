@@ -98,14 +98,24 @@
            request (and therefore out of the URL, since hx-replace-url writes
            back what was requested). updateHistoryInterval keeps the two in
            step. #}
+        {# role="alert" + aria-describedby (2026-09-02 review, UT-4): #dateError
+           was a plain span, so a screen reader never announced "Start date
+           cannot be after end date." when static/js/history-page.js's
+           showRangeError filled it in, and neither date input said which
+           control the message was about. aria-invalid is the other half -
+           set/removed on the two inputs by history-page.js's
+           syncDateAriaInvalid, from the same `problem` value showRangeError
+           reads, so the two can never disagree. #}
         <div class="filter-group custom-dates" id="historyCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
           <label for="startDate">From:</label>
           <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+                 aria-describedby="dateError"
                  {% if interval != 'custom' %}disabled{% endif %}>
           <label for="endDate">To:</label>
           <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+                 aria-describedby="dateError"
                  {% if interval != 'custom' %}disabled{% endif %}>
-          <span id="dateError" class="date-error"></span>
+          <span id="dateError" class="date-error" role="alert"></span>
         </div>
 
         <div class="filter-group">

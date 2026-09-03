@@ -17,9 +17,21 @@ const path = require('path');
 const SCRIPT = path.join(__dirname, '..', 'static', 'js', 'history-page.js');
 const RANGE_OK = null;                //< see tests/test_top_list_page.js - null, not a string
 const RANGE_INCOMPLETE = 'incomplete';
+const RANGE_INVERTED = 'inverted';
 
 function makeField(value) {
   return { value: value === undefined ? '' : value, textContent: '' };
+}
+
+//< a date input, tracking aria-invalid the way the real DOM would
+function makeDateField(value) {
+  const attrs = {};
+  return {
+    value: value === undefined ? '' : value,
+    setAttribute(name, val) { attrs[name] = val; },
+    removeAttribute(name) { delete attrs[name]; },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null; },
+  };
 }
 
 function makeForm() {
@@ -49,6 +61,7 @@ function loadHistory(options) {
   global.htmx = { ajax(method, url, opts) { calls.ajax.push({ method, url, opts }); } };
   global.HtmxFilters = {
     RANGE_OK,
+    RANGE_INVERTED,
     syncCustomRange(containerId) { calls.syncedRanges.push(containerId); },
     rangeProblemFromDom() { return options.rangeProblem === undefined ? RANGE_OK : options.rangeProblem; },
     showRangeError(problem) { calls.shownErrors.push(problem); },
@@ -195,6 +208,55 @@ run('a boosted pagination link is never vetoed, even mid-typo', () => {
   assert.deepStrictEqual(page.shownErrors, []);
 });
 
+// ------------------------------------------------- date-range accessibility
+
+// aria-invalid follows the same `problem` value showRangeError paints
+// #dateError from (UT-4, 2026-09-02 review) - both date inputs, since either
+// one could be "the" wrong end of an inverted range.
+run('an inverted range marks both date inputs aria-invalid', () => {
+  const startDate = makeDateField('2026-05-01');
+  const endDate = makeDateField('2026-01-01');
+  const page = loadHistory({ rangeProblem: RANGE_INVERTED, elements: { startDate, endDate } });
+
+  page.bodyListeners['htmx:configRequest']({
+    detail: { elt: { id: 'historyFilters' }, parameters: {} },
+    preventDefault() {},
+  });
+
+  assert.strictEqual(startDate.getAttribute('aria-invalid'), 'true');
+  assert.strictEqual(endDate.getAttribute('aria-invalid'), 'true');
+});
+
+run('a valid range clears aria-invalid rather than setting it false', () => {
+  const startDate = makeDateField('2026-01-01');
+  const endDate = makeDateField('2026-05-01');
+  startDate.setAttribute('aria-invalid', 'true');
+  endDate.setAttribute('aria-invalid', 'true');
+  const page = loadHistory({ rangeProblem: RANGE_OK, elements: { startDate, endDate } });
+
+  page.bodyListeners['htmx:configRequest']({
+    detail: { elt: { id: 'historyFilters' }, parameters: {} },
+    preventDefault() {},
+  });
+
+  assert.strictEqual(startDate.getAttribute('aria-invalid'), null);
+  assert.strictEqual(endDate.getAttribute('aria-invalid'), null);
+});
+
+run('an incomplete range (still typing) is not marked invalid', () => {
+  const startDate = makeDateField('2026-05-01');
+  const endDate = makeDateField('');
+  const page = loadHistory({ rangeProblem: RANGE_INCOMPLETE, elements: { startDate, endDate } });
+
+  page.bodyListeners['htmx:configRequest']({
+    detail: { elt: { id: 'historyFilters' }, parameters: {} },
+    preventDefault() {},
+  });
+
+  assert.strictEqual(startDate.getAttribute('aria-invalid'), null);
+  assert.strictEqual(endDate.getAttribute('aria-invalid'), null);
+});
+
 // ------------------------------------------------------- interval + retry
 
 run('the Time Period select syncs the history custom-range container', () => {
@@ -204,6 +266,21 @@ run('the Time Period select syncs the history custom-range container', () => {
 
   assert.deepStrictEqual(page.syncedRanges, ['historyCustomDates'],
                          'the container id differs from the Top pages - a copy-paste would swap them');
+});
+
+run('switching back to a named interval also clears aria-invalid', () => {
+  const startDate = makeDateField('2026-05-01');
+  const endDate = makeDateField('2026-01-01');
+  startDate.setAttribute('aria-invalid', 'true');
+  endDate.setAttribute('aria-invalid', 'true');
+  //< RANGE_OK: a named interval is never a bad range, whatever the leftover
+  //  disabled dates say
+  const page = loadHistory({ rangeProblem: RANGE_OK, elements: { startDate, endDate } });
+
+  page.window.updateHistoryInterval();
+
+  assert.strictEqual(startDate.getAttribute('aria-invalid'), null);
+  assert.strictEqual(endDate.getAttribute('aria-invalid'), null);
 });
 
 // Off the form, not the address bar: a 4xx/5xx never touches the URL (htmx
