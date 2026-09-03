@@ -79,7 +79,21 @@ function makeEl() {
     appendChild(child) { this.children.push(child); return child; },
     setAttribute() {},
     addEventListener(type, fn) { this.handlers[type] = fn; },
-    querySelectorAll() { return []; },
+    //< real DOM's querySelectorAll searches the whole subtree; renderTags
+    //  nests the remove buttons a level under the chips this returns, so
+    //  bindRemoveButtons needs a real (if minimal - class selectors only)
+    //  walk, not the always-empty stub this used to be
+    querySelectorAll(selector) {
+      const cls = String(selector).replace(/^\./, '');
+      const matches = [];
+      (function walk(node) {
+        (node.children || []).forEach((child) => {
+          if (child.className === cls) matches.push(child);
+          walk(child);
+        });
+      }(this));
+      return matches;
+    },
   };
   //< renderTags empties the row with innerHTML = '' before re-appending
   Object.defineProperty(el, 'innerHTML', {
@@ -114,7 +128,7 @@ global.DOMParser = function () {
 function freshWidget() {
   const chips = makeEl();
   const form = makeEl();
-  const input = { value: '' };
+  const input = { value: '', focusCalls: 0, focus() { this.focusCalls += 1; } };
   const errorLine = { textContent: '', style: { display: 'none' } };
   const parts = {
     '.tag-chips-container': chips, '.form-add-tag': form,
@@ -162,6 +176,11 @@ function freshWidget() {
     },
     renderedTags() {
       return chips.children.filter((c) => c.className === 'tag-chip').map((c) => c.dataset.tag);
+    },
+    clickRemove(tag) {
+      const btn = chips.querySelectorAll('.btn-remove-tag').find((b) => b.dataset.tag === tag);
+      assert.ok(btn, `no remove button rendered for "${tag}"`);
+      btn.handlers.click();
     },
   };
 }
@@ -269,6 +288,25 @@ run('a single add still repaints from its own response, with no extra GET', asyn
 
   assert.deepStrictEqual(widget.renderedTags(), ['rock']);
   assert.strictEqual(widget.pendingFetches.length, 1, 'nothing overlapped, so no refetch is issued');
+});
+
+run('removing a tag repaints the row and returns focus to the tag input (UT-4c)', async () => {
+  // The clicked remove button is gone once the row repaints (renderTags
+  // rebuilds the chip row wholesale) - the browser's default is to drop
+  // focus to <body>.
+  const widget = freshWidget();
+  widget.submit('rock');
+  widget.pendingFetches[0].resolve(okResponse(['rock']));
+  await settle();
+  assert.deepStrictEqual(widget.renderedTags(), ['rock']);
+
+  widget.clickRemove('rock');
+  widget.pendingFetches[1].resolve(okResponse([]));
+  await settle();
+
+  assert.deepStrictEqual(widget.renderedTags(), []);
+  assert.strictEqual(widget.input.focusCalls, 1,
+                     'focus must not be left on the now-removed button');
 });
 
 run('a superseded 401 still sends the user to log in', async () => {

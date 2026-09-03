@@ -482,6 +482,8 @@ run('a refused create shows the route\'s own reason, not a generic line', async 
   const errorEl = dom.panelBody.prepended[0];
   assert.strictEqual(errorEl.textContent, "You've reached the limit.");
   assert.strictEqual(errorEl.className, 'share-link-error');
+  assert.strictEqual(errorEl.getAttribute('role'), 'alert',
+                     'UT-4d: a silently-appearing paragraph is not announced without one');
 });
 
 run('an expired session redirects instead of painting an error', async () => {

@@ -207,6 +207,39 @@ function onSwapFailure(targetId, retry) {
   document.addEventListener('htmx:sendError', handler);
 }
 
+// Focus tracking across an htmx swap. htmx replaces the target's content and,
+// when the element that held focus (a pagination Previous/Next link, Show
+// More Plays, a Wrapped year badge, an ajax-status Retry button) was inside
+// it, that element is gone once the swap lands - the browser's default is to
+// drop focus to <body>. That silently resets keyboard navigation to the top
+// of the page and loses a screen reader's place, on every migrated htmx
+// region, not just one page's pagination.
+//
+// One pair, wired once below for every page that loads this module (see the
+// bottom of this file) - no page registers these itself, unlike
+// onSwapFailure, which needs a page-specific target id and retry callback
+// this pair does not.
+var _focusWasInSwapTarget = false;
+
+function rememberFocusBeforeSwap(evt) {
+  var target = evt && evt.detail && evt.detail.target;
+  var active = document.activeElement;
+  _focusWasInSwapTarget = !!(target && active && target.contains && target.contains(active));
+}
+
+function restoreFocusAfterSwap(evt) {
+  if (!_focusWasInSwapTarget) return;
+  _focusWasInSwapTarget = false;
+  var target = evt && evt.detail && evt.detail.target;
+  if (!target || !target.focus) return;
+  //< a container (a <div>, typically) is not focusable at all without one -
+  //  document.body must never be where focus lands instead
+  if (!target.hasAttribute || !target.hasAttribute('tabindex')) {
+    if (target.setAttribute) target.setAttribute('tabindex', '-1');
+  }
+  target.focus();
+}
+
 var HtmxFilters = {
   rangeProblem: rangeProblem,
   pruneEmptyParams: pruneEmptyParams,
@@ -218,6 +251,8 @@ var HtmxFilters = {
   syncFullPlaysFilter: syncFullPlaysFilter,
   failureUi: failureUi,
   onSwapFailure: onSwapFailure,
+  rememberFocusBeforeSwap: rememberFocusBeforeSwap,
+  restoreFocusAfterSwap: restoreFocusAfterSwap,
   RANGE_OK: RANGE_OK,
   RANGE_INCOMPLETE: RANGE_INCOMPLETE,
   RANGE_INVERTED: RANGE_INVERTED,
@@ -253,6 +288,12 @@ if (typeof document !== 'undefined') {
     if (!link || !link.closest('[hx-boost]')) return;
     evt.stopPropagation();
   }, true);
+
+  //< beforeSwap: the old content, and whatever held focus, is still in the
+  //  DOM. afterSettle: the new content has landed and settle transitions have
+  //  finished, so the target is safe to focus.
+  document.addEventListener('htmx:beforeSwap', rememberFocusBeforeSwap);
+  document.addEventListener('htmx:afterSettle', restoreFocusAfterSwap);
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = HtmxFilters;

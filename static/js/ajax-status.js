@@ -35,11 +35,17 @@
     target.innerHTML = '';
     var wrap = document.createElement('div');
     wrap.className = 'ajax-error-inline';
+    wrap.setAttribute('role', 'alert');
     var text = document.createElement('p');
     text.textContent = message || DEFAULT_MESSAGE;
     wrap.appendChild(text);
-    wrap.appendChild(buildRetryButton(onRetry));
+    var retryBtn = buildRetryButton(onRetry);
+    wrap.appendChild(retryBtn);
     target.appendChild(wrap);
+    //< a swap that just failed silently otherwise leaves focus wherever it
+    //  was (often gone, if the failed request itself removed the trigger) -
+    //  the button is natively focusable, so no tabindex is needed
+    retryBtn.focus();
   }
 
   //< who last put the banner up (see the header). The slot is reused rather
@@ -54,6 +60,7 @@
       banner = document.createElement('div');
       banner.id = BANNER_ID;
       banner.className = 'ajax-error-banner';
+      banner.setAttribute('role', 'alert');
       host.insertBefore(banner, host.firstChild);
     }
     bannerOwner = owner;
@@ -61,10 +68,12 @@
     var text = document.createElement('span');
     text.textContent = message || DEFAULT_MESSAGE;
     banner.appendChild(text);
-    banner.appendChild(buildRetryButton(function () {
+    var retryBtn = buildRetryButton(function () {
       clearBanner();
       onRetry();
-    }));
+    });
+    banner.appendChild(retryBtn);
+    retryBtn.focus();
   }
 
   // A clear that names an owner is "MY request succeeded" - no news about a

@@ -6,7 +6,7 @@ const assert = require('assert');
 function makeNode(byId) {
   const node = {
     className: '', textContent: '', type: '', innerHTML: '', _id: '',
-    children: [], _handlers: {}, _parent: null,
+    children: [], _handlers: {}, _parent: null, _attrs: {}, focusCalls: 0,
     classList: { remove() {}, add() {} },
     appendChild(child) { child._parent = this; this.children.push(child); return child; },
     insertBefore(child) { child._parent = this; this.children.unshift(child); return child; },
@@ -16,6 +16,9 @@ function makeNode(byId) {
       return child;
     },
     addEventListener(type, fn) { this._handlers[type] = fn; },
+    setAttribute(name, value) { this._attrs[name] = value; },
+    getAttribute(name) { return this._attrs[name]; },
+    focus() { this.focusCalls += 1; },
     get firstChild() { return this.children[0] || null; },
     get parentNode() { return this._parent; },
   };
@@ -73,6 +76,18 @@ run('renderInto builds a Retry button wired to the callback', () => {
   assert.strictEqual(retried, 1);
 });
 
+run('renderInto announces the failure and focuses Retry (UT-4a)', () => {
+  installDom();
+  const target = makeNode();
+
+  AjaxStatus.renderInto(target, () => {});
+
+  const wrap = target.children[0];
+  assert.strictEqual(wrap._attrs.role, 'alert', 'a silent DOM swap is not announced otherwise');
+  const btn = findButton(target);
+  assert.strictEqual(btn.focusCalls, 1, 'focus must not be left wherever the failed request left it');
+});
+
 run('renderInto is a no-op on a missing target', () => {
   installDom();
   assert.doesNotThrow(() => AjaxStatus.renderInto(null, () => {}));
@@ -86,8 +101,10 @@ run('showBanner adds a Retry banner, and Retry clears it then re-fires', () => {
   assert.ok(banner, 'banner created');
   assert.ok(main.children.includes(banner), 'banner attached to main');
 
+  assert.strictEqual(banner._attrs.role, 'alert', 'the banner must announce itself, not just appear');
   const btn = findButton(banner);
   assert.ok(btn && btn.textContent === 'Retry', 'banner has a Retry button');
+  assert.strictEqual(btn.focusCalls, 1, 'Retry gets focus, not <body>');
   btn._handlers.click();
   assert.strictEqual(retried, 1, 'Retry invoked the callback');
   assert.ok(!main.children.includes(banner), 'Retry removed the banner');

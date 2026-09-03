@@ -223,7 +223,12 @@ if (typeof window !== 'undefined') (function() {
       removeBtns.forEach(function(btn) {
         btn.addEventListener('click', function() {
           submitTagUpdate('DELETE', btn.dataset.tag,
-            "Couldn't remove that tag. Please try again.", renderTags);
+            "Couldn't remove that tag. Please try again.", function(tags) {
+              renderTags(tags);
+              //< the button that was clicked is gone once the row repaints,
+              //  and the browser's default is to drop focus to <body>
+              if (tagInput) tagInput.focus();
+            });
         });
       });
     }

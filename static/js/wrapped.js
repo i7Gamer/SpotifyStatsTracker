@@ -282,6 +282,7 @@ if (typeof document !== 'undefined') {
     if (!errorEl) {
       errorEl = document.createElement('p');
       errorEl.className = 'share-link-error';
+      errorEl.setAttribute('role', 'alert');
       errorEl.style.cssText = 'color: #ff4a4a; font-size: 0.9rem; margin: 0 0 0.75rem;';
       panelBody.prepend(errorEl);
     }

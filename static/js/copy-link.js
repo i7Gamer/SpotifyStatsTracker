@@ -38,6 +38,10 @@
     if (button.dataset.restoreText === undefined) {
       button.dataset.restoreText = button.textContent;
     }
+    //< the button IS the flash element (its own text changes to "Copied!" /
+    //  "Copy failed") - role="status" is what makes that change announced,
+    //  rather than a silent label swap only a sighted user notices
+    button.setAttribute('role', 'status');
     button.textContent = text;
     clearTimeout(button._copyTimer);
     button._copyTimer = setTimeout(function () {
@@ -64,6 +68,9 @@
   }
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { copyFeedbackText: copyFeedbackText, COPIED_TEXT: COPIED_TEXT, FAILED_TEXT: FAILED_TEXT };
+    module.exports = {
+      copyFeedbackText: copyFeedbackText, flash: flash,
+      COPIED_TEXT: COPIED_TEXT, FAILED_TEXT: FAILED_TEXT,
+    };
   }
 })();

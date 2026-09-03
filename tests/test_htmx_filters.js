@@ -18,6 +18,8 @@ const {
   syncFullPlaysFilter,
   failureUi,
   onSwapFailure,
+  rememberFocusBeforeSwap,
+  restoreFocusAfterSwap,
   RANGE_OK,
   RANGE_INCOMPLETE,
   RANGE_INVERTED,
@@ -324,6 +326,74 @@ run('both htmx failure events are covered, not just the response one', () => {
   onSwapFailure('historyResults', () => {});
   assert.deepStrictEqual(Object.keys(handlers).sort(),
                          ['htmx:responseError', 'htmx:sendError']);
+});
+
+// --- rememberFocusBeforeSwap / restoreFocusAfterSwap -------------------------
+// UT-4(b): htmx swaps out the activated control's container, and the
+// browser's default is to drop focus to <body> once that element is gone -
+// silently resetting keyboard navigation to the top of the page. This pair is
+// wired once at module load (see the bottom of htmx-filters.js) for every
+// htmx region on every page that loads this module, rather than per page.
+
+function makeFocusable(attrs) {
+  return {
+    _attrs: attrs || {},
+    hasAttribute(name) { return name in this._attrs; },
+    setAttribute(name, value) { this._attrs[name] = value; },
+    focusCalls: 0,
+    focus() { this.focusCalls += 1; },
+  };
+}
+
+run('focus inside the swap target is restored once the swap settles', () => {
+  const button = makeFocusable();
+  const target = makeFocusable();
+  target.contains = (node) => node === button;   //< button lives inside target
+  global.document = { activeElement: button };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 1);
+  assert.strictEqual(target._attrs.tabindex, '-1',
+                     'a container needs a tabindex to be focusable at all');
+});
+
+run('a target that already carries a tabindex keeps its own value', () => {
+  const button = makeFocusable();
+  const target = makeFocusable({ tabindex: '0' });
+  target.contains = (node) => node === button;
+  global.document = { activeElement: button };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 1);
+  assert.strictEqual(target._attrs.tabindex, '0');
+});
+
+run('focus outside the swap target is never moved onto it', () => {
+  const elsewhere = makeFocusable();
+  const target = makeFocusable();
+  target.contains = () => false;
+  global.document = { activeElement: elsewhere };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 0);
+  assert.strictEqual('tabindex' in target._attrs, false);
+});
+
+run('a swap nobody had focus in front of leaves nothing to restore', () => {
+  const target = makeFocusable();
+  target.contains = () => false;
+  global.document = { activeElement: makeFocusable() };
+  rememberFocusBeforeSwap({ detail: { target } });   //< explicitly resets state for this case
+
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 0);
 });
 
 console.log('All htmx filter tests passed.');
