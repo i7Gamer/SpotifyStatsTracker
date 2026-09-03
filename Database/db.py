@@ -252,6 +252,19 @@ CREATE TABLE IF NOT EXISTS images (
 -- on, never what it was ruled against, which is the half that makes an old
 -- decision re-checkable. NULL for every other reason, and for rejections
 -- recorded before the column existed.
+--
+-- carried_canonical_id is where the MATCHER moved a person's verdict, leaving
+-- canonical_id saying where the person PUT it (migrate1_52_0). The matcher's
+-- carry-along re-points every dependent of a member it re-homes; before this
+-- column it rewrote the audit row too, so a hand-made merge came out reading
+-- "pointed at the matcher's head, decided_by=admin" - a decision attributed to
+-- someone who never made it - and the release actually chosen was gone, since
+-- track_id is this table's PRIMARY KEY and there is no history. The toggle's
+-- off edge reads this to put those tracks back. NULL means "still where the
+-- person put it", and every MANUAL write path clears it: a person re-deciding
+-- replaces the verdict, and a stale carry would drag the track back to an
+-- abandoned target - which, with the intermediate release still merged, is a
+-- two-hop chain no reader resolves.
 CREATE TABLE IF NOT EXISTS track_merge_decisions (
     track_id     TEXT PRIMARY KEY REFERENCES tracks(id),
     canonical_id TEXT REFERENCES tracks(id),
@@ -259,7 +272,8 @@ CREATE TABLE IF NOT EXISTS track_merge_decisions (
     evidence     TEXT,
     decided_at   REAL NOT NULL,
     decided_by   TEXT,
-    against_id   TEXT REFERENCES tracks(id)
+    against_id   TEXT REFERENCES tracks(id),
+    carried_canonical_id TEXT REFERENCES tracks(id)
 );
 
 CREATE TABLE IF NOT EXISTS user_tags (

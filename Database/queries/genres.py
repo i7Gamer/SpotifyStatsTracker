@@ -289,6 +289,61 @@ class GenreQueries:
             ).rowcount
         return cleared
 
+    def _requeueCanonicalForGenres(self, conn, canonicalId: str) -> None:
+        """The lever below, for ONE canonical and inside the caller's
+        transaction - what a merge that just moved a group calls.
+
+        A merge changes which release every genre read resolves to. If the new
+        canonical was already marked attempted, nothing would look it up again
+        and the song stays genre-less for good. No-ops when it already carries
+        own rows, and when it was never attempted (NULL already).
+
+        Callers must fire this only when the group actually MOVED: run
+        unconditionally on the matcher's daily pass, a canonical that is
+        genuinely tag-less everywhere would be re-looked-up every single day
+        forever, since it can never satisfy the own-rows test."""
+        conn.execute(
+            """
+            UPDATE tracks SET lastfm_attempted_at = NULL
+            WHERE id = ? AND lastfm_attempted_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM track_genres g
+                              WHERE g.track_id = tracks.id AND g.inherited = 0)
+            """,
+            (canonicalId,),
+        )
+
+    def requeueCanonicalsOfMergedGroupsWithoutOwnGenres(self) -> int:
+        """Clears lastfm_attempted_at on every merge-group CANONICAL that holds
+        no own genre rows - the one-time lever for libraries merged before the
+        backfill queue learned to ask about the song (2026-09-03 review, H1).
+
+        Those groups are the stuck case: the member was looked up and marked,
+        the canonical every read resolves to was not, and nothing would ever
+        requeue it. Scoped to canonicals of real groups on purpose - a plain
+        track that came back genuinely tag-less is not this lever's business,
+        and requeuing it would re-spend Last.fm quota on an unchanged answer.
+
+        Nothing is copied or deleted: the members keep their rows and their
+        stamps, so unmerging stays lossless and the canonical gets its OWN
+        Last.fm answer rather than a differently-titled release's. Returns how
+        many were requeued.
+
+        `id IN (SELECT canonical_id ...)` rather than a correlated EXISTS:
+        canonical_id is deliberately unindexed (see the tracks table), so the
+        EXISTS spelling is a full scan PER candidate row."""
+        conn = self._conn()
+        with conn:
+            return conn.execute(
+                """
+                UPDATE tracks SET lastfm_attempted_at = NULL
+                WHERE lastfm_attempted_at IS NOT NULL
+                  AND id IN (SELECT canonical_id FROM tracks
+                             WHERE canonical_id IS NOT NULL)
+                  AND NOT EXISTS (SELECT 1 FROM track_genres g
+                                  WHERE g.track_id = tracks.id AND g.inherited = 0)
+                """
+            ).rowcount
+
     def requeueAlbumsLastfmWithoutOwnGenres(self) -> int:
         """Clears lastfm_attempted_at for albums holding no own (non-inherited)
         genre rows, re-entering them into the backfill queue immediately - the
@@ -670,13 +725,55 @@ class GenreQueries:
     def getTracksMissingGenres(self, limit: int, username: str | None = None) -> list[dict]:
         """Rows carry the primary artist - both the track.getTopTags lookup and
         genre inheritance need it. Tracks with no position-0 artist row are
-        structurally excluded: they can neither be looked up nor inherit."""
+        structurally excluded: they can neither be looked up nor inherit.
+
+        Asks about the SONG, not the played release, once anything is merged:
+        every genre READ resolves the group (see _genreMembershipJoin), so a
+        lookup written to a member is an answer no reader can reach - and the
+        canonical, ranked by its own plays, sank behind every ordinary track
+        (2026-09-03 review, H1).
+
+        The merged spelling aggregates the plays side FIRST and then joins one
+        explicit canonical row. That is what keeps name/album/artist
+        deterministic: grouping on COALESCE(canonical_id, id) while still
+        selecting t.name would leave bare columns under the GROUP BY, and the
+        lookup is BY NAME - so it would query Last.fm with one release's title
+        and store the answer under another, differently run to run.
+
+        Same gate and same reason as _genreMembershipJoin: the canonical hop is
+        a PK probe per play row, so the original statement runs verbatim until
+        a merge exists. See _anyTrackMerges."""
         conn = self._conn()
         params: list = []
         userClause = self._queueUserClause(params, username)
         params.extend([time.time() - self.getGenreBackfillRetrySeconds(), limit])
-        rows = conn.execute(
-            f"""
+        if self._anyTrackMerges():
+            #< userClause is a PREFIX ('p.username = ? AND '), so it needs a
+            #  condition after it - the CTE has none of its own
+            sql = f"""
+            WITH grouped AS (
+                SELECT COALESCE(t.canonical_id, t.id) AS cid, COUNT(*) AS play_count
+                FROM plays p
+                JOIN tracks t ON t.id = p.track_id
+                WHERE {userClause}1
+                GROUP BY cid
+            )
+            SELECT c.id AS id, c.name AS name, c.album_id AS album_id,
+                   ar.id AS artist_id, ar.name AS artist_name,
+                   grouped.play_count AS play_count
+            FROM grouped
+            JOIN tracks c ON c.id = grouped.cid
+            JOIN track_artists ta ON ta.track_id = c.id AND ta.position = 0
+            JOIN artists ar ON ar.id = ta.artist_id
+            WHERE c.lastfm_attempted_at IS NULL
+               OR (c.lastfm_attempted_at < ?
+                   AND NOT EXISTS (SELECT 1 FROM track_genres tg
+                                   WHERE tg.track_id = c.id AND tg.inherited = 0))
+            ORDER BY play_count DESC, c.id ASC
+            LIMIT ?
+            """
+        else:
+            sql = f"""
             SELECT t.id AS id, t.name AS name, t.album_id AS album_id,
                    ar.id AS artist_id, ar.name AS artist_name,
                    COUNT(*) AS play_count
@@ -691,10 +788,8 @@ class GenreQueries:
             GROUP BY t.id
             ORDER BY play_count DESC, t.id ASC
             LIMIT ?
-            """,
-            params,
-        ).fetchall()
-        return [dict(r) for r in rows]
+            """
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     @staticmethod
     def _queueUserClause(params: list, username: str | None) -> str:

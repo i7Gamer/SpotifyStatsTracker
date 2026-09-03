@@ -243,6 +243,35 @@ class RefreshLastfmEntityTestCase(DatabaseTestCase):
                                                timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
 
     @patch("Database.database.LastfmClient")
+    def test_a_merged_release_refreshes_the_song_not_the_release(self, mockClientClass):
+        """Refreshing from a member has to land where every genre read looks:
+        on the canonical. Otherwise the button writes an answer no page can
+        reach, under a title Last.fm was never asked about
+        (2026-09-03 review, H1)."""
+        db = self._makeDbWithPlays()
+        db.repo.updateUserLastfmApiKey("user1", "key123")
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO tracks (id, name, url, album_id, duration_ms) "
+                         "VALUES ('tB', 'Song A - Remaster', '', 'alP', 200000)")
+            conn.execute("INSERT INTO track_artists (track_id, artist_id, position) "
+                         "VALUES ('tB', 'aX', 0)")
+            conn.execute("UPDATE tracks SET canonical_id='tA' WHERE id='tB'")
+
+        client = self._clientReturning(getTrackTopTags=ROCK_TAGS)
+        mockClientClass.return_value = client
+
+        result = db.refreshLastfmEntity("track", "tB")
+
+        #< the canonical is what was looked up, and what was written
+        self.assertEqual(result, {"status": "ok", "name": "Song A"})
+        client.getTrackTopTags.assert_any_call(
+            "Artist X", "Song A", stop_event=db.lastfm_stop_event,
+            timeout=LASTFM_REFRESH_ACQUIRE_TIMEOUT_SECONDS)
+        self.assertEqual([g["genre"] for g in db.repo.getTrackGenres("tA")],
+                         ["rock", "indie rock"])
+        self.assertEqual(db.repo.getTrackGenres("tB"), [])
+    @patch("Database.database.LastfmClient")
     def test_tagless_track_refresh_falls_back_to_artist_inheritance(self, mockClientClass):
         db = self._makeDbWithPlays()
         db.repo.updateUserLastfmApiKey("user1", "key123")

@@ -192,7 +192,8 @@ class SchemaQueries:
                     evidence     TEXT,
                     decided_at   REAL NOT NULL,
                     decided_by   TEXT,
-                    against_id   TEXT REFERENCES tracks(id)
+                    against_id   TEXT REFERENCES tracks(id),
+                    carried_canonical_id TEXT REFERENCES tracks(id)
                 )
             """)
 
@@ -218,6 +219,28 @@ class SchemaQueries:
             with conn:
                 conn.execute("ALTER TABLE track_merge_decisions "
                              "ADD COLUMN against_id TEXT REFERENCES tracks(id)")
+
+    def addMergeDecisionCarriedColumnIfMissing(self) -> None:
+        """Add track_merge_decisions.carried_canonical_id (migrate1_52_0) if
+        missing - where the MATCHER moved a person's verdict.
+
+        Same reasoning as its against_id sibling above: a new COLUMN, so SCHEMA
+        stamping cannot deliver it, and the CREATE beside it carries the column
+        too so a fresh install and an upgraded one end up the same shape.
+
+        Arrives NULL everywhere, which is the correct reading of every existing
+        row: NULL means "still where the person put it". Rows the matcher had
+        already re-homed before this column existed are unrecoverable - the
+        target was overwritten in place - and inventing one would put a release
+        on a decision nobody made. Not indexed: the revert reads it once per
+        toggle-off, over a table with one row per judged track."""
+        conn = self._conn()
+        columns = {row["name"] for row in
+                   conn.execute("PRAGMA table_info(track_merge_decisions)").fetchall()}
+        if "carried_canonical_id" not in columns:
+            with conn:
+                conn.execute("ALTER TABLE track_merge_decisions "
+                             "ADD COLUMN carried_canonical_id TEXT REFERENCES tracks(id)")
 
     def addPlayMetadataColumnsIfMissing(self) -> None:
         """Add created_at and created_reason columns to plays table if missing.

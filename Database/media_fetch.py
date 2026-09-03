@@ -569,7 +569,15 @@ class MediaFetchMixin:
             if kind == "album":
                 return self._refreshAlbumLastfmData(client, entityId)
             if kind == "track":
-                return self._refreshTrackLastfmData(client, entityId)
+                #< the SONG, not the release the admin happened to click from.
+                #  Every genre read resolves the merge group, so a refresh
+                #  written to a member is an answer no page can reach - and it
+                #  would be looked up under the member's title while landing on
+                #  the canonical's row. Resolved here, at the entry point, so
+                #  the lookup row, the queried name, the write and the
+                #  attempted-stamp are all one release (2026-09-03 review, H1).
+                return self._refreshTrackLastfmData(
+                    client, self.repo.resolveCanonicalTrackId(entityId))
             raise ValueError(f"Unknown Last.fm refresh kind: {kind!r}")
         except _dbmod._LastfmInvalidKeyError:
             return {"status": "invalid_key"}

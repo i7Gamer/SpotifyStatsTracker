@@ -1102,6 +1102,7 @@ class TrackQueries:
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
                 canonicals.append(canonicalId)
+                mergedBefore = merged
                 if group["reHeadedFrom"]:
                     #< the one canonical that arrives pointing somewhere: it was
                     #  a member of this very group until the title rule promoted
@@ -1131,9 +1132,23 @@ class TrackQueries:
                             (member["trackId"],)).fetchall():
                         conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
                                      (canonicalId, row["id"]))
+                        #< a MATCHER row's target is the matcher's to rewrite; a
+                        #  PERSON's is not. Overwriting it in place destroyed the
+                        #  release they chose (track_id is the PK - there is no
+                        #  history), leaving a row that named this run's head and
+                        #  still credited them for it, and left the toggle's off
+                        #  edge with nothing to restore. The pointer above still
+                        #  moves either way: readers resolve exactly one hop.
                         conn.execute(
-                            "UPDATE track_merge_decisions SET canonical_id=? WHERE track_id=?",
-                            (canonicalId, row["id"]))
+                            """
+                            UPDATE track_merge_decisions
+                            SET canonical_id = CASE WHEN decided_by IS NULL
+                                                    THEN ? ELSE canonical_id END,
+                                carried_canonical_id = CASE WHEN decided_by IS NULL
+                                                            THEN NULL ELSE ? END
+                            WHERE track_id = ?
+                            """,
+                            (canonicalId, canonicalId, row["id"]))
                     conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
                                  (canonicalId, member["trackId"]))
                     #< decided_by=NULL in the UPDATE arm too: the one manual
@@ -1150,7 +1165,7 @@ class TrackQueries:
                         ON CONFLICT(track_id) DO UPDATE SET
                             canonical_id=excluded.canonical_id, reason=excluded.reason,
                             evidence=excluded.evidence, decided_at=excluded.decided_at,
-                            decided_by=NULL, against_id=NULL
+                            decided_by=NULL, against_id=NULL, carried_canonical_id=NULL
                         """,
                         (member["trackId"], canonicalId, group["isrc"], now),
                     )
@@ -1158,6 +1173,11 @@ class TrackQueries:
                 #< after the members, so the group it tests against is the one
                 #  this run just made
                 self._clearContradictedRejection(conn, canonicalId)
+                if merged > mergedBefore or group["reHeadedFrom"]:
+                    #< only when this group actually MOVED - see
+                    #  _requeueCanonicalForGenres on why an unconditional call
+                    #  re-looks-up a tag-less canonical every day forever
+                    self._requeueCanonicalForGenres(conn, canonicalId)
         if merged:
             #< a merge moves numbers frozen inside every user's cached Wrapped
             #  years, and past years never notice on their own. Scoped to the
@@ -1367,7 +1387,7 @@ class TrackQueries:
                 ON CONFLICT(track_id) DO UPDATE SET
                     canonical_id=NULL, reason='manual-split', evidence=NULL,
                     decided_at=excluded.decided_at, decided_by=excluded.decided_by,
-                    against_id=NULL
+                    against_id=NULL, carried_canonical_id=NULL
                 """,
                 (trackId, time.time(), decidedBy),
             )
@@ -1382,7 +1402,13 @@ class TrackQueries:
         destructive - canonical_id is a pointer and the decision rows are
         additive - so undoing a run is clearing them, not restoring a backup.
         Manual rows (decided_by set) survive: a revert means "undo what the
-        matcher did", not "forget what anyone decided". Returns rows cleared."""
+        matcher did", not "forget what anyone decided". Returns rows cleared.
+
+        Surviving is not the same as being restored, which is what
+        carried_canonical_id fixes: a manual merge the matcher re-homed points
+        at the matcher's head, and leaving it there keeps a piece of the
+        matcher's work standing past the off edge. Those go back to the release
+        the person picked."""
         conn = self._conn()
         with conn:
             cur = conn.execute(
@@ -1395,7 +1421,23 @@ class TrackQueries:
             )
             conn.execute(
                 "DELETE FROM track_merge_decisions WHERE decided_by IS NULL AND reason='isrc'")
-        if cur.rowcount:
+            #< AFTER the matcher rows are gone, so a verdict restored onto a
+            #  release the matcher had re-headed lands on a track that no longer
+            #  points anywhere - one hop, which is all any reader resolves
+            restored = conn.execute(
+                """
+                UPDATE tracks SET canonical_id = (
+                    SELECT d.canonical_id FROM track_merge_decisions d
+                    WHERE d.track_id = tracks.id
+                )
+                WHERE id IN (SELECT track_id FROM track_merge_decisions
+                             WHERE carried_canonical_id IS NOT NULL)
+                """
+            ).rowcount
+            conn.execute("UPDATE track_merge_decisions SET carried_canonical_id=NULL "
+                         "WHERE carried_canonical_id IS NOT NULL")
+        if cur.rowcount or restored:
+            #< restores move the same frozen numbers as clears do
             self.deleteAllWrapped()   #< the undo moves the same frozen numbers back
         return cur.rowcount
 
@@ -1554,8 +1596,12 @@ class TrackQueries:
                 "SELECT id FROM tracks WHERE canonical_id = ?", (trackId,))]
             for depId in dependents:
                 conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (root, depId))
+                #< a person moving the group re-decides its dependents too, so
+                #  their carry (if any) is abandoned - see the matcher's
+                #  carry-along for why a stale one builds a chain on revert
                 conn.execute(
-                    "UPDATE track_merge_decisions SET canonical_id=? WHERE track_id=?",
+                    "UPDATE track_merge_decisions SET canonical_id=?, "
+                    "carried_canonical_id=NULL WHERE track_id=?",
                     (root, depId))
                 merged += 1
             conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?", (root, trackId))
@@ -1567,12 +1613,17 @@ class TrackQueries:
                 ON CONFLICT(track_id) DO UPDATE SET
                     canonical_id=excluded.canonical_id, reason='manual-merge',
                     evidence=NULL, decided_at=excluded.decided_at,
-                    decided_by=excluded.decided_by, against_id=NULL
+                    decided_by=excluded.decided_by, against_id=NULL,
+                    carried_canonical_id=NULL
                 """,
                 (trackId, root, now, decidedBy))
             merged += 1
             #< last, so it tests against the group this merge just made
             self._clearContradictedRejection(conn, root)
+            #< the group moved (the early return above covers the no-op case),
+            #  so the release every genre read now resolves to may never have
+            #  been looked up - see _requeueCanonicalForGenres
+            self._requeueCanonicalForGenres(conn, root)
         #< same invalidation as the automatic tier, and the same scope: the
         #  merge moves numbers frozen inside the cached years the resulting
         #  group was played in, for every user who played it. Expanded from the

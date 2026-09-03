@@ -43,7 +43,8 @@ class TrackMergeTestCase(DatabaseTestCase):
 
     def _decision(self, db, trackId):
         row = db.repo._conn().execute(
-            "SELECT canonical_id, reason, evidence, decided_by FROM track_merge_decisions "
+            "SELECT canonical_id, carried_canonical_id, reason, evidence, decided_by "
+            "FROM track_merge_decisions "
             "WHERE track_id=?", (trackId,)).fetchone()
         return dict(row) if row else None
 
@@ -223,9 +224,14 @@ class TestTheMatcherDoesNotOverreach(TrackMergeTestCase):
         self.assertEqual(self._canonical(db, "A" * 22), "D" * 22)
         self.assertEqual(self._canonical(db, "C" * 22), "D" * 22)
         self.assertIsNone(self._canonical(db, "D" * 22))
-        #< the audit row moved with it and stays the person's own verdict
+        #< the POINTER moved; the VERDICT still names the release the person
+        #  chose, with the matcher's target recorded beside it so the toggle's
+        #  off edge can put it back. It used to be overwritten in place, which
+        #  left a row crediting them for this run's choice and nothing to
+        #  restore (2026-09-03 review, M2).
         decision = self._decision(db, "A" * 22)
-        self.assertEqual(decision["canonical_id"], "D" * 22)
+        self.assertEqual(decision["canonical_id"], "C" * 22)
+        self.assertEqual(decision["carried_canonical_id"], "D" * 22)
         self.assertEqual(decision["reason"], "manual-merge")
         self.assertEqual(decision["decided_by"], "timorzipa")
         #< A was already merged - re-homed, not newly collapsed - so the
@@ -341,9 +347,12 @@ class TestTheHeadMovesToTheNormalVersion(TrackMergeTestCase):
         db.repo.mergeTracksByIsrc()
 
         self.assertEqual(self._canonical(db, "D" * 22), "B" * 22)
-        #< moved, but still the person's own verdict
+        #< the pointer moved, but the verdict still names what the person
+        #  picked - see test_track_merge_manual_restore.py for the off edge
+        #  that reads carried_canonical_id to put it back (M2)
         decision = self._decision(db, "D" * 22)
-        self.assertEqual(decision["canonical_id"], "B" * 22)
+        self.assertEqual(decision["canonical_id"], "A" * 22)
+        self.assertEqual(decision["carried_canonical_id"], "B" * 22)
         self.assertEqual(decision["reason"], "manual-merge")
         self.assertEqual(decision["decided_by"], "timorzipa")
 
