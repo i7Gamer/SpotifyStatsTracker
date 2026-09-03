@@ -105,11 +105,13 @@
   <div class="filter-group custom-dates" id="compareCustomDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
     <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+           aria-describedby="dateError"
            {% if not (customStart and customEnd) %}disabled{% endif %}>
     <label for="endDate">To:</label>
     <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+           aria-describedby="dateError"
            {% if not (customStart and customEnd) %}disabled{% endif %}>
-    <span id="dateError" class="date-error"></span>
+    <span id="dateError" class="date-error" role="alert"></span>
   </div>
 
   <div class="filter-group">

@@ -93,6 +93,18 @@ def _templatesRenderingAnyControl():
     return rendering
 
 
+def _dateErrorSpanIn(markup: str) -> str:
+    """The #dateError element's opening tag through its close, or ''."""
+    start = markup.find('id="dateError"')
+    if start == -1:
+        return ''
+    start = markup.rfind('<', 0, start)
+    return markup[start:markup.find('</span>', start) + len('</span>')]
+
+
+def _dateErrorSpan(templateName: str) -> str:
+    return _dateErrorSpanIn((TEMPLATES_DIR / templateName).read_text(encoding='utf-8'))
+
 class TestTheControlSetIsRenderedWhole(unittest.TestCase):
     """What licenses the shared functions to reach for these by name without
     null-guarding each one.
@@ -189,6 +201,44 @@ class TestPageCardDateErrorIsAnnouncedAndTied(unittest.TestCase):
     def test_both_date_inputs_point_at_it(self):
         self.assertEqual(self.markup.count('aria-describedby="dateError"'), 2)
 
+
+class TestEveryDateErrorIsAnnouncedAndTied(unittest.TestCase):
+    """The same treatment, swept across every template that renders the
+    control set rather than pinned per page. history.html got it in c40dbc6
+    (UT-4) and _page_card.html in the follow-up above; tracks.html,
+    charts.html, genres.html and compare.html were still bare spans, so on
+    four pages an inverted custom range was announced to nobody and the
+    message was tied to neither input (2026-09-03 review, C-4 / RR2-1).
+
+    Swept, because showRangeError paints whichever #dateError the page
+    rendered - the announcement is a property of the control set, not of the
+    page that happens to carry it."""
+
+    def test_every_error_span_is_an_alert(self):
+        missing = sorted(
+            name for name in _templatesRenderingAnyControl()
+            if 'role="alert"' not in _dateErrorSpan(name))
+        self.assertEqual(
+            missing, [],
+            'These templates render #dateError without role="alert", so'
+            ' showRangeError writes a message no screen reader announces.')
+
+    def test_both_date_inputs_point_at_it_on_every_page(self):
+        wrong = {name: (TEMPLATES_DIR / name).read_text(encoding='utf-8')
+                 .count('aria-describedby="dateError"')
+                 for name in _templatesRenderingAnyControl()}
+        self.assertEqual(
+            {k: v for k, v in wrong.items() if v != 2}, {},
+            'Both #startDate and #endDate must name #dateError, or the message is'
+            ' tied to neither input.')
+
+    def test_the_sweep_would_notice_a_bare_span(self):
+        """Guards the gate: the assertions above pass trivially if the
+        extractor stops finding the span at all."""
+        self.assertEqual(_dateErrorSpanIn('<span id="dateError" class="date-error"></span>'),
+                         '<span id="dateError" class="date-error"></span>')
+        self.assertNotIn('role="alert"',
+                         _dateErrorSpanIn('<span id="dateError" class="date-error"></span>'))
 
 class TestShowRangeErrorSetsAriaInvalid(unittest.TestCase):
     """The JS half of the same follow-up, pinned structurally rather than by
