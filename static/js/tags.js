@@ -67,10 +67,71 @@ if (typeof window !== 'undefined') (function() {
     //  wrapped.js's shareSubmitSeq and playlists.js's previewToken.
     var tagSeq = 0;
 
+    //< In-flight count, whether more than one request has ever overlapped in
+    //  the current span, and the most recently issued request's onApplied.
+    //  The server can commit+read the SECOND of two concurrent writes before
+    //  the FIRST's commit lands, so a response's OWN tags list can be wrong
+    //  even when tagSeq correctly says it's the latest one issued - no amount
+    //  of client sequencing fixes a body that is itself incomplete. tagSeq
+    //  still decides whether a given response's error (or, outside any
+    //  overlap, its success) is acted on; this decides whether a *success* may
+    //  be trusted at all. Reset together once the span drains to zero.
+    var inFlightTagRequests = 0;
+    var tagRequestsOverlapped = false;
+    var latestOnApplied = null;
+
+    // One authoritative read of this entity's current tags, from the page
+    // itself rather than a dedicated JSON endpoint - routes/tags.py exposes
+    // no per-entity GET, only /api/tags's all-tags summary (for the
+    // Playlists page) and whatever an add/remove echoes back. The detail
+    // page this widget lives on already renders _tag_widget.html from
+    // getTagsForEntity at request time (routes/charts.py), so re-fetching the
+    // current URL and reading its .tag-widget back out is the same data a
+    // fresh load would show, without a full navigation.
+    function refetchAuthoritativeTags(onApplied) {
+      fetch(window.location.href, { credentials: 'same-origin' })
+        .then(function(res) {
+          if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res)) {
+            return null;
+          }
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.text();
+        })
+        .then(function(html) {
+          if (html === null) return;   //< navigating to /login
+          if (typeof DOMParser === 'undefined') throw new Error('DOMParser unavailable');
+          var freshWidget = new DOMParser().parseFromString(html, 'text/html').querySelector('.tag-widget');
+          if (!freshWidget) throw new Error('tag widget not found in refetched page');
+          var tags = Array.prototype.map.call(
+            freshWidget.querySelectorAll('.tag-chip'),
+            function(chip) { return chip.dataset.tag; });
+          onApplied(tags);
+        })
+        .catch(function(err) {
+          console.error('Tag list refresh failed:', err);
+          showTagError("Couldn't refresh the tag list. Please reload the page.");
+        });
+    }
+
     // One request path for add and remove - they differ only in HTTP method,
     // the tag sent, and what happens after a successful apply.
     function submitTagUpdate(method, tag, fallbackMessage, onApplied) {
       var seq = ++tagSeq;
+      inFlightTagRequests++;
+      if (inFlightTagRequests > 1) tagRequestsOverlapped = true;
+      latestOnApplied = onApplied;
+
+      //< Always runs last, whichever branch below took: drops the in-flight
+      //  count and, once it reaches zero, fires the one refetch a span that
+      //  ever overlapped owes.
+      function settleTagRequest() {
+        inFlightTagRequests--;
+        if (inFlightTagRequests === 0 && tagRequestsOverlapped) {
+          tagRequestsOverlapped = false;
+          refetchAuthoritativeTags(latestOnApplied);
+        }
+      }
+
       fetch('/api/tags', {
         method: method,
         headers: {
@@ -94,24 +155,28 @@ if (typeof window !== 'undefined') (function() {
           .then(function(data) { return tagUpdateOutcome(res.ok, data, fallbackMessage); });
       })
       .then(function(outcome) {
-        if (!outcome) return;   //< navigating to /login
+        if (!outcome) { settleTagRequest(); return; }   //< navigating to /login
         /* Checked AFTER the 401 peel above and never before it: a 401 is news
            about the SESSION, which every in-flight submit shares, so whichever
            one notices acts on it (see wrapped.js, same rule). */
-        if (seq !== tagSeq) return;
+        if (seq !== tagSeq) { settleTagRequest(); return; }
         if (outcome.apply) {
           hideTagError();
-          onApplied(outcome.tags);
+          //< mid-span, this response's own tags list isn't trusted - only the
+          //  refetch settleTagRequest schedules once the span drains may
+          //  repaint (see the field comments above)
+          if (!tagRequestsOverlapped) onApplied(outcome.tags);
         } else {
           showTagError(outcome.message);
         }
+        settleTagRequest();
       })
       .catch(function(err) {
         console.error('Tag update failed:', err);
         //< gated too: an error about a request the user has already moved past
         //  is as wrong as a stale repaint
-        if (seq !== tagSeq) return;
-        showTagError(fallbackMessage);
+        if (seq === tagSeq) showTagError(fallbackMessage);
+        settleTagRequest();
       });
     }
 

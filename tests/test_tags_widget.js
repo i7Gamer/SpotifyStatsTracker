@@ -94,6 +94,23 @@ function makeEl() {
  * DOMContentLoaded, and hand back the add-form submit plus the fetch queue.
  * window.AjaxStatus is a recorder for the 401 peel, so the case that needs a
  * 401 to still redirect can see it happen. */
+// The refetch DOMParser stub treats the "html" text opaquely: a JSON-encoded
+// tags array, so the fake .tag-widget/.tag-chip shape can be built straight
+// from it without a real HTML parser in node. What the string actually looks
+// like is not the module's concern - real DOMParser output would expose the
+// same querySelector/querySelectorAll/dataset shape either way.
+global.DOMParser = function () {
+  this.parseFromString = (html) => {
+    const tags = JSON.parse(html);
+    return {
+      querySelector(sel) {
+        if (sel !== '.tag-widget') return null;
+        return { querySelectorAll: (s) => (s === '.tag-chip' ? tags.map((t) => ({ dataset: { tag: t } })) : []) };
+      },
+    };
+  };
+};
+
 function freshWidget() {
   const chips = makeEl();
   const form = makeEl();
@@ -114,6 +131,7 @@ function freshWidget() {
     pendingFetches.push({ resolve, reject });
   });
   global.window = {
+    location: { href: 'http://localhost/track/t1' },
     AjaxStatus: {
       redirectIfUnauthorized(res) {
         if (res.status !== 401) return false;
@@ -152,6 +170,12 @@ function okResponse(tags) {
   return { status: 200, ok: true, json: () => Promise.resolve({ success: true, tags }) };
 }
 
+//< the refetch's response: a page fetch, so it's read with .text() (see the
+//  DOMParser stub above for how that string turns back into tags)
+function okPageResponse(tags) {
+  return { status: 200, ok: true, text: () => Promise.resolve(JSON.stringify(tags)) };
+}
+
 //< drains the whole promise chain (fetch -> json -> outcome -> apply/catch)
 function settle() { return new Promise((resolve) => setImmediate(resolve)); }
 
@@ -166,25 +190,34 @@ run('a successful add repaints the row and clears the input', async () => {
   assert.strictEqual(widget.input.value, '');
 });
 
-run('a response that lands after a newer one does not repaint the row', async () => {
+run('two requests in flight at once repaint once from a drained refetch, not either POST body', async () => {
   /* Add "rock", then "chill" before the first answer is back. Each answer
    * carries the server's full list AS OF that request, so the first says
-   * ['rock'] and the second ['rock', 'chill']. Landing last, the first used to
-   * paint the row without the tag the server had already stored - the shape
-   * playlists.js (previewToken) and wrapped.js (shareSubmitSeq) guard. */
+   * ['rock'] and the second ['rock', 'chill'] - the OLD guard (tagSeq alone):
+   * landing last, the first used to paint the row without the tag the server
+   * had already stored. UT-3 goes further: the server can commit+read the
+   * SECOND request before the FIRST's commit lands, so even the tagSeq-
+   * favoured latest response's OWN body can be missing a tag - no client
+   * sequencing fixes a response that is itself wrong, so neither body is
+   * trusted while its sibling is still in flight; only the refetch the drain
+   * schedules (once both have settled) may repaint. */
   const widget = freshWidget();
 
   widget.submit('rock');    //< A - answers LAST
-  widget.submit('chill');   //< B
+  widget.submit('chill');   //< B - answers first
   widget.pendingFetches[1].resolve(okResponse(['rock', 'chill']));
   await settle();
-  assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill']);
+  assert.deepStrictEqual(widget.renderedTags(), [],
+                         'B is still not trusted alone - A is still in flight');
 
   widget.pendingFetches[0].resolve(okResponse(['rock']));
   await settle();
+  assert.strictEqual(widget.pendingFetches.length, 3, 'the drain fires exactly one refetch');
+  widget.pendingFetches[2].resolve(okPageResponse(['rock', 'chill']));
+  await settle();
 
   assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill'],
-                         'the server holds both; an older list must not erase the newer tag');
+                         'the server holds both; the refetch is what repaints them');
 });
 
 run('a stale failure does not put an error over a row that is current', async () => {
@@ -201,6 +234,41 @@ run('a stale failure does not put an error over a row that is current', async ()
   assert.strictEqual(widget.errorLine.style.display, 'none',
                      'an error about a request the user has moved past is not theirs to act on');
   assert.strictEqual(widget.calls.errors.length, 1, 'it is still logged');
+
+  assert.strictEqual(widget.pendingFetches.length, 3, 'two were in flight, so the drain still refetches once');
+  widget.pendingFetches[2].resolve(okPageResponse(['rock', 'chill']));
+  await settle();
+  assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill']);
+});
+
+run('two overlapping adds where the second response lacks the first tag', async () => {
+  const widget = freshWidget();
+
+  widget.submit('rock');    //< A
+  widget.submit('chill');   //< B - answers first; its body omits A's tag entirely
+  widget.pendingFetches[1].resolve(okResponse(['chill']));
+  await settle();
+  assert.deepStrictEqual(widget.renderedTags(), [], 'not trusted while A is still in flight');
+
+  widget.pendingFetches[0].resolve(okResponse(['rock', 'chill']));
+  await settle();
+  widget.pendingFetches[2].resolve(okPageResponse(['rock', 'chill']));
+  await settle();
+
+  assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill'], 'the refetch shows both');
+  assert.strictEqual(widget.input.value, '',
+                     "the refetch still runs the latest request's onApplied (clears the input)");
+});
+
+run('a single add still repaints from its own response, with no extra GET', async () => {
+  const widget = freshWidget();
+
+  widget.submit('rock');
+  widget.pendingFetches[0].resolve(okResponse(['rock']));
+  await settle();
+
+  assert.deepStrictEqual(widget.renderedTags(), ['rock']);
+  assert.strictEqual(widget.pendingFetches.length, 1, 'nothing overlapped, so no refetch is issued');
 });
 
 run('a superseded 401 still sends the user to log in', async () => {
