@@ -28,7 +28,7 @@ try:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from Database.db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH, SECONDS_PER_DAY
+    from Database.utils import flaskDebugEnabled, parseError, convertToDatetime, timeToInt, getTimezone, listeningBuckets, SECONDS_PER_DAY
     from Database.lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 except ModuleNotFoundError:
     from Formatters.spotifyClient import Client
@@ -42,7 +42,7 @@ except ModuleNotFoundError:
         SKIP_RATE_PRIOR_WEIGHT,
     )
     from db import BEHAVIORAL_COLUMNS, SKIP_THRESHOLD_MS, WEB_API_BACKFILL_SOURCE
-    from utils import parseError, convertToDatetime, dateToString, startOfDay, startOfWeek, startOfMonth, timeToInt, getTimezone, listeningBuckets, GAP_DAYS_PER_MONTH, SECONDS_PER_DAY
+    from utils import parseError, convertToDatetime, timeToInt, getTimezone, listeningBuckets, SECONDS_PER_DAY
     from lastfm import LastfmClient, filterTagsToGenres, cleanLookupName, OUTCOME_OK, OUTCOME_NOT_FOUND, OUTCOME_TRANSIENT, OUTCOME_INVALID_KEY
 
 #< after the shim above on purpose: on a direct `python Database/database.py`
@@ -68,19 +68,10 @@ GENRE_COVERAGE_CATEGORIES = ("song", "album", "artist")
 # walks the whole history to compute a number that can't exceed this anyway.
 CURRENT_STREAK_LOOKBACK_DAYS = 400
 
-# Hard ceiling on gap-filled time-series buckets (see the clamp in
-# getListeningTimeSeries): a caller passing unvalidated dates used to emit one
-# zero bucket per day across centuries (~740k dicts, seconds of CPU and a
-# >100MB payload per request). Sits above dashboard/date_ranges'
-# MAX_TREND_BUCKETS so the route-level guards decide first and this stays a
-# pure backstop - real listening histories never come near either (this is
-# ~33 years of day buckets).
-MAX_TIME_SERIES_BUCKETS = 12_000
-
-# Conservative days-per-bucket floors for that clamp's span estimate - month
-# uses 28 (its shortest possible length) so the clamp can never cut the
-# emitted count below MAX_TIME_SERIES_BUCKETS.
-TIME_SERIES_MIN_BUCKET_DAYS = {"hour": 1 / 24, "day": 1, "week": 7, "month": 28}
+# MAX_TIME_SERIES_BUCKETS/TIME_SERIES_MIN_BUCKET_DAYS moved to
+# services.time_buckets (CORE-6, beside the gap-fill clamp that uses them)
+# and are imported below, re-exported here so
+# `from Database.database import MAX_TIME_SERIES_BUCKETS` keeps working.
 
 IMAGE_DOWNLOAD_WORKERS = 5   #< bounds total concurrent image downloads for the whole process, not per user
 
@@ -203,6 +194,13 @@ from Database.media_fetch import MediaFetchMixin
 from Database.import_service import ImportMixin
 from Database.workers import WorkerLifecycleMixin
 from services.listening_calendar import buildListeningCalendar, CALENDAR_WEEKS
+from services.time_buckets import (
+    MAX_TIME_SERIES_BUCKETS, TIME_SERIES_MIN_BUCKET_DAYS,
+    bucketKey as _timeBucketKey, bucketRowsByKey, buildTimeSeries, fillHeatmapGrid,
+)
+from services.dashboard_trends import (
+    obsessionSubtitle, rediscoverySubtitle, freshFindSubtitle, forgottenSubtitle,
+)
 
 
 class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
@@ -1077,17 +1075,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
 
         counts: dict = {}  # genre -> {bucket: count}
         bucketKeys: set = set()
-        # Many rows share the same 15-minute bucketStartTs (one per genre
-        # active in it), so the local-timezone conversion + bucket-key mapping
-        # is memoized per distinct bucket rather than recomputed per row -
-        # same cache getArtistTrend uses for the same reason.
-        bucketKeyCache: dict = {}
-        for row in rows:
-            bucketStartTs = row["bucketStartTs"]
-            bucket = bucketKeyCache.get(bucketStartTs)
-            if bucket is None:
-                bucket = self._bucketKey(convertToDatetime(bucketStartTs, tz=self.tz), groupBy)
-                bucketKeyCache[bucketStartTs] = bucket
+        # bucketRowsByKey memoizes the local-timezone conversion + bucket-key
+        # mapping per distinct bucketStartTs rather than recomputing it per
+        # row - many rows share one (one per genre active in it) - the same
+        # reason getArtistTrend uses it.
+        for bucket, row in bucketRowsByKey(rows, self.tz, groupBy):
             bucketKeys.add(bucket)
             genreBuckets = counts.setdefault(row["genre"], {})
             genreBuckets[bucket] = genreBuckets.get(bucket, 0) + row["plays"]
@@ -1140,13 +1132,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         inherited = self._resolveIncludeInherited(includeInherited)
         rows = self.repo.getGenreBucketedPlayTotals(self.user, genre, inherited, startTs, endTs)
-        grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-        for row in rows:
-            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
-            cell = grid[date.weekday()][date.hour]
-            cell["totalTimeListened"] += row["totalTimeListened"]
-            cell["plays"] += row["plays"]
-        return grid
+        return fillHeatmapGrid(rows, self.tz)
 
     def getRecommendedArtists(self, limit: int, genrePool: int, excludeTopN: int) -> list[dict]:
         """"Discover" recommendations: under-played artists already in the
@@ -1649,50 +1635,28 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             item = raw["obsession"]
             song = songsById.get(item["track_id"])
             if song:
-                cnt = item["recent_count"]
-                song["trend_subtitle"] = f"{cnt} play{'s' if cnt != 1 else ''} in the past week"
+                song["trend_subtitle"] = obsessionSubtitle(item)
                 result["obsession"] = song
 
         if raw.get("rediscovery"):
             item = raw["rediscovery"]
             song = songsById.get(item["track_id"])
             if song:
-                cnt = item["recent_count"]
-                max_old = item["max_old_played_at"]
-                days_ago = max(1, int((now_ts - max_old) // SECONDS_PER_DAY)) if max_old else 0
-                song["trend_subtitle"] = f"{cnt} play{'s' if cnt != 1 else ''} this week · unplayed for {days_ago} days"
+                song["trend_subtitle"] = rediscoverySubtitle(item, now_ts)
                 result["rediscovery"] = song
 
         if raw.get("freshFind"):
             item = raw["freshFind"]
             song = songsById.get(item["track_id"])
             if song:
-                cnt = item["play_count"]
-                first_played = item["first_played_at"]
-                # Floored at 0, not at 1 like the two cards either side. Their
-                # floor is unreachable - both require a 30+ day gap - and this
-                # one's window is 14 days against a two-play bar, so "found it
-                # this morning" is the ordinary case rather than the edge. With
-                # their floor it read "first heard 1 day ago" for a track whose
-                # first play was four hours old. (max() still guards the other
-                # direction: a clock correction can put first_played ahead of
-                # now_ts, and "-1 days ago" is worse than "today".)
-                days_ago = max(0, int((now_ts - first_played) // SECONDS_PER_DAY)) if first_played else 0
-                heard = ("today" if days_ago == 0
-                         else f"{days_ago} day{'s' if days_ago != 1 else ''} ago")
-                song["trend_subtitle"] = (f"{cnt} play{'s' if cnt != 1 else ''} · "
-                                          f"first heard {heard}")
+                song["trend_subtitle"] = freshFindSubtitle(item, now_ts)
                 result["freshFind"] = song
 
         if raw.get("forgotten"):
             item = raw["forgotten"]
             song = songsById.get(item["track_id"])
             if song:
-                total = item["total_plays"]
-                last_played = item["last_played_at"]
-                days_ago = max(1, int((now_ts - last_played) // SECONDS_PER_DAY)) if last_played else 0
-                months_ago = max(1, days_ago // GAP_DAYS_PER_MONTH)
-                song["trend_subtitle"] = f"{total} full plays all-time · last played {months_ago} month{'s' if months_ago != 1 else ''} ago"
+                song["trend_subtitle"] = forgottenSubtitle(item, now_ts)
                 result["forgotten"] = song
 
         return result
@@ -1967,19 +1931,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                                      artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
 
     def _bucketKey(self, date: datetime.datetime, groupBy: str) -> str:
-        """`date` is already in this user's timezone, so every helper here has to
-        be told that timezone explicitly: startOfDay/startOfWeek/dateToString
-        default to the app-global TZ, which would re-base the datetime onto the
-        server's calendar and shift midnight-adjacent plays into the wrong
-        day/week for any user whose profile timezone differs from it."""
-        if groupBy == "week":
-            return dateToString(startOfWeek(date, tz=self.tz), tz=self.tz)
-        elif groupBy == "hour":
-            return date.strftime("%Y-%m-%d %H:00")
-        elif groupBy == "month":
-            return date.strftime("%Y-%m")
-        else:
-            return dateToString(startOfDay(date, tz=self.tz), tz=self.tz)
+        """The chart-bucket label for one already-local `date` - see
+        services.time_buckets.bucketKey (CORE-6) for the groupBy shapes and
+        why `tz` has to be threaded through explicitly rather than defaulted."""
+        return _timeBucketKey(date, groupBy, self.tz)
 
     def getPlayBuckets(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                         trackId: str | None = None, artistId: str | None = None,
@@ -2010,73 +1965,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         range (see getPlayBuckets)."""
         rows = bucketRows if bucketRows is not None else self.getPlayBuckets(
             startDate, endDate, trackId=trackId, artistId=artistId, albumId=albumId)
-
-        buckets = {}
-        for row in rows:
-            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
-            key = self._bucketKey(date, groupBy)
-            bucket = buckets.setdefault(key, {"label": key, "totalTimeListened": 0, "plays": 0, "skips": 0})
-            bucket["totalTimeListened"] += row["totalTimeListened"]
-            bucket["plays"] += row["plays"]
-            bucket["skips"] += row.get("skips", 0)
-
-        if startDate is not None and endDate is not None:
-            rangeStart, rangeEnd = startDate, endDate
-        elif rows:
-            # rows are ordered by bucket start; the first/last bucket start in
-            # local time bounds the same chart buckets the raw plays would.
-            rangeStart = convertToDatetime(rows[0]["bucketStartTs"], tz=self.tz)
-            rangeEnd = convertToDatetime(rows[-1]["bucketStartTs"], tz=self.tz) + datetime.timedelta(seconds=1)
-        else:
-            return []
-
-        # The aligner walks the same local calendar _bucketKey labels by, so it
-        # takes the user's timezone too - otherwise the gap-filled timeline
-        # emits server-local bucket labels a play bucket can never match.
-        if groupBy == "week":
-            align = lambda d: startOfWeek(d, tz=self.tz)
-            advance = lambda d: d + datetime.timedelta(days=7)
-            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["week"]
-        elif groupBy == "hour":
-            align = lambda d: d.replace(minute=0, second=0, microsecond=0)
-            advance = lambda d: d + datetime.timedelta(hours=1)
-            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["hour"]
-        elif groupBy == "month":
-            # A fixed timedelta step doesn't work here since months vary in
-            # length - advance to the 1st of the next calendar month instead.
-            align = lambda d: startOfMonth(d, tz=self.tz)
-            advance = lambda d: d.replace(year=d.year + 1, month=1) if d.month == 12 else d.replace(month=d.month + 1)
-            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["month"]
-        else:
-            align = lambda d: startOfDay(d, tz=self.tz)
-            advance = lambda d: d + datetime.timedelta(days=1)
-            minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["day"]
-        cursor = align(rangeStart)
-
-        # Backstop bound on the gap-fill (see MAX_TIME_SERIES_BUCKETS): when
-        # the requested range implies more buckets than the cap, the START is
-        # clamped up - the newest buckets are what a chart is about - and
-        # re-aligned onto the same bucket grid. The route layer's own guards
-        # (_resolveGroupBy's explicit-choice cap, the custom-range year
-        # bounds) keep every real request far below this; only a caller
-        # passing unvalidated dates straight in can trip it.
-        try:
-            earliestStart = rangeEnd - datetime.timedelta(days=MAX_TIME_SERIES_BUCKETS * minBucketDays)
-        except OverflowError:
-            earliestStart = None   #< rangeEnd within the cap of datetime.min - the range itself is small
-        if earliestStart is not None and cursor < earliestStart:
-            logger.warning(
-                "Time-series range %s..%s implies more than %d %s buckets - clamping the range start",
-                rangeStart, rangeEnd, MAX_TIME_SERIES_BUCKETS, groupBy,
-            )
-            cursor = align(earliestStart)
-
-        result = []
-        while cursor < rangeEnd:
-            key = self._bucketKey(cursor, groupBy)
-            result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0, "skips": 0}))
-            cursor = advance(cursor)
-        return result
+        return buildTimeSeries(rows, self.tz, groupBy, startDate=startDate, endDate=endDate)
 
     def getHourOfDayHeatmap(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                              trackId: str | None = None, artistId: str | None = None,
@@ -2091,15 +1980,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         already fetched for the same range (see getPlayBuckets)."""
         rows = bucketRows if bucketRows is not None else self.getPlayBuckets(
             startDate, endDate, trackId=trackId, artistId=artistId, albumId=albumId)
-        grid = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
-
-        for row in rows:
-            date = convertToDatetime(row["bucketStartTs"], tz=self.tz)
-            cell = grid[date.weekday()][date.hour]
-            cell["totalTimeListened"] += row["totalTimeListened"]
-            cell["plays"] += row["plays"]
-
-        return grid
+        return fillHeatmapGrid(rows, self.tz)
 
     def getArtistTrend(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None, topN: int = 5, groupBy: str = "week") -> dict:
         """Per-bucket play counts for the topN most-played artists in the range, for
@@ -2114,17 +1995,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         totalPlaysByArtist = {}
         idPlaysByArtist = {}   #< {name: {artistId: totalPlays}} - picks a click-through target below
         bucketedCounts = []
-        # Many rows share the same 15-minute bucketStartTs (one per artist
-        # active in it), so the local-timezone conversion + bucket-key mapping
-        # is memoized per distinct bucket rather than recomputed per row -
-        # ~77k rows collapse to ~21k conversions on a large library.
-        bucketKeyCache: dict = {}
-        for row in rows:
-            bucketStartTs = row["bucketStartTs"]
-            key = bucketKeyCache.get(bucketStartTs)
-            if key is None:
-                key = self._bucketKey(convertToDatetime(bucketStartTs, tz=self.tz), groupBy)
-                bucketKeyCache[bucketStartTs] = key
+        # bucketRowsByKey memoizes the local-timezone conversion + bucket-key
+        # mapping per distinct bucketStartTs rather than recomputing it per
+        # row - ~77k rows collapse to ~21k conversions on a large library.
+        for key, row in bucketRowsByKey(rows, self.tz, groupBy):
             name = row["artistName"]
             bucketedCounts.append((key, name, row["plays"]))
             totalPlaysByArtist[name] = totalPlaysByArtist.get(name, 0) + row["plays"]
