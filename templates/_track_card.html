@@ -53,6 +53,16 @@
   {% set showSkipStats = showSkipStats if showSkipStats is defined else false %}
   {% set cardSkipStats = skipStats if (showSkipStats and skipStats) else none %}
 
+  {# Wrapped's top_songs/top_artists/top_albums cards carry a YEAR-scoped
+     firstListenedText (db.getTopSongs/Artists/Albums(startDate=yearStart,
+     endDate=yearEnd, ...) - see dashboard/wrapped_builder.py), sitting right
+     below the page's own lifetime-aware "Songs Discovered" tile
+     (_wrapped_results.html's discoveredSongsCount). The Top pages' identical
+     caption is a genuine lifetime first play. Same opt-in contract as
+     showSkipStats above: only _wrapped_results.html sets this, so every
+     other include of this partial keeps the unqualified label. #}
+  {% set wrappedCard = wrappedCard if wrappedCard is defined else false %}
+
   {% if section == 'top_artists' %}
     {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) if track.get('id') else '#' %}
   {% elif section == 'top_albums' %}
@@ -271,7 +281,7 @@
           {% endif %}
         {% elif section == 'top_songs' %}
           {% if track.get('firstListenedText') %}
-            <span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>
+            <span class="track-label">{{ 'First heard this year' if wrappedCard else 'First Listened' }}: {{ track.get('firstListenedText') }}</span>
           {% endif %}
           {% if track.get('durationText') %}
             <span class="track-label">Duration: {{ track.get('durationText') }}</span>
@@ -285,10 +295,10 @@
           {% endif %}
         {% elif section == 'top_artists' %}
           {% if track.get('firstListenedText') %}
-            <span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>
+            <span class="track-label">{{ 'First heard this year' if wrappedCard else 'First Listened' }}: {{ track.get('firstListenedText') }}</span>
           {% endif %}
         {% elif section == 'top_albums' %}
-          {% if track.get('firstListenedText') %}<span class="track-label">First Listened: {{ track.get('firstListenedText') }}</span>{% endif %}
+          {% if track.get('firstListenedText') %}<span class="track-label">{{ 'First heard this year' if wrappedCard else 'First Listened' }}: {{ track.get('firstListenedText') }}</span>{% endif %}
           {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}
           {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
         {% endif %}
