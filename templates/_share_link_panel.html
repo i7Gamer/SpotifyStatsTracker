@@ -19,6 +19,11 @@
     </div>
     <div style="display: flex; gap: 0.5rem; align-items: center;">
       <button type="button" class="primary-button button-small" data-url="{{ url_for('sharedWrappedPage', token=link.token, _external=True) }}" onclick="copyShareLink(this)">Copy</button>
+      {#- Where copy-link.js announces "Copied!" / "Copy failed". Rendered
+          EMPTY and up front rather than created on the click: a live region
+          that gains its role and its text in the same tick is ignored by
+          several screen readers. -#}
+      <span class="visually-hidden" data-copy-status role="status" aria-live="polite"></span>
       <form method="post" action="{{ url_for('profileShareLinkAction', link_id=link.id) }}" class="share-link-revoke-form" style="margin: 0; display: inline-block;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <input type="hidden" name="year" value="{{ year }}"/>
