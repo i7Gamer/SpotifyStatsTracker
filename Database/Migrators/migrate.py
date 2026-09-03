@@ -190,6 +190,21 @@ def migrateIfNeeded() -> None:
             runtimeDir = resolveRuntimeDir(migratorsDir)   #< location may have changed (e.g. a Users/ -> Data/ rename)
             databaseVersion = _resolveDatabaseVersion(runtimeDir)
 
+            # Termination is otherwise entirely on every migrator remembering to
+            # stamp its successor. One that forgets - or copy-pastes the wrong
+            # version - re-runs its own DATA migration forever at boot, against
+            # real user databases, with no error and no output: the worst shape a
+            # startup bug can take. All 46 shipped migrators do stamp; this is
+            # what makes the 47th's mistake a startup failure that names it.
+            if (databaseVersion is None
+                    or BaseMigrator.getMajorMinor(databaseVersion) <= (dbMajor, dbMinor)):
+                raise RuntimeError(
+                    f"The migrator for {dbMajor}.{dbMinor} left this database at "
+                    f"{databaseVersion} - it did not stamp a newer version, so the "
+                    f"migration chain cannot move forward. Its migrate() has to call "
+                    f"updateAppVersion() with the version it upgrades to."
+                )
+
     # The PATCH component is this function's own job: the chain steps at minor
     # granularity and its last migrator stamps x.y.0, so on a patch release
     # (1.46.0 -> 1.46.1) no migrator runs and none could bring the markers to

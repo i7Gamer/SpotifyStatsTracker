@@ -19,6 +19,24 @@ from Database.Migrators import dbversion
 from Database.Migrators.base import BaseMigrator
 
 
+# Two deliberately broken migrator modules, written into a temp Migrators/
+# dir by the progress-assertion tests below. Kept as whole-module literals
+# rather than escaped one-liners so they read as the files they become.
+MIGRATOR_THAT_FORGETS_TO_STAMP = """from Database.Migrators.base import BaseMigrator
+class Migrator(BaseMigrator):
+    def migrate(self):
+        self.checkPreconditions()
+        #< the bug: no updateAppVersion call at all
+"""
+
+MIGRATOR_THAT_STAMPS_BACKWARDS = """from Database.Migrators.base import BaseMigrator
+class Migrator(BaseMigrator):
+    def migrate(self):
+        self.checkPreconditions()
+        self.updateAppVersion('1.45.0')
+"""
+
+
 class TestMigrateIfNeeded(unittest.TestCase):
     def test_first_run_creates_data_dir_and_version_file(self):
         """On a fresh install neither Database/Data/ nor the legacy Database/Users/
@@ -206,6 +224,55 @@ class TestMigrateIfNeeded(unittest.TestCase):
 
             self.assertEqual((dataDir / "VERSION").read_text(encoding="utf-8").strip(),
                              "1.47.0")
+
+    def test_a_migrator_that_forgets_to_stamp_fails_instead_of_looping(self):
+        """Termination depended entirely on every migrator remembering to call
+        updateAppVersion(). One that forgets re-runs its own data migration
+        forever at boot, against real user databases, with no error and no
+        output - the worst shape a startup bug can take (2026-09-03 review,
+        L11). All 46 shipped migrators do stamp; this is what makes the 47th's
+        mistake a startup failure that names it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / 'Migrators'
+            migratorsDir.mkdir()
+            (migratorsDir / 'migrate1_46_0.py').write_text(
+                MIGRATOR_THAT_FORGETS_TO_STAMP, encoding='utf-8')
+            (base / 'VERSION').write_text('1.47.0', encoding='utf-8')
+            dataDir = base / 'Data'
+            dataDir.mkdir()
+            (dataDir / 'VERSION').write_text('1.46.0', encoding='utf-8')
+
+            with patch.object(migrateModule, '__file__', str(migratorsDir / 'migrate.py')), \
+                 patch.object(baseModule, '__file__', str(migratorsDir / 'base.py')), \
+                 self.assertRaises(RuntimeError) as raised:
+                migrateModule.migrateIfNeeded()
+
+            message = str(raised.exception)
+            self.assertIn('1.46', message, 'the failing step has to be named')
+            self.assertIn('updateAppVersion', message, 'and the fix named with it')
+
+    def test_a_migrator_that_stamps_backwards_fails_too(self):
+        """The same guard from the other side: a stamp that does not move
+        FORWARD is not progress either, and would loop just as silently.
+
+        Reachable by a copy-paste of the wrong version string, which is
+        exactly how the forgotten call would arrive too."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            migratorsDir = base / 'Migrators'
+            migratorsDir.mkdir()
+            (migratorsDir / 'migrate1_46_0.py').write_text(
+                MIGRATOR_THAT_STAMPS_BACKWARDS, encoding='utf-8')
+            (base / 'VERSION').write_text('1.47.0', encoding='utf-8')
+            dataDir = base / 'Data'
+            dataDir.mkdir()
+            (dataDir / 'VERSION').write_text('1.46.0', encoding='utf-8')
+
+            with patch.object(migrateModule, '__file__', str(migratorsDir / 'migrate.py')), \
+                 patch.object(baseModule, '__file__', str(migratorsDir / 'base.py')), \
+                 self.assertRaises(RuntimeError):
+                migrateModule.migrateIfNeeded()
 
     def test_the_named_rescue_release_is_older_than_this_one(self):
         """The refusal says "run release X once, then upgrade to this
