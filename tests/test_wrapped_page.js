@@ -320,6 +320,47 @@ run('the wrapped form prunes its empty params, and nothing else does', () => {
   assert.deepStrictEqual(page.pruned, [mine]);
 });
 
+// X6 (2026-09-02 review): templates/wrapped.html's form always sends
+// X-Wrapped-Filter-Change - routes/wrapped.py reads it as "the genre card is
+// unchanged and already on screen" and answers with an hx-preserve stub
+// instead of a real card. True only while #wrappedGenresCard is actually
+// there. After a failed swap has emptied #wrappedResults (AjaxStatus's
+// failure path), the card is gone, and vendored htmx's hx-preserve only
+// preserves an id it can still find - so sending the marker on the very next
+// filter change would swap the hollow stub in and the genre card would stay
+// missing until the next year switch.
+
+run('the marker header is dropped once the genre card is gone', () => {
+  const page = loadWrapped({});   //< no wrappedGenresCard in elements
+  const headers = { 'X-Wrapped-Filter-Change': '1' };
+
+  fireBody(page, 'htmx:configRequest',
+    { detail: { elt: { id: 'wrappedFilters' }, parameters: {}, headers: headers } });
+
+  assert.strictEqual('X-Wrapped-Filter-Change' in headers, false);
+});
+
+run('the marker header survives while the genre card is still on screen', () => {
+  const page = loadWrapped({ elements: { wrappedGenresCard: makeElement() } });
+  const headers = { 'X-Wrapped-Filter-Change': '1' };
+
+  fireBody(page, 'htmx:configRequest',
+    { detail: { elt: { id: 'wrappedFilters' }, parameters: {}, headers: headers } });
+
+  assert.strictEqual(headers['X-Wrapped-Filter-Change'], '1');
+});
+
+run('a request with no headers object at all does not crash the listener', () => {
+  // htmx always populates evt.detail.headers on a real request; this pins
+  // that the guard does not assume it, the way tests above already omit it
+  // for the OTHER assertion this same listener makes (pruneEmptyParams).
+  const page = loadWrapped({});
+
+  assert.doesNotThrow(() => {
+    fireBody(page, 'htmx:configRequest', { detail: { elt: { id: 'wrappedFilters' }, parameters: {} } });
+  });
+});
+
 // ---------------------------------------------------------- the PNG export
 
 function exportSetup(theme) {
@@ -669,12 +710,27 @@ run('a failed swap is reported through the shared helper, scoped to the recap', 
   assert.strictEqual(page.bodyListeners['htmx:sendError'], undefined);
 });
 
-run('the retry re-requests the recap', () => {
-  const page = loadWrapped({ search: '?year=2026' });
+// js-F1's Wrapped half (2026-09-02 review, done alongside X6 above): re-issued
+// off the FORM, not the address bar, the same as charts-page.js/history-
+// page.js/top-list.js - a 4xx/5xx never touches the URL (htmx updates history
+// only inside its successful-swap branch), so a retry of the stale URL after a
+// failed filter change would re-request the OLD selection under a page that
+// already shows the new one.
+run('the retry re-serialises the form, not the stale URL', () => {
+  // hx-get deliberately differs from window.location.pathname here, the way
+  // it genuinely does on the public /shared/<token> page: the attribute names
+  // the bare route (see templates/wrapped.html's comment on why - a year in
+  // both hx-get and `action` would be sent twice), while the address bar
+  // carries the token. Reading the URL instead of the attribute would ask a
+  // route that does not know what to do with these params.
+  const form = { id: 'wrappedFilters', getAttribute(name) { return name === 'hx-get' ? '/shared/tok123' : null; } };
+  const page = loadWrapped({ search: '?year=2026', elements: { wrappedFilters: form } });
 
   page.swapFailure.retry();
 
-  assert.strictEqual(page.ajax[0].url, '/wrapped?year=2026');
+  assert.strictEqual(page.ajax[0].url, '/shared/tok123',
+    'the bare hx-get path: htmx appends the form values itself');
+  assert.strictEqual(page.ajax[0].opts.source, form);
   assert.strictEqual(page.ajax[0].opts.target, '#wrappedResults');
 });
 

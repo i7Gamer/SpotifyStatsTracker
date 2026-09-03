@@ -406,6 +406,20 @@ if (typeof document !== 'undefined') {
   document.body.addEventListener('htmx:configRequest', function (evt) {
     if (!evt.detail.elt || evt.detail.elt.id !== WRAPPED_FORM_ID) return;
     HtmxFilters.pruneEmptyParams(evt.detail.parameters);
+    // X6 (2026-09-02 review): the marker header above tells
+    // routes/wrapped.py's _genreCardIsAlreadyCorrect that #wrappedGenresCard
+    // is unchanged and already on screen, so it answers with an hx-preserve
+    // stub instead of recomputing the card - true only while that card is
+    // actually still there. After a failed swap has emptied #wrappedResults
+    // (see AjaxStatus's failure path), the card is gone, and vendored htmx's
+    // hx-preserve only preserves an id it can still find: sending the marker
+    // on the next filter change would swap the hollow stub in, and the real
+    // genre card would stay missing until the next year switch. Guarded on
+    // `headers` existing: every real htmx request carries one, but nothing
+    // here needs it to.
+    if (evt.detail.headers && !byId('wrappedGenresCard')) {
+      delete evt.detail.headers['X-Wrapped-Filter-Change'];
+    }
   });
 
   // Everything that has to happen once new markup is in the page. Scoped to the
@@ -447,9 +461,21 @@ if (typeof document !== 'undefined') {
   // out-of-band fragment of the same response, and the share forms use their
   // own fetch() above. The hand-rolled block this replaced took no event, so it
   // answered every failed swap on the page - the helper scopes on the target.
+  //
+  // js-F1 (2026-09-02 review): re-issued off the FORM, not the address bar -
+  // the charts-page.js/history-page.js/top-list.js pattern. A 4xx/5xx never
+  // touches the URL (htmx updates history only inside its successful-swap
+  // branch), so after a failed filter change the controls already show the
+  // new selection while the URL still says the old one; retrying the URL
+  // would re-request the OLD selection under a page that already shows the
+  // new one. Re-serialising the form also runs the configRequest veto/prune
+  // above (its elt is the form, so the marker-header guard applies here too)
+  // and inherits hx-replace-url and hx-sync. The bare hx-get path, because
+  // htmx appends the form's values to whatever path it is handed.
   HtmxFilters.onSwapFailure(WRAPPED_RESULTS_ID, function () {
-    htmx.ajax('GET', window.location.pathname + window.location.search,
-              { target: '#' + WRAPPED_RESULTS_ID, swap: 'innerHTML' });
+    var form = byId(WRAPPED_FORM_ID);
+    htmx.ajax('GET', form.getAttribute('hx-get'),
+              { source: form, target: '#' + WRAPPED_RESULTS_ID, swap: 'innerHTML' });
   });
 }
 //< no module.exports: nothing here is pure enough to unit-test off the DOM. The
