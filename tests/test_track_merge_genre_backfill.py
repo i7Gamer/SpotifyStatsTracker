@@ -231,10 +231,14 @@ class TestAMergeRequeuesTheNewCanonical(GenreQueueTestCase):
 
     def test_a_settled_group_is_not_requeued_again_the_next_day(self):
         """The matcher runs daily. A canonical that is genuinely tag-less
-        everywhere can never satisfy the own-rows test, so requeuing on every
-        pass rather than only when the group MOVED would re-look-it-up every
-        day forever - against a shared Last.fm rate limiter, for an answer that
-        has not changed."""
+        everywhere can never satisfy the own-rows test, so a pass that requeued
+        a settled group would re-look-it-up every day forever - against a
+        shared Last.fm rate limiter, for an answer that has not changed.
+
+        Today the planner delivers this by dropping a group with nothing to
+        merge, so the requeue never sees one. This pins the OUTCOME rather
+        than that mechanism: it is the property that must survive a future
+        change to what the planner emits."""
         db = self._db(merged=False)
         conn = db.repo._conn()
         with conn:

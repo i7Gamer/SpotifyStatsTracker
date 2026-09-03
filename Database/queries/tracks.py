@@ -1102,7 +1102,6 @@ class TrackQueries:
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
                 canonicals.append(canonicalId)
-                mergedBefore = merged
                 if group["reHeadedFrom"]:
                     #< the one canonical that arrives pointing somewhere: it was
                     #  a member of this very group until the title rule promoted
@@ -1173,11 +1172,14 @@ class TrackQueries:
                 #< after the members, so the group it tests against is the one
                 #  this run just made
                 self._clearContradictedRejection(conn, canonicalId)
-                if merged > mergedBefore or group["reHeadedFrom"]:
-                    #< only when this group actually MOVED - see
-                    #  _requeueCanonicalForGenres on why an unconditional call
-                    #  re-looks-up a tag-less canonical every day forever
-                    self._requeueCanonicalForGenres(conn, canonicalId)
+                #< unconditional is safe HERE, and only here: the planner drops
+                #  a group with nothing to merge (`if not toMerge: continue`),
+                #  so every group that reaches this loop is one that MOVED. That
+                #  is what _requeueCanonicalForGenres requires - called on a
+                #  settled group it would re-look-up a canonical that is
+                #  genuinely tag-less everywhere on every daily pass, forever,
+                #  since such a canonical can never satisfy the own-rows test.
+                self._requeueCanonicalForGenres(conn, canonicalId)
         if merged:
             #< a merge moves numbers frozen inside every user's cached Wrapped
             #  years, and past years never notice on their own. Scoped to the
