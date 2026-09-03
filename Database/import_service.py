@@ -84,6 +84,51 @@ AMBIGUOUS_MATCH_ABORT_MESSAGE = (
     "an uploaded entry matches several existing plays of the same track, so there is no single "
     "row it can safely correct and the play it describes cannot be restored")
 
+# The stable substring of _stageImportData's "None of the N entries..." raise
+# (the N interpolates the file's own entry count, not user-supplied content,
+# but _classifyImportFailureReason still matches on this fixed fragment
+# rather than str(e) as a whole - keeping the classifier's rule uniform: it
+# never depends on interpolated text, even text as harmless as a count).
+_UNREADABLE_ENTRIES_MARKER = "entries in this file could be read"
+
+
+def _classifyImportFailureReason(e: Exception) -> str:
+    """One of a small, FIXED set of user-facing phrases describing why a file
+    in an import batch failed - never str(e)/parseError(e) itself, which can
+    carry a filename, a track id, or other uploaded content (see
+    AMBIGUOUS_MATCH_ABORT_MESSAGE's comment: the same reason that message is
+    itself a constant). Consumed by the batch loop's per-file "continuing"
+    progress line and its final summary (UT-17) - the server log at :684
+    keeps the full parseError(e) diagnostic unchanged, so nothing is lost for
+    debugging, only kept out of the browser.
+
+    Keyed on exception shape and on a STABLE marker substring of the (also
+    fixed) message each raise site uses - never on the message as a whole,
+    since two of the three raise sites interpolate a count. Only the shapes
+    reachable from _stageImportData/_applyImportData via the batch loop's
+    except (Database/import_service.py) are named here; anything else -
+    including MusicoletExpansionTooLargeError and any other Exception
+    subtype - falls to the generic default."""
+    if isinstance(e, ValueError):
+        message = str(e)
+        if message == AMBIGUOUS_MATCH_ABORT_MESSAGE:
+            return "an ambiguous match aborted this file"
+        if _UNREADABLE_ENTRIES_MARKER in message:
+            return "the file could not be read"
+        return "unrecognised export format"
+    return "an unexpected error"
+
+
+def _summarizeFailureReasons(reasons: list[str]) -> str:
+    """'reason (Nx), reason (Nx)' for the batch summary line - counts each
+    classified reason, in first-seen order (stable across runs, unlike
+    Counter.most_common's tie-break)."""
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    return ", ".join(f"{reason} ({count}x)" for reason, count in counts.items())
+
+
 # How far apart two skip rows for the same track may be and still be treated as
 # one physical event. Sized for the recording sources disagreeing about what
 # played_at means (start vs end of a sub-5s play) plus clock drift - NOT for the
@@ -652,6 +697,7 @@ class ImportMixin:
 
         total = len(fileContents)
         outcomes: list[str] = []
+        failureReasons: list[str] = []   #< one _classifyImportFailureReason(e) per "failed" outcome
 
         # One run state for the whole batch: files commit separately, so a
         # skip/replay pair straddling a file boundary would otherwise collapse
@@ -681,6 +727,8 @@ class ImportMixin:
                 outcomes.append("imported")
             except Exception as e:
                 outcomes.append("failed")
+                reason = _classifyImportFailureReason(e)
+                failureReasons.append(reason)
                 _dbmod.logger.error("Import failed for file %s/%s: %s", index, total, _dbmod.parseError(e))
                 if not isFinalFile:
                     #< importHistory wrote a TERMINAL 'failed' on its way out,
@@ -698,7 +746,7 @@ class ImportMixin:
                     #  final file, and the batch summary below owns the real
                     #  verdict either way. error=True keeps the banner red.
                     self.writeProgress("running", index, total,
-                                       f"File {index}/{total}: Import failed, continuing",
+                                       f"File {index}/{total}: Import failed ({reason}), continuing",
                                        error=True)
 
         failedCount = outcomes.count("failed")
@@ -713,15 +761,19 @@ class ImportMixin:
         # is not a clean run whatever the others did.
         unreadableNote = (f" {unreadableFileCount} file(s) could not be read (not valid UTF-8 text) "
                           "and were skipped." if unreadableFileCount else "")
+        # failureReasons carries one classified phrase per "failed" outcome
+        # (never raw exception text - see _classifyImportFailureReason), so
+        # the summary can name WHY without repeating the per-file messages.
+        failureNote = f" - {_summarizeFailureReasons(failureReasons)}" if failedCount else ""
         if failedCount == 0 and skippedCount == total:
             status, message = "complete", "All files were already imported"
         elif failedCount == 0:
             status, message = "complete", f"Imported {succeededCount}/{total} files ({skippedCount} skipped)"
         elif succeededCount == 0 and skippedCount == 0:
-            status, message = "failed", f"Imported 0/{total} files (all failed)"
+            status, message = "failed", f"Imported 0/{total} files (all failed{failureNote})"
         else:
             status, message = "complete", (f"Imported {succeededCount}/{total} files "
-                                           f"({skippedCount} skipped, {failedCount} failed)")
+                                           f"({skippedCount} skipped, {failedCount} failed{failureNote})")
         self.writeProgress(status, total, total, message + unreadableNote,
                            error=bool(failedCount or unreadableFileCount))
         return outcomes

@@ -340,6 +340,78 @@ class TestImportHistoryBatch(DatabaseTestCase):
         self.assertEqual(progress["status"], "failed")
         self.assertTrue(progress["error"])
 
+    def test_unrecognized_export_names_its_class_in_the_progress_line(self):
+        """UT-17: the per-file progress line must name a fixed failure
+        class, not the bare "Import failed, continuing" it used to carry
+        with no reason at all - an unrecognized/corrupt file (invalid JSON
+        included: _convertToList folds a JSON parse error into the same
+        "None" export type) classifies as "unrecognised export format"."""
+        badImporter = MagicMock()
+        badImporter._convertToList.return_value = ([], "None")
+
+        def gen2():
+            yield _meta("f2i1", 200)
+
+        capturedMessages = []
+        originalWriteProgress = self.db.writeProgress
+
+        def captureWriteProgress(status, current=0, total=0, message="", error=False):
+            capturedMessages.append(message)
+            originalWriteProgress(status, current, total, message, error)
+
+        self.db.writeProgress = captureWriteProgress
+
+        with patch("Database.database.Importer",
+                    side_effect=[badImporter, self._mockImporter(gen2)]):
+            self.db.importHistoryBatch(["bad export", "good export"])
+
+        midBatchMessage = next(m for m in capturedMessages if "continuing" in m)
+        self.assertIn("unrecognised export format", midBatchMessage)
+        self.assertNotIn("Unrecognized or corrupt export file", midBatchMessage)
+
+    def test_generic_failure_names_an_unexpected_error_and_hides_its_text(self):
+        """A failure that isn't one of the classifier's known ValueError
+        shapes must still name a FIXED class - and must never leak the raw
+        exception text (which could carry a filename, a track id, or any
+        other user-supplied content) into the progress line."""
+        def failing():
+            raise RuntimeError("some internal detail nobody should see")
+            yield  # unreachable - keeps this a generator function
+
+        capturedMessages = []
+        originalWriteProgress = self.db.writeProgress
+
+        def captureWriteProgress(status, current=0, total=0, message="", error=False):
+            capturedMessages.append(message)
+            originalWriteProgress(status, current, total, message, error)
+
+        self.db.writeProgress = captureWriteProgress
+
+        def gen2():
+            yield _meta("f2i1", 200)
+
+        with patch("Database.database.Importer",
+                    side_effect=[self._mockImporter(failing), self._mockImporter(gen2)]):
+            self.db.importHistoryBatch(["bad export", "good export"])
+
+        midBatchMessage = next(m for m in capturedMessages if "continuing" in m)
+        self.assertIn("an unexpected error", midBatchMessage)
+        self.assertNotIn("some internal detail nobody should see", midBatchMessage)
+
+    def test_all_files_failing_summary_lists_failure_classes_with_counts(self):
+        badImporter1 = MagicMock()
+        badImporter1._convertToList.return_value = ([], "None")
+        badImporter2 = MagicMock()
+        badImporter2._convertToList.return_value = ([], "None")
+
+        with patch("Database.database.Importer", side_effect=[badImporter1, badImporter2]):
+            self.db.importHistoryBatch(["bad one", "bad two"])
+
+        progress = self.db.readProgress()
+        self.assertEqual(progress["status"], "failed")
+        self.assertIn("unrecognised export format", progress["message"])
+        self.assertIn("2", progress["message"])   #< both files failed the same way
+
     def test_progress_prefix_identifies_current_file(self):
         def gen():
             yield _meta("i1", 100)
