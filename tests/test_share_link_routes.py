@@ -693,7 +693,10 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
 
-        self.assertIn("alice played 3 different songs by TestArtist", body)
+        #< "song releases", not "songs": Wrapped's artist/album cards carry a
+        #  per-release uniqueSongCount (2026-09-02 review, UT-10) - see
+        #  test_track_card_wrapped_release_caption.py for the partial-level pin
+        self.assertIn("alice played 3 different song releases by TestArtist", body)
         self.assertNotIn("You played", body)
 
     def test_track_card_played_lines_use_the_owners_display_name(self):
@@ -716,8 +719,8 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
 
-        self.assertIn("Wonderland played 3 different songs by TestArtist", body)
-        self.assertIn("Wonderland played 2 songs from TestAlbum", body)
+        self.assertIn("Wonderland played 3 different song releases by TestArtist", body)
+        self.assertIn("Wonderland played 2 song releases from TestAlbum", body)
         self.assertNotIn("alice played", body)
 
     def test_the_filter_form_swaps_against_this_share_url(self):
@@ -968,7 +971,7 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
 
         body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
-        self.assertIn("alice played 3 different songs by TestArtist", body)
+        self.assertIn("alice played 3 different song releases by TestArtist", body)
         self.assertNotIn("You played", body)
 
     def test_swapped_cards_use_the_owners_display_name(self):
@@ -984,7 +987,7 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
 
         body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
-        self.assertIn("Wonderland played 3 different songs by TestArtist", body)
+        self.assertIn("Wonderland played 3 different song releases by TestArtist", body)
         self.assertNotIn("alice played", body)
 
     def test_year_switch_on_a_multi_year_link_stays_within_available_years(self):
