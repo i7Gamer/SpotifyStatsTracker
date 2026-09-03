@@ -528,6 +528,48 @@ def register(app, dashboard):
     # through the instance.
     dashboard._topListPage = _topListPage
 
+    def _workerStatus(fetch, label):
+        """One `db.getXWorkerStatus()` probe, defended the same way three
+        times over in overviewPage: an exception, or a reply of the wrong
+        shape, leaves the caller's existing default in place rather than
+        crashing the whole /overview page over a status probe. Returns None
+        on either failure so the caller can `or` it onto its default; `label`
+        names what failed in the log line (CORE-10 part 4, 2026-09-02
+        review)."""
+        try:
+            status = fetch()
+        except Exception as e:
+            logger.warning("%s worker status lookup failed: %s", label, e)
+            return None
+        if isinstance(status, dict):
+            return {"configured": bool(status.get("configured")), "running": bool(status.get("running"))}
+        return None
+
+    def _ownStatusBadges(current_username, current_db):
+        """The logged-in user's own sync/backfill state, as the simple
+        three-badge summary overviewPage's your_status renders - not a table
+        (the full multi-user table with per-account admin controls lives on
+        /admin now). None when the account has no row at all (CORE-10 part
+        4, 2026-09-02 review)."""
+        own = dashboard.repo.getAllUsersDetails(username=current_username)
+        if not own:
+            return None
+        u = own[0]
+        if u["cookies_json"] and current_db is not None:
+            health = current_db.getListenerHealth()
+            sync_status = health.get("status", "UNKNOWN")
+        else:
+            sync_status = "Not Configured"
+        has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
+        needs_reauth = bool(u.get("spotify_needs_reauth"))
+        return {
+            "sync_status": sync_status,
+            "spotify_api_status": "Needs Re-Auth" if (has_api and needs_reauth) else ("Configured" if has_api else "Not Configured"),
+            #< .get(): raw row presence check only - the stored key
+            #  is encrypted and never needs decrypting here
+            "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
+        }
+
     def overviewPage():
         # Intentionally unauthenticated: aggregate counts/DB size carry no
         # per-user listening data, so they're shown to any visitor as a
@@ -579,52 +621,20 @@ def register(app, dashboard):
                 # library, unlike the range-scoped gates on charts/wrapped.
                 genre_coverage = resolveGenreCoverage(current_db, None, None)
                 genre_unlocked = genreGatePasses(genre_coverage)
-                try:
-                    workerStatus = current_db.getLastfmWorkerStatus()
-                    if isinstance(workerStatus, dict):
-                        genre_worker = {"configured": bool(workerStatus.get("configured")),
-                                        "running": bool(workerStatus.get("running"))}
-                except Exception as e:
-                    logger.warning("Last.fm worker status lookup failed: %s", e)
+                genre_worker = _workerStatus(current_db.getLastfmWorkerStatus, "Last.fm") or genre_worker
             if current_db is not None and (artist_bio_enabled or album_bio_enabled):
                 biography_coverage = resolveBiographyCoverage(current_db, current_username)
-                try:
-                    artistWorkerStatus = current_db.getLastfmBiographyWorkerStatus()
-                    if isinstance(artistWorkerStatus, dict):
-                        biography_worker["artist"] = {"configured": bool(artistWorkerStatus.get("configured")),
-                                                      "running": bool(artistWorkerStatus.get("running"))}
-                except Exception as e:
-                    logger.warning("Last.fm artist biography worker status lookup failed: %s", e)
-                try:
-                    albumWorkerStatus = current_db.getLastfmAlbumBiographyWorkerStatus()
-                    if isinstance(albumWorkerStatus, dict):
-                        biography_worker["album"] = {"configured": bool(albumWorkerStatus.get("configured")),
-                                                     "running": bool(albumWorkerStatus.get("running"))}
-                except Exception as e:
-                    logger.warning("Last.fm album biography worker status lookup failed: %s", e)
+                biography_worker["artist"] = (
+                    _workerStatus(current_db.getLastfmBiographyWorkerStatus, "Last.fm artist biography")
+                    or biography_worker["artist"])
+                biography_worker["album"] = (
+                    _workerStatus(current_db.getLastfmAlbumBiographyWorkerStatus, "Last.fm album biography")
+                    or biography_worker["album"])
 
         # The logged-in user's own sync/backfill state, as a simple
         # three-badge summary - not a table (the full multi-user table
         # with per-account admin controls lives on /admin now).
-        your_status = None
-        if is_logged_in:
-            own = dashboard.repo.getAllUsersDetails(username=current_username)
-            if own:
-                u = own[0]
-                if u["cookies_json"] and current_db is not None:
-                    health = current_db.getListenerHealth()
-                    sync_status = health.get("status", "UNKNOWN")
-                else:
-                    sync_status = "Not Configured"
-                has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
-                needs_reauth = bool(u.get("spotify_needs_reauth"))
-                your_status = {
-                    "sync_status": sync_status,
-                    "spotify_api_status": "Needs Re-Auth" if (has_api and needs_reauth) else ("Configured" if has_api else "Not Configured"),
-                    #< .get(): raw row presence check only - the stored key
-                    #  is encrypted and never needs decrypting here
-                    "lastfm_api_status": "Configured" if u.get("lastfm_api_key") else "Not Configured",
-                }
+        your_status = _ownStatusBadges(current_username, current_db) if is_logged_in else None
 
         # One row per entity kind for the combined "Biography Backfill
         # Progress" card (templates/_biography_progress.html) - built
@@ -794,14 +804,10 @@ def register(app, dashboard):
         )
     app.add_url_rule("/", "dashboard", dashboardIndex, methods=["GET"])
 
-    @requiresUser
-    def historyPage(username, db):
-        """The searchable, paginated play-history list - split out of the
-        dashboard so that page can stay a glanceable overview. Carries the same
-        search + Time Period filter the dashboard used to host, and the same
-        list-scoping rule: only an explicit custom range (a chart click-through)
-        scopes the list; named intervals don't."""
-
+    def _historyFilters(db, username):
+        """The History page's filter-card state, read once - mirrors
+        _topListFilters, which the three Top pages already share (CORE-10
+        part 3, 2026-09-02 review)."""
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
 
@@ -816,7 +822,6 @@ def register(app, dashboard):
         interval = dashboard._resolveIntervalParam("all time", "all time", customStart, customEnd)
 
         sortOrder = dashboard._getHistorySortParam()
-        oldestFirst = sortOrder == "oldest"
 
         # The tag filter mirrors the Top pages' (see _topListFilters): gated on
         # the admin's instance-wide tags kill switch, so a hand-crafted ?tag=
@@ -837,7 +842,84 @@ def register(app, dashboard):
         # rule test_the_first_load_url_holds_no_unvalidated_input pins for
         # ?interval=). _topListFilters still echoes its raw value.
         fullOnly = "0" if request.args.get("fullOnly") == "0" else "1"
-        fullPlaysOnly = fullOnly != "0"
+
+        return {
+            "searchQuery": request.args.get("q", ""),
+            "interval": interval,
+            "customStart": customStart,
+            "customEnd": customEnd,
+            "sort": sortOrder,
+            "oldestFirst": sortOrder == "oldest",
+            "tag": tag,
+            "userTags": userTags,
+            "fullOnly": fullOnly,
+            "fullPlaysOnly": fullOnly != "0",
+        }
+
+    def _historyShell(username, filters):
+        """The plain GET half of History's two-phase load: the filter card
+        plus an empty #historyResults placeholder. Mirrors _topListShell
+        (CORE-10 part 3, 2026-09-02 review)."""
+        # The URL the shell's placeholder fetches the list from. Built from
+        # the VALIDATED values rather than echoed back from
+        # request.full_path, which is the same rule the pagination links
+        # already follow (see _buildPaginationContext below): ?interval=bogus
+        # is coerced to the default for the query itself, so reflecting the
+        # raw value into the markup would assert it again in the one place a
+        # reader would trust, and disagree with every link built beside it.
+        # Pinned by test_an_unrecognized_interval_renders_as_the_default_not_raw.
+        #
+        # A custom range's dates ride along only when the range is actually
+        # in effect, matching the disabled date inputs in the shell - see
+        # the note on `disabled` in templates/history.html.
+        listArgs = {
+            "q": filters["searchQuery"],
+            "interval": filters["interval"],
+            "startDate": filters["customStart"] if filters["interval"] == "custom" else "",
+            "endDate": filters["customEnd"] if filters["interval"] == "custom" else "",
+            "sort": filters["sort"] if filters["sort"] == "oldest" else "",
+            "tag": filters["tag"],
+            #< unconditional, unlike the filters above: BOTH "1" and "0" are
+            #  non-empty strings so the `if v` below keeps them, and that is
+            #  required rather than incidental - an absent fullOnly means the
+            #  default, so omitting it here would make the first load
+            #  disagree with a checkbox the user can see is off
+            "fullOnly": filters["fullOnly"],
+            #< a junk or out-of-range page is clamped by _calculatePagination
+            #  on the list request; this only keeps a shared ?page=3 working,
+            #  so anything that isn't a page number is simply left out
+            "page": _positivePageArg(),
+        }
+        return render_template(
+            "history.html",
+            username=username,
+            section="history",
+            interval=filters["interval"],
+            customStart=filters["customStart"],
+            customEnd=filters["customEnd"],
+            sort=filters["sort"],
+            tag=filters["tag"],
+            user_tags=filters["userTags"],
+            fullPlaysOnly=filters["fullPlaysOnly"],
+            listUrl=url_for("history", **{k: v for k, v in listArgs.items() if v}),
+        )
+
+    @requiresUser
+    def historyPage(username, db):
+        """The searchable, paginated play-history list - split out of the
+        dashboard so that page can stay a glanceable overview. Carries the same
+        search + Time Period filter the dashboard used to host, and the same
+        list-scoping rule: only an explicit custom range (a chart click-through)
+        scopes the list; named intervals don't."""
+        filters = _historyFilters(db, username)
+        interval = filters["interval"]
+        customStart = filters["customStart"]
+        customEnd = filters["customEnd"]
+        sortOrder = filters["sort"]
+        oldestFirst = filters["oldestFirst"]
+        tag = filters["tag"]
+        fullOnly = filters["fullOnly"]
+        fullPlaysOnly = filters["fullPlaysOnly"]
 
         # Lightweight shell, same two-phase load as /compare, /charts, /genres:
         # the initial GET renders just the filter controls + an empty results
@@ -853,51 +935,9 @@ def register(app, dashboard):
         # so a marker living in the query string would become part of the page's
         # shareable address. See tests/test_history_htmx.py.
         if not isHtmxSwap():
-            # The URL the shell's placeholder fetches the list from. Built from
-            # the VALIDATED values rather than echoed back from
-            # request.full_path, which is the same rule the pagination links
-            # already follow (see _buildPaginationContext below): ?interval=bogus
-            # is coerced to the default for the query itself, so reflecting the
-            # raw value into the markup would assert it again in the one place a
-            # reader would trust, and disagree with every link built beside it.
-            # Pinned by test_an_unrecognized_interval_renders_as_the_default_not_raw.
-            #
-            # A custom range's dates ride along only when the range is actually
-            # in effect, matching the disabled date inputs in the shell - see
-            # the note on `disabled` in templates/history.html.
-            listArgs = {
-                "q": request.args.get("q", ""),
-                "interval": interval,
-                "startDate": customStart if interval == "custom" else "",
-                "endDate": customEnd if interval == "custom" else "",
-                "sort": sortOrder if sortOrder == "oldest" else "",
-                "tag": tag,
-                #< unconditional, unlike the filters above: BOTH "1" and "0" are
-                #  non-empty strings so the `if v` below keeps them, and that is
-                #  required rather than incidental - an absent fullOnly means the
-                #  default, so omitting it here would make the first load
-                #  disagree with a checkbox the user can see is off
-                "fullOnly": fullOnly,
-                #< a junk or out-of-range page is clamped by _calculatePagination
-                #  on the list request; this only keeps a shared ?page=3 working,
-                #  so anything that isn't a page number is simply left out
-                "page": _positivePageArg(),
-            }
-            return render_template(
-                "history.html",
-                username=username,
-                section="history",
-                interval=interval,
-                customStart=customStart,
-                customEnd=customEnd,
-                sort=sortOrder,
-                tag=tag,
-                user_tags=userTags,
-                fullPlaysOnly=fullPlaysOnly,
-                listUrl=url_for("history", **{k: v for k, v in listArgs.items() if v}),
-            )
+            return _historyShell(username, filters)
 
-        searchQuery = request.args.get("q", "")
+        searchQuery = filters["searchQuery"]
 
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default="all time", tz=db.tz)
 
@@ -1200,108 +1240,98 @@ def register(app, dashboard):
         )
     app.add_url_rule("/charts", "chartsPage", chartsPage, methods=["GET"])
 
-    def _detailHistoryContext(db, endpoint, linkArgs, groupByParam="",
-                               trackId=None, artistId=None, albumId=None,
-                               trackDurationMs=None, singleTrackTimeline=False):
-        """The detail pages' play-history list context: one sorted+paginated
-        page of the item's individual plays, the Date-sort toggle URL, and
-        _pagination.html's context. `linkArgs` are the endpoint kwargs every
-        list URL must carry (the item id, plus view=history for the artist/
-        album tabs); groupBy rides along in every URL so list navigation
-        never resets the Trend-buckets chart selection.
-
-        Also returns `historyPartial`, the template that renders the list.
-        Which one it is depends on the data, not on the page - an album played
-        from a single track wants the timeline the song page uses - so it is
-        decided here, where the shape of the context is decided, rather than
-        being hardcoded per body template as it used to be.
-
-        `singleTrackTimeline` asks for that swap: every play in this list is
-        the same track, so cards would repeat one title, artist and cover down
-        the page. It only affects the artist/album branch; the song page is a
-        single track's log by construction and already renders the timeline."""
+    def _songHistoryContext(db, endpoint, linkArgs, groupByParam, trackId, trackDurationMs):
+        """_detailHistoryContext's song-detail arm: offset/limit "Show more"
+        batching, capped at MAX_DETAIL_HISTORY_PAGES rather than paged like
+        the artist/album arm below, plus the sort and skips toggles (CORE-10
+        part 5, 2026-09-02 review)."""
         sortOrder = dashboard._getHistorySortParam()
         oldestFirst = sortOrder == "oldest"
-        isSongDetail = trackId is not None and artistId is None and albumId is None
+        skipsParam = request.args.get("skips", "true").lower()
+        showSkips = skipsParam != "false"
 
-        if isSongDetail:
-            skipsParam = request.args.get("skips", "true").lower()
-            showSkips = skipsParam != "false"
+        #< _positivePageArg rather than a bare int(): its digit cap is what
+        #  keeps (page - 1) * PAGE_SIZE - and the OFFSET it turns into -
+        #  inside what sqlite3 will bind. Junk and absurd pages start at the
+        #  first page, as they always did.
+        pageParam = _positivePageArg()
+        defaultOffset = (int(pageParam) - 1) * PAGE_SIZE if pageParam else 0
 
-            #< _positivePageArg rather than a bare int(): its digit cap is what
-            #  keeps (page - 1) * PAGE_SIZE - and the OFFSET it turns into -
-            #  inside what sqlite3 will bind. Junk and absurd pages start at the
-            #  first page, as they always did.
-            pageParam = _positivePageArg()
-            defaultOffset = (int(pageParam) - 1) * PAGE_SIZE if pageParam else 0
+        try:
+            offset = max(0, int(request.args.get("offset", defaultOffset)))
+        except (ValueError, TypeError):
+            offset = defaultOffset
 
-            try:
-                offset = max(0, int(request.args.get("offset", defaultOffset)))
-            except (ValueError, TypeError):
-                offset = defaultOffset
+        try:
+            limit = min(PAGE_SIZE * MAX_DETAIL_HISTORY_PAGES,
+                        max(1, int(request.args.get("limit", PAGE_SIZE))))
+        except (ValueError, TypeError):
+            limit = PAGE_SIZE
 
-            try:
-                limit = min(PAGE_SIZE * MAX_DETAIL_HISTORY_PAGES,
-                            max(1, int(request.args.get("limit", PAGE_SIZE))))
-            except (ValueError, TypeError):
-                limit = PAGE_SIZE
+        totalCount = db.getEntriesCount(trackId=trackId, includeSkips=showSkips)
+        #< An in-range offset (< totalCount) passes through untouched - it
+        #  already names a real row. Only an OUT-OF-RANGE one - past the
+        #  end, or above 2**63-1 (an OverflowError out of sqlite3's bind
+        #  and a 500, the same footgun MAX_DETAIL_HISTORY_PAGES closed for
+        #  ?limit=) - gets clamped, and it snaps to the LAST BATCH
+        #  boundary rather than to totalCount itself: totalCount is a
+        #  count, not a valid offset into the rows, so the previous fix
+        #  landed one row past the end and rendered the empty "nothing
+        #  more" batch for a song that has plays - ?page=999999 or
+        #  ?page=3 of 2 did this every time (UT-2, 2026-09-02 review).
+        #  The largest multiple of PAGE_SIZE below totalCount is where
+        #  the real last batch starts; 0 when there are no rows at all.
+        if offset >= totalCount:
+            offset = 0 if totalCount == 0 else ((totalCount - 1) // PAGE_SIZE) * PAGE_SIZE
+        fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
+        plays = fetchEntries(count=limit, startIndex=offset,
+                             trackId=trackId, includeSkips=showSkips)
+        plays = dashboard._embedSongsTextElements(plays)
+        plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs)
 
-            totalCount = db.getEntriesCount(trackId=trackId, includeSkips=showSkips)
-            #< An in-range offset (< totalCount) passes through untouched - it
-            #  already names a real row. Only an OUT-OF-RANGE one - past the
-            #  end, or above 2**63-1 (an OverflowError out of sqlite3's bind
-            #  and a 500, the same footgun MAX_DETAIL_HISTORY_PAGES closed for
-            #  ?limit=) - gets clamped, and it snaps to the LAST BATCH
-            #  boundary rather than to totalCount itself: totalCount is a
-            #  count, not a valid offset into the rows, so the previous fix
-            #  landed one row past the end and rendered the empty "nothing
-            #  more" batch for a song that has plays - ?page=999999 or
-            #  ?page=3 of 2 did this every time (UT-2, 2026-09-02 review).
-            #  The largest multiple of PAGE_SIZE below totalCount is where
-            #  the real last batch starts; 0 when there are no rows at all.
-            if offset >= totalCount:
-                offset = 0 if totalCount == 0 else ((totalCount - 1) // PAGE_SIZE) * PAGE_SIZE
-            fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
-            plays = fetchEntries(count=limit, startIndex=offset,
-                                 trackId=trackId, includeSkips=showSkips)
-            plays = dashboard._embedSongsTextElements(plays)
-            plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs)
+        hasMore = (offset + len(plays)) < totalCount
+        nextOffset = offset + len(plays)
+        remainingCount = max(0, totalCount - nextOffset)
+        nextBatchSize = min(PAGE_SIZE, remainingCount)
 
-            hasMore = (offset + len(plays)) < totalCount
-            nextOffset = offset + len(plays)
-            remainingCount = max(0, totalCount - nextOffset)
-            nextBatchSize = min(PAGE_SIZE, remainingCount)
+        sharedArgs = dict(linkArgs, groupBy=groupByParam,
+                          sort=sortOrder if oldestFirst else None,
+                          skips="false" if not showSkips else None)
+        sortToggleArgs = dict(sharedArgs, sort=None if oldestFirst else "oldest", offset=0)
+        skipsToggleArgs = dict(sharedArgs, skips="false" if showSkips else "true", offset=0)
+        # "Show more" asks for the batch AFTER the rows already on screen and
+        # appends it, so the URL carries an offset rather than a larger limit
+        # - a grown limit would hit the MAX_DETAIL_HISTORY_PAGES ceiling above
+        # and silently stop advancing. The batch it fetches renders this same
+        # context, so the control it brings back builds its own next URL the
+        # same way; there is no client-side offset bookkeeping left.
+        showMoreArgs = dict(sharedArgs, offset=nextOffset)
 
-            sharedArgs = dict(linkArgs, groupBy=groupByParam,
-                              sort=sortOrder if oldestFirst else None,
-                              skips="false" if not showSkips else None)
-            sortToggleArgs = dict(sharedArgs, sort=None if oldestFirst else "oldest", offset=0)
-            skipsToggleArgs = dict(sharedArgs, skips="false" if showSkips else "true", offset=0)
-            # "Show more" asks for the batch AFTER the rows already on screen and
-            # appends it, so the URL carries an offset rather than a larger limit
-            # - a grown limit would hit the MAX_DETAIL_HISTORY_PAGES ceiling above
-            # and silently stop advancing. The batch it fetches renders this same
-            # context, so the control it brings back builds its own next URL the
-            # same way; there is no client-side offset bookkeeping left.
-            showMoreArgs = dict(sharedArgs, offset=nextOffset)
+        return {
+            "plays": plays,
+            "historyPartial": "_play_log.html",
+            "totalCount": totalCount,
+            "offset": offset,
+            "hasMore": hasMore,
+            "nextOffset": nextOffset,
+            "nextBatchSize": nextBatchSize,
+            "remainingCount": remainingCount,
+            "sortOldest": oldestFirst,
+            "showSkips": showSkips,
+            "isSongDetail": True,
+            "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **sortToggleArgs),
+            "skipsToggleUrl": dashboard._buildPageUrl(endpoint, 1, **skipsToggleArgs),
+            "showMoreUrl": dashboard._buildPageUrl(endpoint, 1, **showMoreArgs),
+        }
 
-            return {
-                "plays": plays,
-                "historyPartial": "_play_log.html",
-                "totalCount": totalCount,
-                "offset": offset,
-                "hasMore": hasMore,
-                "nextOffset": nextOffset,
-                "nextBatchSize": nextBatchSize,
-                "remainingCount": remainingCount,
-                "sortOldest": oldestFirst,
-                "showSkips": showSkips,
-                "isSongDetail": True,
-                "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **sortToggleArgs),
-                "skipsToggleUrl": dashboard._buildPageUrl(endpoint, 1, **skipsToggleArgs),
-                "showMoreUrl": dashboard._buildPageUrl(endpoint, 1, **showMoreArgs),
-            }
-
+    def _entityHistoryContext(db, endpoint, linkArgs, groupByParam, trackId, artistId, albumId,
+                              singleTrackTimeline):
+        """_detailHistoryContext's artist/album arm: ordinary paged history,
+        optionally rendered as the song page's timeline when the entity has
+        only ever been heard via one track (CORE-10 part 5, 2026-09-02
+        review)."""
+        sortOrder = dashboard._getHistorySortParam()
+        oldestFirst = sortOrder == "oldest"
         totalCount = db.getEntriesCount(trackId=trackId, artistId=artistId, albumId=albumId)
         page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
         fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
@@ -1333,6 +1363,38 @@ def register(app, dashboard):
             "sortToggleUrl": dashboard._buildPageUrl(endpoint, 1, **dict(sharedArgs, sort=None if oldestFirst else "oldest")),
             **dashboard._buildPaginationContext(endpoint, page, totalPages, totalCount, **sharedArgs),
         }
+
+    def _detailHistoryContext(db, endpoint, linkArgs, groupByParam="",
+                               trackId=None, artistId=None, albumId=None,
+                               trackDurationMs=None, singleTrackTimeline=False):
+        """The detail pages' play-history list context: one sorted+paginated
+        page of the item's individual plays, the Date-sort toggle URL, and
+        _pagination.html's context. `linkArgs` are the endpoint kwargs every
+        list URL must carry (the item id, plus view=history for the artist/
+        album tabs); groupBy rides along in every URL so list navigation
+        never resets the Trend-buckets chart selection.
+
+        Also returns `historyPartial`, the template that renders the list.
+        Which one it is depends on the data, not on the page - an album played
+        from a single track wants the timeline the song page uses - so it is
+        decided here, where the shape of the context is decided, rather than
+        being hardcoded per body template as it used to be.
+
+        `singleTrackTimeline` asks for that swap: every play in this list is
+        the same track, so cards would repeat one title, artist and cover down
+        the page. It only affects the artist/album branch; the song page is a
+        single track's log by construction and already renders the timeline.
+
+        A thin dispatcher onto _songHistoryContext / _entityHistoryContext
+        (CORE-10 part 5, 2026-09-02 review): the two arms share nothing but
+        `endpoint`/`linkArgs`/`groupByParam`, and had grown different enough
+        (a "Show more" batch vs. a real page, an offset vs. a page number)
+        that keeping them as one function was hiding the split, not avoiding
+        one."""
+        if trackId is not None and artistId is None and albumId is None:
+            return _songHistoryContext(db, endpoint, linkArgs, groupByParam, trackId, trackDurationMs)
+        return _entityHistoryContext(db, endpoint, linkArgs, groupByParam, trackId, artistId, albumId,
+                                     singleTrackTimeline)
 
     def _missingEntityResponse(endpoint):
         """The answer for a detail URL whose entity no longer resolves.
