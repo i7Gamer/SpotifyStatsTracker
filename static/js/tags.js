@@ -78,6 +78,12 @@ if (typeof window !== 'undefined') (function() {
     //  be trusted at all. Reset together once the span drains to zero.
     var inFlightTagRequests = 0;
     var tagRequestsOverlapped = false;
+    //< the repaint the owed refetch will run. Assigned when a request is
+    //  ISSUED, so an overlapped span always has one - and downgraded to a plain
+    //  renderTags if that request turns out to be REFUSED, because its callback
+    //  carries the success path's side effects (clearing the tag input, moving
+    //  focus off a chip that is gone). Running those after a 400 cleared the
+    //  very text the error was asking the user to fix.
     var latestOnApplied = null;
 
     // One authoritative read of this entity's current tags. Used to re-fetch
@@ -88,6 +94,12 @@ if (typeof window !== 'undefined') (function() {
     // the same {tags: [...]} shape as every add/remove response, so this is
     // now one small JSON request instead of a full page render.
     function refetchAuthoritativeTags(onApplied) {
+      /* Captured, NOT incremented: this is a read, not a submit, so it must not
+         make every submit already in flight look stale. A submit issued while
+         this is open is newer than the list this will return - answering first,
+         it would otherwise be painted over by the older authoritative one. The
+         one tag path that had no such guard while both sibling paths did. */
+      var seq = tagSeq;
       var url = '/api/tags/entity?entity_type=' + encodeURIComponent(entityType) +
                 '&entity_id=' + encodeURIComponent(entityId);
       fetch(url, { credentials: 'same-origin' })
@@ -100,6 +112,7 @@ if (typeof window !== 'undefined') (function() {
         })
         .then(function(data) {
           if (!data) return;   //< navigating to /login
+          if (seq !== tagSeq) return;   //< a newer submit has since been issued
           onApplied(data.tags || []);
         })
         .catch(function(err) {
@@ -163,6 +176,9 @@ if (typeof window !== 'undefined') (function() {
           if (!tagRequestsOverlapped) onApplied(outcome.tags);
         } else {
           showTagError(outcome.message);
+          //< this request is the latest (checked above) and it did not apply,
+          //  so the refetch it owes may repaint the row and nothing more
+          latestOnApplied = renderTags;
         }
         settleTagRequest();
       })
@@ -170,7 +186,10 @@ if (typeof window !== 'undefined') (function() {
         console.error('Tag update failed:', err);
         //< gated too: an error about a request the user has already moved past
         //  is as wrong as a stale repaint
-        if (seq === tagSeq) showTagError(fallbackMessage);
+        if (seq === tagSeq) {
+          showTagError(fallbackMessage);
+          latestOnApplied = renderTags;   //< nothing applied; see the field comment
+        }
         settleTagRequest();
       });
     }

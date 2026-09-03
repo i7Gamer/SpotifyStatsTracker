@@ -297,6 +297,77 @@ run('removing a tag repaints the row and returns focus to the tag input (UT-4c)'
                      'focus must not be left on the now-removed button');
 });
 
+run('a REJECTED newest request does not clear the input the error asks about', async () => {
+  /* latestOnApplied is the callback of the newest ISSUED request, and the
+   * drained refetch runs it whatever that request's outcome was. So after two
+   * overlapping adds where the second is refused (a 400 - "Tag is empty after
+   * normalization"), the error was painted and the refetch then ran the
+   * refused add's callback: it cleared the very text the message was asking
+   * the user to fix. */
+  const widget = freshWidget();
+
+  widget.submit('rock');
+  widget.submit('###');            //< overlaps, so the span owes a refetch
+  widget.pendingFetches[0].resolve(okResponse(['rock']));
+  widget.pendingFetches[1].resolve({
+    status: 400, ok: false,
+    json: () => Promise.resolve({ error: 'Tag is empty after normalization.' }),
+  });
+  await settle();
+
+  const refetch = widget.pendingFetches[2];
+  assert.ok(refetch && refetch.url.indexOf('/api/tags/entity') === 0,
+            'the drained span still owes one authoritative read');
+  refetch.resolve(okEntityTagsResponse(['rock']));
+  await settle();
+
+  assert.deepStrictEqual(widget.renderedTags(), ['rock'],
+                         'the row still repaints from the authoritative list');
+  assert.strictEqual(widget.input.value, '###',
+                     'but the refused tag stays in the box, beside its error');
+  assert.strictEqual(widget.errorLine.textContent, 'Tag is empty after normalization.');
+});
+
+run('a newest request that FAILS outright leaves the input alone too', async () => {
+  //< same rule for a transport error: no success, no side effects
+  const widget = freshWidget();
+
+  widget.submit('rock');
+  widget.submit('chill');
+  widget.pendingFetches[0].resolve(okResponse(['rock']));
+  widget.pendingFetches[1].reject(new Error('offline'));
+  await settle();
+
+  widget.pendingFetches[2].resolve(okEntityTagsResponse(['rock']));
+  await settle();
+
+  assert.deepStrictEqual(widget.renderedTags(), ['rock']);
+  assert.strictEqual(widget.input.value, 'chill');
+});
+
+run('a refetch superseded by a newer submit does not repaint over it', async () => {
+  /* The one tag path with no sequence guard (2026-09-03 review, C-5). The
+   * window is narrow - the refetch only starts once nothing else is pending -
+   * but a submit issued while it is open, answering first, was then painted
+   * over by the older authoritative list. */
+  const widget = freshWidget();
+
+  widget.submit('rock');
+  widget.submit('chill');
+  widget.pendingFetches[0].resolve(okResponse(['rock']));
+  widget.pendingFetches[1].resolve(okResponse(['rock', 'chill']));
+  await settle();
+
+  const refetch = widget.pendingFetches[2];
+  widget.submit('jazz');           //< issued while the refetch is still open
+  widget.pendingFetches[3].resolve(okResponse(['rock', 'chill', 'jazz']));
+  await settle();
+  refetch.resolve(okEntityTagsResponse(['rock', 'chill']));
+  await settle();
+
+  assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill', 'jazz'],
+                         'the newer submit owns the row; the stale read must not undo it');
+});
 run('a superseded 401 still sends the user to log in', async () => {
   /* The guard sits AFTER the 401 peel and never before it: a 401 is news
    * about the SESSION, which every in-flight submit shares, so whichever one
