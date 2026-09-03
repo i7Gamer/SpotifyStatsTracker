@@ -378,59 +378,71 @@ class TestExportRoundTrip(DatabaseTestCase, _AppTestBase):
 
 
 class TestKeysetPagerTermination(unittest.TestCase):
-    """played_at is not unique, so the pager restarts each chunk AT the last
-    timestamp seen and filters out the rows it already emitted there.
+    """The pager advances on the composite (played_at, playId) key the
+    underlying query orders by (X4) - played_at alone is not unique (two
+    different tracks can log at the exact same instant, the shape a
+    Musicolet import session writes in one burst), so a group of rows
+    sharing one timestamp is paged through by playId instead of stalling.
 
-    It kept only the rows from the last chunk that sat on the cursor, dropping
-    the ones it had FILTERED OUT at that same timestamp. When a chunk boundary
-    lands inside a group of equal timestamps the cursor then stops advancing and
-    the two halves of the group alternate forever, re-emitting rows on every
-    pass - an export that never ends, growing until the client gives up.
+    Before the composite key, the pager restarted each chunk AT the last
+    timestamp seen (`played_at >= ?`) and could not step past a group bigger
+    than one chunk at all: the next fetch returned the exact same window, so
+    a cluster of EXPORT_CHUNK_SIZE+ rows at one timestamp silently truncated
+    the export right there (an earlier version of this pager instead
+    alternated the two halves of such a group forever - an export that never
+    ends - fixed in aa7909c by stopping instead; the composite key removes
+    the need to stop at all).
 
-    Driven directly with a small chunk size: reproducing it through the real
-    query would need EXPORT_CHUNK_SIZE (5000) plays sharing one exact played_at.
-    That is what makes it latent rather than live - and also what makes it worth
-    a test, since nothing else here would ever reach it."""
+    Driven directly with a small chunk size: reproducing the cluster case
+    through the real query would need EXPORT_CHUNK_SIZE (5000) plays sharing
+    one exact played_at, which is what makes it latent rather than live - and
+    also what makes it worth a test, since nothing else here would ever reach
+    it (see TestExportPagesThroughATimestampCluster for the query-level
+    version, with a real chunk size small enough to hit it directly)."""
 
     CHUNK = 3
 
     def _rows(self):
         #< the boundary falls INSIDE the T group: one row before it, three on it
-        return ([{"id": "a", "playedAt": 100.0}]
-                + [{"id": f"r{i}", "playedAt": 200.0} for i in range(1, 4)])
+        return ([{"id": "a", "playedAt": 100.0, "playId": 1}]
+                + [{"id": f"r{i}", "playedAt": 200.0, "playId": i} for i in range(1, 4)])
 
     def _fetch(self, rows):
-        def fetchRaw(afterTs):
-            #< the real queries are `played_at >= ?`, oldest first, LIMIT chunk
-            eligible = [r for r in rows if afterTs is None or r["playedAt"] >= afterTs]
-            return eligible[:self.CHUNK]
+        def fetchRaw(afterTs, afterId):
+            #< the real queries order by (played_at, id) ASC and take
+            #  played_at > ? OR (played_at = ? AND id > ?), LIMIT chunk
+            if afterTs is None:
+                eligible = rows
+            else:
+                eligible = [r for r in rows if (r["playedAt"], r["playId"]) > (afterTs, afterId)]
+            return sorted(eligible, key=lambda r: (r["playedAt"], r["playId"]))[:self.CHUNK]
         return fetchRaw
 
     def test_every_row_is_emitted_exactly_once_and_the_export_ends(self):
         rows = self._rows()
         with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
-            #< islice is the hang guard: before the fix this generator is infinite
+            #< islice is the hang guard: before the aa7909c fix this generator is infinite
             emitted = list(itertools.islice(
                 exportModule._iterKeysetChunks(self._fetch(rows), lambda chunk: chunk),
                 len(rows) * 4))
 
         self.assertEqual([r["id"] for r in emitted], ["a", "r1", "r2", "r3"])
 
-    def test_a_whole_chunk_sharing_one_timestamp_still_terminates(self):
-        """The case the code already documented, kept alongside it: here every
-        row is on the cursor, so no row can be skipped past."""
-        rows = [{"id": f"r{i}", "playedAt": 200.0} for i in range(1, 6)]
+    def test_a_cluster_larger_than_one_chunk_pages_through_by_id(self):
+        """X4: a group at one timestamp bigger than a chunk. The old
+        played_at-only cursor could never step past it (the next fetch
+        returned the same window again) and silently truncated the export
+        here; the composite (played_at, playId) key pages through it by id."""
+        rows = [{"id": f"r{i}", "playedAt": 200.0, "playId": i} for i in range(1, 6)]
         with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
             emitted = list(itertools.islice(
                 exportModule._iterKeysetChunks(self._fetch(rows), lambda chunk: chunk),
                 len(rows) * 4))
 
-        #< it cannot page past a group larger than one chunk, but it must not
-        #  loop or duplicate while failing to
-        self.assertEqual([r["id"] for r in emitted], ["r1", "r2", "r3"])
+        self.assertEqual([r["id"] for r in emitted], [f"r{i}" for i in range(1, 6)])
 
     def test_ordinary_paging_is_unaffected(self):
-        rows = [{"id": f"r{i}", "playedAt": 100.0 + i} for i in range(1, 8)]
+        rows = [{"id": f"r{i}", "playedAt": 100.0 + i, "playId": i} for i in range(1, 8)]
         with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
             emitted = list(itertools.islice(
                 exportModule._iterKeysetChunks(self._fetch(rows), lambda chunk: chunk),
@@ -442,7 +454,7 @@ class TestKeysetPagerTermination(unittest.TestCase):
         """The pager measures chunks on RAW rows precisely so a row hydrate()
         drops only loses itself - pinned here because the fix touches the same
         bookkeeping."""
-        rows = [{"id": f"r{i}", "playedAt": 100.0 + i} for i in range(1, 8)]
+        rows = [{"id": f"r{i}", "playedAt": 100.0 + i, "playId": i} for i in range(1, 8)]
         with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self.CHUNK):
             emitted = list(itertools.islice(
                 exportModule._iterKeysetChunks(
@@ -452,6 +464,35 @@ class TestKeysetPagerTermination(unittest.TestCase):
 
         self.assertEqual([r["id"] for r in emitted],
                          [f"r{i}" for i in range(1, 8) if i != 2])
+
+
+class TestExportPagesThroughATimestampCluster(DatabaseTestCase):
+    """X4, at the query level: the Musicolet importer can log a whole offline
+    session with several plays stamped at the exact same played_at. A cluster
+    bigger than one export chunk used to silently truncate the export right
+    there (TestKeysetPagerTermination covers the pager unit in isolation);
+    the composite (played_at, playId) keyset cursor pages through it."""
+
+    _CHUNK = 3
+    _CLUSTER_SIZE = 5   #< bigger than a chunk, so the cluster spans two fetches
+
+    def test_a_cluster_larger_than_one_chunk_is_not_truncated(self):
+        clusterTs = 1700000000
+        laterTs = clusterTs + 100
+        trackCount = self._CLUSTER_SIZE + 1
+        tracks = {f"t{i}": {"id": f"t{i}", "name": f"Song {i}", "artists": []}
+                  for i in range(trackCount)}
+        #< CLUSTER_SIZE distinct tracks at the same timestamp, then one later play
+        entries = [{"id": f"t{i}", "playedAt": clusterTs, "timePlayed": 200000}
+                   for i in range(self._CLUSTER_SIZE)]
+        entries.append({"id": f"t{self._CLUSTER_SIZE}", "playedAt": laterTs, "timePlayed": 200000})
+        db = self._makeDb(tracks, entries)
+
+        with patch.object(exportModule, "EXPORT_CHUNK_SIZE", self._CHUNK):
+            items = json.loads("".join(exportModule.generateJsonExport(db)))
+
+        exportedIds = [item["spotify_track_uri"].removeprefix("spotify:track:") for item in items]
+        self.assertEqual(exportedIds, [f"t{i}" for i in range(trackCount)])
 
 
 class TestExportLinksLiveOnTheImportPage(_AppTestBase):

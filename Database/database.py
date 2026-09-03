@@ -897,25 +897,28 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
                            startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                            trackId: str | None = None, artistId: str | None = None,
                            albumId: str | None = None, includeSkips: bool = False,
-                           afterTs: float | None = None, trackIds: list[str] | None = None,
+                           afterTs: float | None = None, afterId: int | None = None,
+                           trackIds: list[str] | None = None,
                            fullPlaysOnly: bool = False) -> list:
         """ Return the oldest `count` entries from history, sorted from oldest to newest. If count is None, return all entries.
         startDate/endDate and trackId/artistId/albumId: see getEntriesFromNew's identical params.
-        afterTs: see Repository.getPlaysOldestFirst. trackIds/fullPlaysOnly: see
+        afterTs/afterId: see Repository.getPlaysOldestFirst. trackIds/fullPlaysOnly: see
         getEntriesFromNew's identical params."""
         startTs, endTs = self._dateRangeToTimestamps(startDate, endDate)
         entries = self.repo.getPlaysOldestFirst(self.user, count=count, startIndex=startIndex, startTs=startTs, endTs=endTs,
                                                  trackId=trackId, artistId=artistId, albumId=albumId,
-                                                 includeSkips=includeSkips, afterTs=afterTs, trackIds=trackIds,
-                                                 fullPlaysOnly=fullPlaysOnly)
+                                                 includeSkips=includeSkips, afterTs=afterTs, afterId=afterId,
+                                                 trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def getSkipEntriesFromOld(self, count: int | None = None, startIndex: int = 0, fullPagination: bool = True,
-                               afterTs: float | None = None) -> list:
+                               afterTs: float | None = None, afterId: int | None = None) -> list:
         """Skip events (plays.is_skip=1) oldest first, hydrated like plays - the
         JSON export's trailing section, so skips round-trip between
-        instances (they re-import as sub-threshold entries)."""
-        entries = self.repo.getSkipsOldestFirst(self.user, count=count, startIndex=startIndex, afterTs=afterTs)
+        instances (they re-import as sub-threshold entries). afterTs/afterId:
+        see Repository.getPlaysOldestFirst."""
+        entries = self.repo.getSkipsOldestFirst(self.user, count=count, startIndex=startIndex,
+                                                 afterTs=afterTs, afterId=afterId)
         return self._paginateEntries(entries) if fullPagination else entries
 
     def searchEntries(self, query: str, count: int | None = None, startIndex: int = 0,

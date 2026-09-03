@@ -483,21 +483,23 @@ class PlayQueries:
                              startTs: float | None = None, endTs: float | None = None,
                              trackId: str | None = None, artistId: str | None = None,
                              albumId: str | None = None, includeSkips: bool = False,
-                             afterTs: float | None = None,
+                             afterTs: float | None = None, afterId: int | None = None,
                              trackIds: list[str] | None = None,
                              fullPlaysOnly: bool = False) -> list[dict]:
-        """`afterTs` pages by position in time (played_at >= afterTs) rather than
-        by OFFSET - see iterExportEntries, which streams the whole history and
-        must not skip rows if a concurrent delete shifts every later row left."""
+        """`afterTs`/`afterId` page by position in the (played_at, id) order
+        rather than by OFFSET - see iterExportEntries, which streams the whole
+        history and must not skip rows if a concurrent delete shifts every
+        later row left. `afterId` breaks a same-`played_at` tie (see
+        _keysetAfterClause); omitting it keeps the old played_at >= afterTs
+        behaviour for callers that don't need the composite key."""
         conn = self._conn()
         limit = -1 if count is None else count
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs)
         extraClauses = self._itemFilterClauses(params, trackId, artistId, albumId)
         extraClauses += self._idSetClause(params, "track_id", trackIds)
-        if afterTs is not None:
-            extraClauses += " AND played_at >= ?"
-            params.append(afterTs)
+        extraClauses += self._keysetAfterClause(params, afterTs, afterId,
+                                                 tsColumn="plays.played_at", idColumn="plays.id")
         joinClause = ""
         if fullPlaysOnly:
             joinClause = self._tracksJoin(playsAlias="plays", trackAlias="ft")
@@ -507,7 +509,8 @@ class PlayQueries:
         skipClause = "" if includeSkips else " AND is_skip=0"
         #< qualified ORDER BY: see getPlaysNewestFirst
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, played_from, is_skip, {behavioralSelect} FROM plays{joinClause} "
+            f"SELECT plays.id AS play_id, track_id, played_at, time_played, played_from, is_skip, "
+            f"{behavioralSelect} FROM plays{joinClause} "
             f"WHERE username=?{skipClause}{rangeClause}{extraClauses} "
             f"ORDER BY plays.played_at ASC, plays.id ASC LIMIT ? OFFSET ?",
             params,
@@ -516,18 +519,19 @@ class PlayQueries:
 
 
     def getSkipsOldestFirst(self, username: str, count: int | None = None, startIndex: int = 0,
-                             afterTs: float | None = None) -> list[dict]:
+                             afterTs: float | None = None, afterId: int | None = None) -> list[dict]:
         """Skip events (is_skip=1) oldest-first, shaped like getPlaysOldestFirst
         entries (skips carry no played_from - it comes back None). Feeds the JSON
-        export so skips round-trip between instances. `afterTs`: see
+        export so skips round-trip between instances. `afterTs`/`afterId`: see
         getPlaysOldestFirst."""
         conn = self._conn()
         limit = -1 if count is None else count
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
-        afterClause = "" if afterTs is None else " AND played_at >= ?"
-        params = [username] + ([] if afterTs is None else [afterTs]) + [limit, startIndex]
+        params = [username]
+        afterClause = self._keysetAfterClause(params, afterTs, afterId)
+        params += [limit, startIndex]
         rows = conn.execute(
-            f"SELECT track_id, played_at, time_played, is_skip, {behavioralSelect} FROM plays "
+            f"SELECT id AS play_id, track_id, played_at, time_played, is_skip, {behavioralSelect} FROM plays "
             f"WHERE username=? AND is_skip=1{afterClause} ORDER BY played_at ASC, id ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
@@ -729,6 +733,10 @@ class PlayQueries:
             "playedFrom": row["played_from"] if "played_from" in columns else None,
             "isSkip": bool(row["is_skip"]) if "is_skip" in columns else False,
         }
+        # play_id (plays.id) is only SELECTed by the oldest-first readers the
+        # export's keyset pager uses (X4) - narrower SELECT sites keep their shape.
+        if "play_id" in columns:
+            entry["playId"] = row["play_id"]
         # Behavioral columns are only attached when the SELECT carried them
         # (wider play/skip reads) - narrower SELECT sites keep their shape.
         if "platform" in columns:

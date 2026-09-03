@@ -438,6 +438,46 @@ class TestPlaysHistory(RepositoryTestCase):
 
         self.assertEqual([e["playedAt"] for e in entries], [1000.0, 2000.0, 3000.0])
 
+    def test_oldest_first_carries_the_row_id_as_playid(self):
+        """The export's keyset pager (X4) needs plays.id, not just played_at,
+        to page past a cluster of rows sharing one timestamp."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        self.repo.insertPlay("alice", "t2", 1000.0, 5000)
+
+        entries = self.repo.getPlaysOldestFirst("alice")
+
+        self.assertIn("playId", entries[0])
+        self.assertLess(entries[0]["playId"], entries[1]["playId"])
+
+    def test_after_ts_and_after_id_break_a_same_timestamp_tie(self):
+        """Two different tracks logged at the exact same played_at (the
+        Musicolet-import shape X4 targets) - afterTs alone can't step past
+        either of them, afterId (breaking the tie by row id) can."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+        firstId = self.repo.getPlaysOldestFirst("alice")[0]["playId"]
+        self.repo.insertPlay("alice", "t2", 1000.0, 5000)
+
+        stillBoth = self.repo.getPlaysOldestFirst("alice", afterTs=1000.0, afterId=None)
+        self.assertEqual(len(stillBoth), 2)   #< afterTs alone is >=, so both remain
+
+        pastFirst = self.repo.getPlaysOldestFirst("alice", afterTs=1000.0, afterId=firstId)
+        self.assertEqual([e["id"] for e in pastFirst], ["t2"])
+
+    def test_after_ts_and_after_id_together_still_respect_full_plays_only(self):
+        """The composite cursor and _fullPlaysClause both append bound
+        parameters, so a scrambled build order would compare numbers to the
+        wrong things (mirrors test_full_plays_only_binds_every_clause_in_order,
+        which covers the afterTs-only path)."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 200000)   #< full
+        firstId = self.repo.getPlaysOldestFirst("alice")[0]["playId"]
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000)     #< partial, same timestamp
+        self.repo.insertPlay("alice", "t1", 2000.0, 200000)   #< full
+
+        entries = self.repo.getPlaysOldestFirst("alice", afterTs=1000.0, afterId=firstId,
+                                                 fullPlaysOnly=True)
+
+        self.assertEqual([e["playedAt"] for e in entries], [2000.0])
+
     def test_pagination_count_and_start_index(self):
         for i in range(5):
             self.repo.insertPlay("alice", "t1", float(i), 5000)
@@ -984,6 +1024,17 @@ class TestPlaySkips(RepositoryTestCase):
         self.assertIsNone(entries[0]["playedFrom"])
         self.assertIsNone(entries[0]["extras"])
         self.assertEqual(entries[1]["extras"]["platform"], "ios")
+
+    def test_get_skips_oldest_first_after_id_breaks_a_same_timestamp_tie(self):
+        """Mirrors test_after_ts_and_after_id_break_a_same_timestamp_tie for
+        the skip feed - iterExportEntries pages this the same way (X4)."""
+        self.repo.insertPlay("alice", "t1", 1000.0, 400, is_skip=1)
+        firstId = self.repo.getSkipsOldestFirst("alice")[0]["playId"]
+        self.repo.insertPlay("alice", "t2", 1000.0, 400, is_skip=1)
+
+        pastFirst = self.repo.getSkipsOldestFirst("alice", afterTs=1000.0, afterId=firstId)
+
+        self.assertEqual([e["id"] for e in pastFirst], ["t2"])
 
     def test_get_skips_oldest_first_excludes_real_plays(self):
         # A real play (is_skip=0) at the same time must not leak into the skip feed.

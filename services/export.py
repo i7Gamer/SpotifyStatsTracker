@@ -30,8 +30,8 @@ EXPORT_BOOL_EXTRAS = (("shuffle", "shuffle"), ("skipped", "skipped"),
 
 
 def _iterKeysetChunks(fetchRaw, hydrate):
-    """Stream every row `fetchRaw(afterTs)` can return, oldest first, paging by
-    position in time instead of by OFFSET.
+    """Stream every row `fetchRaw(afterTs, afterId)` can return, oldest first,
+    paging by position in the (played_at, playId) order instead of by OFFSET.
 
     OFFSET pagination assumed the rows behind the cursor never move. Inserts
     can't move them (a new play has the newest played_at), but DELETES can: an
@@ -40,50 +40,36 @@ def _iterKeysetChunks(fetchRaw, hydrate):
     the next OFFSET then steps straight over that many entries, silently
     dropping them from the file the user downloads.
 
-    `fetchRaw` returns RAW play rows (no track hydration); `hydrate` maps a
-    chunk of them to exportable entries and may DROP rows it cannot hydrate
-    (a dangling play whose catalog row is gone - Database._paginateEntries'
-    contract). The cursor and the exhaustion test both run on the raw rows,
-    so a dropped row only ever loses itself: measuring either on the hydrated
-    output made every dropped row shorten its chunk below EXPORT_CHUNK_SIZE,
-    which read as "last chunk" and silently truncated the export there.
+    played_at is not unique on its own (two different tracks can carry the
+    same timestamp - the Musicolet importer can log a whole offline session
+    in one burst), so the cursor is the composite (played_at, playId) key the
+    underlying query orders by: `played_at > ? OR (played_at = ? AND id > ?)`
+    is strictly increasing over that key and never revisits a row, so a
+    cluster of rows sharing one timestamp is paged through by id instead of
+    getting stuck - even when the cluster is bigger than EXPORT_CHUNK_SIZE.
+    (An earlier, played_at-only cursor could not step past such a cluster at
+    all: every fetch returned the same window, which either truncated the
+    export there or - briefly, before aa7909c - alternated forever.)
 
-    played_at is not unique on its own (two different tracks can carry the same
-    timestamp), so each chunk starts AT the last timestamp seen and the rows
-    already seen at exactly that timestamp are filtered out.
-
-    That bookkeeping has to cover EVERY row seen on the cursor, not just the ones
-    this chunk emitted. Keeping only `fresh`'s rows dropped the ones filtered out
-    at that same timestamp, so when a chunk boundary landed inside a group of
-    equal timestamps the cursor stopped advancing and the group's two halves
-    alternated forever, re-emitting rows on every pass - an export that never
-    ended. Reachable only with EXPORT_CHUNK_SIZE rows sharing one exact played_at,
-    hence latent, but the failure mode is bad enough to close."""
+    `fetchRaw` returns RAW play rows (no track hydration, but carrying
+    `playId`); `hydrate` maps a chunk of them to exportable entries and may
+    DROP rows it cannot hydrate (a dangling play whose catalog row is gone -
+    Database._paginateEntries' contract). The cursor advances off the raw
+    rows, not the hydrated ones, so a dropped row only ever loses itself:
+    advancing off the hydrated output made every dropped row shorten its
+    chunk below EXPORT_CHUNK_SIZE, which read as "last chunk" and silently
+    truncated the export there."""
     afterTs = None
-    seenAtCursor = set()
+    afterId = None
     while True:
-        rawEntries = fetchRaw(afterTs)
+        rawEntries = fetchRaw(afterTs, afterId)
         if not rawEntries:
             return
-        fresh = [e for e in rawEntries if (e.get("id"), e.get("playedAt")) not in seenAtCursor]
-        if not fresh:
-            # Only reachable if a whole chunk shares one timestamp, which would
-            # need EXPORT_CHUNK_SIZE distinct tracks played in the same second.
-            return
-        yield from hydrate(fresh)
-        previousTs = afterTs
-        afterTs = fresh[-1].get("playedAt")
-        #< every row at the cursor, seen or fresh, so the next chunk can filter
-        #  out all of them rather than just this chunk's share
-        seenAtCursor = {(e.get("id"), e.get("playedAt")) for e in rawEntries
-                        if e.get("playedAt") == afterTs}
+        yield from hydrate(rawEntries)
+        last = rawEntries[-1]
+        afterTs = last.get("playedAt")
+        afterId = last.get("playId")
         if len(rawEntries) < EXPORT_CHUNK_SIZE:
-            return
-        if afterTs == previousTs:
-            # A full chunk that did not move the cursor: the group at this
-            # timestamp is larger than one chunk, so `played_at >= afterTs` can
-            # never step past it. Stop instead of re-reading the same window -
-            # the alternative is not more rows, it is an endless stream.
             return
 
 
@@ -97,14 +83,14 @@ def iterExportEntries(db, includeSkips=False):
     sub-threshold ms_played re-imports as is_skip=1). JSON only - the CSV stays
     real-plays-only for spreadsheet use."""
     yield from _iterKeysetChunks(
-        lambda afterTs: db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs,
-                                             fullPagination=False),
+        lambda afterTs, afterId: db.getEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs,
+                                                       afterId=afterId, fullPagination=False),
         db.hydrateEntries)
     if not includeSkips:
         return
     yield from _iterKeysetChunks(
-        lambda afterTs: db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs,
-                                                 fullPagination=False),
+        lambda afterTs, afterId: db.getSkipEntriesFromOld(count=EXPORT_CHUNK_SIZE, afterTs=afterTs,
+                                                           afterId=afterId, fullPagination=False),
         db.hydrateEntries)
 
 

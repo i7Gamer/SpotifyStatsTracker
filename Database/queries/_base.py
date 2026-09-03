@@ -307,6 +307,28 @@ class SqlFragments:
         return f" AND {column} IN ({placeholders})"
 
     @staticmethod
+    def _keysetAfterClause(params: list, afterTs: float | None, afterId: int | None,
+                            tsColumn: str = "played_at", idColumn: str = "id") -> str:
+        """`AND ...` for the export's oldest-first keyset pager (X4): `afterTs`
+        alone pages by `tsColumn >= ?`, which is what every caller used before
+        `afterId` existed and stays the behaviour when only afterTs is passed.
+        `afterTs` WITH `afterId` pages by the composite `(tsColumn, idColumn)`
+        key the callers order by - `tsColumn > ? OR (tsColumn = ? AND idColumn
+        > ?)` - so a cluster of rows sharing one timestamp (two different
+        tracks logged at the exact same instant - the Musicolet importer's
+        shape) is paged through by id instead of getting stuck on `>=`
+        forever re-fetching the same window.
+
+        None for both means "no cursor, start from the beginning"."""
+        if afterTs is None:
+            return ""
+        if afterId is None:
+            params.append(afterTs)
+            return f" AND {tsColumn} >= ?"
+        params += [afterTs, afterTs, afterId]
+        return f" AND ({tsColumn} > ? OR ({tsColumn} = ? AND {idColumn} > ?))"
+
+    @staticmethod
     def _jsonIdSetClause(params: list, column: str, ids: list[str] | None) -> str:
         """_idSetClause for a set that can be LARGE: the ids travel as ONE bound
         parameter, a JSON array unpacked by json_each.
