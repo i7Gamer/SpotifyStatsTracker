@@ -80,32 +80,27 @@ if (typeof window !== 'undefined') (function() {
     var tagRequestsOverlapped = false;
     var latestOnApplied = null;
 
-    // One authoritative read of this entity's current tags, from the page
-    // itself rather than a dedicated JSON endpoint - routes/tags.py exposes
-    // no per-entity GET, only /api/tags's all-tags summary (for the
-    // Playlists page) and whatever an add/remove echoes back. The detail
-    // page this widget lives on already renders _tag_widget.html from
-    // getTagsForEntity at request time (routes/charts.py), so re-fetching the
-    // current URL and reading its .tag-widget back out is the same data a
-    // fresh load would show, without a full navigation.
+    // One authoritative read of this entity's current tags. Used to re-fetch
+    // and re-parse the whole detail PAGE and pull its .tag-widget back out -
+    // routes/tags.py exposed no per-entity GET, only /api/tags's all-tags
+    // summary (for the Playlists page) and whatever an add/remove echoes
+    // back. FOLLOW-UP B (2026-09-02 review) added GET /api/tags/entity,
+    // the same {tags: [...]} shape as every add/remove response, so this is
+    // now one small JSON request instead of a full page render.
     function refetchAuthoritativeTags(onApplied) {
-      fetch(window.location.href, { credentials: 'same-origin' })
+      var url = '/api/tags/entity?entity_type=' + encodeURIComponent(entityType) +
+                '&entity_id=' + encodeURIComponent(entityId);
+      fetch(url, { credentials: 'same-origin' })
         .then(function(res) {
           if (window.AjaxStatus && window.AjaxStatus.redirectIfUnauthorized(res)) {
             return null;
           }
           if (!res.ok) throw new Error('HTTP ' + res.status);
-          return res.text();
+          return res.json();
         })
-        .then(function(html) {
-          if (html === null) return;   //< navigating to /login
-          if (typeof DOMParser === 'undefined') throw new Error('DOMParser unavailable');
-          var freshWidget = new DOMParser().parseFromString(html, 'text/html').querySelector('.tag-widget');
-          if (!freshWidget) throw new Error('tag widget not found in refetched page');
-          var tags = Array.prototype.map.call(
-            freshWidget.querySelectorAll('.tag-chip'),
-            function(chip) { return chip.dataset.tag; });
-          onApplied(tags);
+        .then(function(data) {
+          if (!data) return;   //< navigating to /login
+          onApplied(data.tags || []);
         })
         .catch(function(err) {
           console.error('Tag list refresh failed:', err);

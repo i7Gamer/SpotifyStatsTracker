@@ -108,23 +108,6 @@ function makeEl() {
  * DOMContentLoaded, and hand back the add-form submit plus the fetch queue.
  * window.AjaxStatus is a recorder for the 401 peel, so the case that needs a
  * 401 to still redirect can see it happen. */
-// The refetch DOMParser stub treats the "html" text opaquely: a JSON-encoded
-// tags array, so the fake .tag-widget/.tag-chip shape can be built straight
-// from it without a real HTML parser in node. What the string actually looks
-// like is not the module's concern - real DOMParser output would expose the
-// same querySelector/querySelectorAll/dataset shape either way.
-global.DOMParser = function () {
-  this.parseFromString = (html) => {
-    const tags = JSON.parse(html);
-    return {
-      querySelector(sel) {
-        if (sel !== '.tag-widget') return null;
-        return { querySelectorAll: (s) => (s === '.tag-chip' ? tags.map((t) => ({ dataset: { tag: t } })) : []) };
-      },
-    };
-  };
-};
-
 function freshWidget() {
   const chips = makeEl();
   const form = makeEl();
@@ -141,8 +124,8 @@ function freshWidget() {
   const calls = { redirects: 0, errors: [] };
 
   const pendingFetches = [];
-  global.fetch = () => new Promise((resolve, reject) => {
-    pendingFetches.push({ resolve, reject });
+  global.fetch = (url, init) => new Promise((resolve, reject) => {
+    pendingFetches.push({ resolve, reject, url, init });
   });
   global.window = {
     location: { href: 'http://localhost/track/t1' },
@@ -189,10 +172,11 @@ function okResponse(tags) {
   return { status: 200, ok: true, json: () => Promise.resolve({ success: true, tags }) };
 }
 
-//< the refetch's response: a page fetch, so it's read with .text() (see the
-//  DOMParser stub above for how that string turns back into tags)
-function okPageResponse(tags) {
-  return { status: 200, ok: true, text: () => Promise.resolve(JSON.stringify(tags)) };
+//< the refetch's response (FOLLOW-UP B, 2026-09-02 review): GET
+//  /api/tags/entity, the same {tags: [...]} shape as every add/remove
+//  response - no more re-fetching and re-parsing the whole detail page.
+function okEntityTagsResponse(tags) {
+  return { status: 200, ok: true, json: () => Promise.resolve({ tags }) };
 }
 
 //< drains the whole promise chain (fetch -> json -> outcome -> apply/catch)
@@ -232,7 +216,7 @@ run('two requests in flight at once repaint once from a drained refetch, not eit
   widget.pendingFetches[0].resolve(okResponse(['rock']));
   await settle();
   assert.strictEqual(widget.pendingFetches.length, 3, 'the drain fires exactly one refetch');
-  widget.pendingFetches[2].resolve(okPageResponse(['rock', 'chill']));
+  widget.pendingFetches[2].resolve(okEntityTagsResponse(['rock', 'chill']));
   await settle();
 
   assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill'],
@@ -255,7 +239,7 @@ run('a stale failure does not put an error over a row that is current', async ()
   assert.strictEqual(widget.calls.errors.length, 1, 'it is still logged');
 
   assert.strictEqual(widget.pendingFetches.length, 3, 'two were in flight, so the drain still refetches once');
-  widget.pendingFetches[2].resolve(okPageResponse(['rock', 'chill']));
+  widget.pendingFetches[2].resolve(okEntityTagsResponse(['rock', 'chill']));
   await settle();
   assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill']);
 });
@@ -271,7 +255,11 @@ run('two overlapping adds where the second response lacks the first tag', async 
 
   widget.pendingFetches[0].resolve(okResponse(['rock', 'chill']));
   await settle();
-  widget.pendingFetches[2].resolve(okPageResponse(['rock', 'chill']));
+  //< FOLLOW-UP B (2026-09-02 review): the drained refetch hits the per-entity
+  //  endpoint, not window.location.href - a small JSON response instead of
+  //  re-fetching and re-parsing the whole detail page
+  assert.strictEqual(widget.pendingFetches[2].url, '/api/tags/entity?entity_type=song&entity_id=t1');
+  widget.pendingFetches[2].resolve(okEntityTagsResponse(['rock', 'chill']));
   await settle();
 
   assert.deepStrictEqual(widget.renderedTags(), ['rock', 'chill'], 'the refetch shows both');

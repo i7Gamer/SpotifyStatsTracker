@@ -98,6 +98,42 @@ class TestTagsRoutes(_TagsRoutesBase):
         data = resp.get_json()
         self.assertEqual(data["tags"], [])
 
+    def test_get_entity_tags_api(self):
+        """FOLLOW-UP B (2026-09-02 review, from UT-3's 701191b): tags.js's
+        overlapping-add refetch used to re-fetch and re-parse the whole detail
+        PAGE to get an authoritative tag list. This is the endpoint it now
+        calls instead - the same read getTagsForEntity already answers on
+        every add/remove response, exposed on its own."""
+        self._login()
+        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "workout"})
+        self.client.post("/api/tags", json={"entity_type": "track", "entity_id": "t1", "tag": "chill"})
+
+        resp = self.client.get("/api/tags/entity?entity_type=track&entity_id=t1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(sorted(resp.get_json()["tags"]), ["chill", "workout"])
+
+    def test_get_entity_tags_api_for_an_untagged_entity_is_an_empty_list(self):
+        self._login()
+
+        resp = self.client.get("/api/tags/entity?entity_type=track&entity_id=t1")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["tags"], [])
+
+    def test_get_entity_tags_api_requires_both_params(self):
+        self._login()
+
+        for query in ("", "?entity_type=track", "?entity_id=t1"):
+            with self.subTest(query=query):
+                resp = self.client.get("/api/tags/entity" + query)
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("error", resp.get_json())
+
+    def test_get_entity_tags_api_requires_login(self):
+        resp = self.client.get("/api/tags/entity?entity_type=track&entity_id=t1")
+        self.assertEqual(resp.status_code, 401)
+
     def test_a_malformed_payload_is_a_400_not_a_500(self):
         """These three endpoints read `request.get_json(silent=True) or
         request.form` and went straight to .get(). A JSON body that is not an
@@ -382,6 +418,8 @@ class TestTagsFeatureDisabled(AppTestCase):
         self.assertEqual(self.client.post("/api/tags/rename", json={
             "old_tag": "workout", "new_tag": "chill"}).status_code, 404)
         self.assertEqual(self.client.delete("/api/tags/workout").status_code, 404)
+        self.assertEqual(
+            self.client.get("/api/tags/entity?entity_type=track&entity_id=t1").status_code, 404)
 
     def test_playlist_preview_and_tag_export_404(self):
         self._login()

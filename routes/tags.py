@@ -133,6 +133,27 @@ def register(app, dashboard):
     app.add_url_rule("/api/tags", "listUserTagsApi", listUserTagsApi, methods=["GET"])
 
     @requiresUser(api=True)
+    def getEntityTagsApi(username, db):
+        # FOLLOW-UP B (2026-09-02 review, from UT-3's 701191b): tags.js's
+        # overlapping-add refetch used to re-fetch and re-parse the whole
+        # detail PAGE just to get an authoritative tag list back out of its
+        # .tag-widget - the same read every add/remove response already
+        # carries, exposed here on its own so a refetch costs one small JSON
+        # response instead of a full page render.
+        if not dashboard.repo.isTagsEnabled():
+            abort(404)
+
+        entity_type = request.args.get("entity_type", "").strip()
+        entity_id = request.args.get("entity_id", "").strip()
+        if not entity_type or not entity_id:
+            return jsonify({"error": "Missing entity_type or entity_id"}), 400
+
+        tags = db.repo.getTagsForEntity(username, entity_type, entity_id)
+        return jsonify({"tags": tags})
+
+    app.add_url_rule("/api/tags/entity", "getEntityTagsApi", getEntityTagsApi, methods=["GET"])
+
+    @requiresUser(api=True)
     def renameTagApi(username, db):
         if not dashboard.repo.isTagsEnabled():
             abort(404)
