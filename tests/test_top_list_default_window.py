@@ -195,6 +195,34 @@ class TestTheWindowSurvivesIntoEveryUrl(TopListWindowTestCase):
         self.assertIn("interval=all+time", body)
 
 
+class TestCustomWithoutDatesFallsBackToAllTime(TopListWindowTestCase):
+    """/top-songs?interval=custom with no dates used to render a "Custom"
+    selected option over data _getDateRange had already fallen back to All
+    Time for (its custom branch only applies when BOTH dates parse) - the
+    guard CORE-8 gives _topListFilters, mirroring the one dashboardIndex/
+    historyPage/chartsPage/genresPage already carry."""
+
+    def test_the_filter_card_shows_all_time_not_custom(self):
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                self.assertIn('<option value="all time" selected>All Time</option>',
+                             self._shell(path, "?interval=custom"))
+
+    def test_the_list_shows_all_time_data(self):
+        self.assertIn(ANCIENT, self._list("/top-songs", "?interval=custom"))
+
+    def test_the_fallback_is_all_time_not_the_stored_window(self):
+        """The two-default correction: custom-without-dates falls back to All
+        Time specifically (_resolveIntervalParam's `emptyDefault`), not to
+        the account's stored default_top_list_window (`absentDefault`) - a
+        single-default resolver would have narrowed this to 'year' and
+        dropped the Ancient play, disagreeing with what _getDateRange has
+        always done for the data."""
+        self._setWindow("year")
+
+        self.assertIn(ANCIENT, self._list("/top-songs", "?interval=custom"))
+
+
 class TestLegacyUrls(TopListWindowTestCase):
     def test_an_empty_interval_still_means_all_time(self):
         """?interval= is what every bookmark and shared link made before this

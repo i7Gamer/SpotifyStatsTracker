@@ -124,6 +124,17 @@ class GenresPageTestCase(AppTestCase):
         resp = self._get(dash, db, query="?interval=")
         self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
 
+    def test_custom_without_dates_falls_back_to_the_saved_window(self):
+        """?interval=custom with neither date must not leave the select
+        showing "Custom" over data _getDateRange has already fallen back to
+        the saved window for - the guard CORE-8 gives every _resolveIntervalParam
+        caller (dashboardIndex/historyPage/chartsPage/genresPage all share it,
+        since their two defaults are equal)."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1}, window="week")
+        resp = self._get(dash, db, query="?interval=custom")
+        self.assertIn(b'<option value="week" selected>Last Week</option>', resp.data)
+
     def test_shell_renders_an_empty_swap_target_and_defers_data(self):
         # The canvases used to live in the shell and be filled by JS. They now
         # arrive with the fragment, so the shell is the filter form plus the

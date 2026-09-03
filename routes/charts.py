@@ -137,34 +137,28 @@ def register(app, dashboard):
         # before the setting existed. See /profile's Preferences section.
         defaultWindow = db.repo.getUserSettings(username).get(
             "default_top_list_window", TOP_LIST_DEFAULT_WINDOW)
-        # `or`, not a .get() default: ?interval= is PRESENT and empty, so a
-        # default only covers the absent case. Empty has always meant All Time -
-        # it is what every link these pages built before the setting existed, and
-        # what the old <option value=""> submitted - so it is normalised to the
-        # spelling that survives a URL rather than left to mean it implicitly.
-        # Left as "" it passed _getValidInterval intact (it is a valid interval),
-        # selected All Time in the card, and was then dropped from listUrl and
-        # from every page link, so the request that followed re-resolved
-        # defaultWindow: the card said All Time over a list scoped to something
-        # else. Harmless while the default was hardcoded to All Time.
-        rawInterval = request.args.get("interval", defaultWindow) or TOP_LIST_DEFAULT_WINDOW
+        customStart = request.args.get("startDate", "")
+        customEnd = request.args.get("endDate", "")
         return {
             "searchQuery": request.args.get("q", ""),
             "sortBy": dashboard._getSortByParam(allowed=TOP_LIST_SORT_BY),
-            # Validated, like sortBy beside it. The DATA was always safe
-            # (_getDateRange coerces junk to the default), but the raw value
-            # reached _buildPaginationContext, so a stale or truncated URL put
-            # ?interval=bogus into every page link - and now also into the URL
-            # the shell loads its list from. Same fix historyPage already carries.
-            #
-            # Never "" out of here - see rawInterval above. That spelling still
-            # means All Time on the way IN; what it must not do is come back out,
-            # since _buildPageUrl and _topListShell's listArgs drop empty values
-            # from every link they build. _page_card.html's All Time option
-            # carries "all time" for the same reason.
-            "interval": dashboard._getValidInterval(rawInterval, default=defaultWindow),
-            "customStart": request.args.get("startDate", ""),
-            "customEnd": request.args.get("endDate", ""),
+            # The Top pages' two defaults are NOT the same value - an absent
+            # ?interval= takes the account's default_top_list_window, a
+            # present-but-empty one has always meant All Time (every link
+            # these pages built before that setting existed, and the old
+            # <option value=""> submitted it) - and a custom range with
+            # either date missing falls back like an empty one would. See
+            # DateRangeMixin._resolveIntervalParam's docstring for why this
+            # can never come back out as "": _buildPageUrl and
+            # _topListShell's listArgs both drop empty values from every
+            # link they build, so an "" surviving out of here would vanish
+            # from listUrl and every page link, and the request that
+            # followed would re-resolve defaultWindow - the card would say
+            # All Time over a list scoped to something else.
+            "interval": dashboard._resolveIntervalParam(
+                defaultWindow, TOP_LIST_DEFAULT_WINDOW, customStart, customEnd),
+            "customStart": customStart,
+            "customEnd": customEnd,
             "tag": request.args.get("tag", "") if tagsOn else "",
             "fullOnly": fullOnly,
             "fullPlaysOnly": fullOnly != "0",
@@ -531,20 +525,15 @@ def register(app, dashboard):
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
 
-        #< resolved the same way /charts and /genres resolve it. Reading the raw
-        #  param meant an unrecognised value (a stale or hand-edited URL, one
-        #  truncated in a chat client) reached _getDateRange and _getIntervalLabel
-        #  unchecked, where default="day" - not the user's configured window -
-        #  decided what they got, and the heading then named it confidently.
-        #< `or default_window` before validating: _getValidInterval accepts ""
-        #  (it means "unset" on other paths), and while _getDateRange coerces it
-        #  for the DATA, the template's <select> compares against this variable -
-        #  so an empty ?interval= left every option unselected and the control
-        #  displayed "All Time" over month-scoped numbers
-        interval = dashboard._getValidInterval(request.args.get("interval", default_window) or default_window,
-                                               default=default_window)
-        if interval == "custom" and not (customStart and customEnd):
-            interval = default_window
+        #< resolved the same way /charts and /genres resolve it - see
+        #  DateRangeMixin._resolveIntervalParam. Reading the raw param meant an
+        #  unrecognised value (a stale or hand-edited URL, one truncated in a
+        #  chat client) reached _getDateRange and _getIntervalLabel unchecked,
+        #  where default="day" - not the user's configured window - decided
+        #  what they got, and the heading then named it confidently. Both
+        #  defaults are default_window here: this page has no second default
+        #  the way the Top pages do.
+        interval = dashboard._resolveIntervalParam(default_window, default_window, customStart, customEnd)
 
         #< no _getIntervalLabel here: unlike /charts and /genres, neither
         #  tracks.html nor _dashboard_summary.html renders one - the dashboard
@@ -679,15 +668,14 @@ def register(app, dashboard):
         customEnd = request.args.get("endDate", "")
 
         # History defaults to All Time (the full list); the Time Period filter
-        # then scopes it to any named interval or a custom range. Validated
-        # like dashboardIndex's (see the comment there): the DATA was safe
-        # either way (_getDateRange coerces junk to the default), but the raw
-        # value reached the template and _buildPaginationContext, leaving the
-        # select unselected and junk in every page link on a stale URL.
-        interval = dashboard._getValidInterval(request.args.get("interval") or "all time",
-                                               default="all time")
-        if interval == "custom" and not (customStart and customEnd):
-            interval = "all time"
+        # then scopes it to any named interval or a custom range. Resolved
+        # like dashboardIndex's (see DateRangeMixin._resolveIntervalParam):
+        # the DATA was safe either way (_getDateRange coerces junk to the
+        # default), but the raw value reached the template and
+        # _buildPaginationContext, leaving the select unselected and junk in
+        # every page link on a stale URL. Both defaults are "all time" here -
+        # this page has no second default the way the Top pages do.
+        interval = dashboard._resolveIntervalParam("all time", "all time", customStart, customEnd)
 
         sortOrder = dashboard._getHistorySortParam()
         oldestFirst = sortOrder == "oldest"
@@ -1046,20 +1034,18 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
 
-        #< `or defaultWindow` before validating, like dashboardIndex above:
-        #  ?interval= is PRESENT and empty, so the .get() default never fires,
-        #  and _getValidInterval accepts "" (it means "unset" on other paths).
-        #  _getDateRange coerces it for the DATA, but the template's <select>
-        #  compares against this variable and its All Time option only matches
-        #  the "all time" spelling - so an empty ?interval= left every option
-        #  unselected and the control displayed the first one, Today, over
-        #  default-window numbers
-        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow) or defaultWindow,
-                                               default=defaultWindow)
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
-        if interval == "custom" and not (customStart and customEnd):
-            interval = defaultWindow
+        #< resolved like dashboardIndex above (see
+        #  DateRangeMixin._resolveIntervalParam): ?interval= PRESENT and
+        #  empty must not fall through unvalidated - the template's <select>
+        #  compares against this variable and its All Time option only
+        #  matches the "all time" spelling, so an empty ?interval= used to
+        #  leave every option unselected and the control displayed the first
+        #  one, Today, over default-window numbers. Both defaults are
+        #  defaultWindow here; this page has no second default the way the
+        #  Top pages do.
+        interval = dashboard._resolveIntervalParam(defaultWindow, defaultWindow, customStart, customEnd)
         #< the raw param, not the resolved bucketing - the template's select
         #  must keep showing Auto rather than pinning the derived value
         groupByParam = request.args.get("groupBy", "")

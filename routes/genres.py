@@ -122,17 +122,16 @@ def register(app, dashboard):
         settings = db.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")
 
-        #< `or defaultWindow` before validating - same reason /charts and the
-        #  dashboard carry it: ?interval= is present and empty, _getValidInterval
-        #  accepts "", and the All Time <option> below only matches the "all
-        #  time" spelling, so "" selected nothing and the control showed its
-        #  first option over default-window numbers
-        interval = dashboard._getValidInterval(request.args.get("interval", defaultWindow) or defaultWindow,
-                                               default=defaultWindow)
         customStart = request.args.get("startDate", "")
         customEnd = request.args.get("endDate", "")
-        if interval == "custom" and not (customStart and customEnd):
-            interval = defaultWindow
+        #< resolved like /charts and the dashboard (see
+        #  DateRangeMixin._resolveIntervalParam) - same reason they carry it:
+        #  ?interval= present and empty must not fall through unvalidated,
+        #  or the All Time <option> below (which only matches the "all time"
+        #  spelling) selects nothing and the control shows its first option
+        #  over default-window numbers. Both defaults are defaultWindow here;
+        #  this page has no second default the way the Top pages do.
+        interval = dashboard._resolveIntervalParam(defaultWindow, defaultWindow, customStart, customEnd)
         startDate, endDate = dashboard._getDateRange(interval, customStart, customEnd, default=defaultWindow, tz=db.tz)
         #< same default as _getDateRange above (see charts.py)
         intervalLabel = dashboard._getIntervalLabel(interval, customStart, customEnd,

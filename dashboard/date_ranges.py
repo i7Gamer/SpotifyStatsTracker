@@ -3,12 +3,25 @@
 
 from __future__ import annotations
 
+from flask import request
 from datetime import datetime, timedelta
 from Database.utils import convertToDatetime, msToString, now, parseDateString, startOfDay
 from config import (
     COMPARE_TREND_WEEK_SPAN_DAYS, COMPARE_TREND_MONTH_SPAN_DAYS,
     CUSTOM_RANGE_MIN_YEAR, CUSTOM_RANGE_MAX_YEAR, MAX_TREND_BUCKETS,
 )
+
+# The interval values that make sense as a STORED default (a profile
+# preference - routes/auth.py's save_preferences validates
+# default_dashboard_window/default_top_list_window against this), which is
+# _getValidInterval's per-REQUEST whitelist minus the two spellings that only
+# make sense on one request at a time: "" (meaning "not specified" - a stored
+# default cannot itself be "not specified") and "custom" (a stored date range
+# would go stale the moment "today" moves past it). _getValidInterval extends
+# this set with those two for its own whitelist, so a newly added interval
+# only has to be added here - the traps memory's "drive it off the interval
+# constant" rule.
+SETTABLE_INTERVALS = frozenset({"today", "day", "week", "month", "year", "5years", "all time"})
 
 # Approximate days per bucket, for _resolveGroupBy's explicit-choice guard.
 # An ESTIMATE only - month uses its 28-day floor so the guard can never
@@ -36,12 +49,65 @@ class DateRangeMixin:
 
     def _getValidInterval(self, interval, default="day"):
         """Validate interval parameter, falling back to default for unrecognized values."""
-        valid_intervals = {"", "today", "day", "week", "month", "year", "5years", "all time", "custom"}
+        valid_intervals = SETTABLE_INTERVALS | {"", "custom"}
         return interval if interval in valid_intervals else default
 
     def _getValidGroupBy(self, groupBy, default="day"):
         """Validate groupBy parameter, falling back to default for unrecognized values."""
         return groupBy if groupBy in ("day", "week", "month") else default
+
+    def _resolveIntervalParam(self, absentDefault, emptyDefault, customStart=None, customEnd=None):
+        """The current request's `?interval=`, resolved with the query's TWO
+        different defaults - because an ABSENT param and a PRESENT-BUT-EMPTY
+        one have never meant the same thing on every page.
+
+        On the Dashboard, Charts, Genres and History pages the two defaults
+        are equal (the page's own default window - the account's
+        default_dashboard_window for the first three, the hardcoded "all
+        time" for History), so this distinction is invisible there and both
+        arguments are simply the same value.
+
+        On the Top Songs/Artists/Albums pages it is NOT invisible: an ABSENT
+        ?interval= means "no window was ever chosen for this view", so it
+        takes the account's own default_top_list_window - a career ranking's
+        separate setting from the dashboard's (see
+        tests/test_top_list_default_window.py). A PRESENT BUT EMPTY
+        ?interval= has always meant All Time instead - it is what every link
+        these pages built before that per-user setting existed, and what the
+        old `<option value="">All Time</option>` submitted. Left as `""` it
+        would pass _getValidInterval intact (`""` is itself a valid
+        interval), select All Time in the filter card, and then be DROPPED
+        from every link built from it - see PaginationMixin._buildPageUrl and
+        _topListShell's listArgs, which both drop falsy query values - so the
+        request that link led to would re-resolve default_top_list_window:
+        the card would say All Time over a list actually scoped to something
+        else. This method's return value must therefore never BE `""` -
+        every caller that means All Time spells it "all time" (see
+        TOP_LIST_DEFAULT_WINDOW), the one spelling that survives into a URL.
+
+        A present, non-empty, UNRECOGNIZED value (a stale or hand-edited URL)
+        falls back to `absentDefault`, never to `emptyDefault` - junk must
+        not hand the account a WIDER view than it configured
+        (test_junk_falls_back_to_the_stored_window_not_to_all_time).
+
+        `customStart`/`customEnd`, when given, gate "custom" the same way
+        _getDateRange does: "custom" with either date missing falls back to
+        `emptyDefault` - an incomplete custom range reads as "nothing was
+        actually specified", the same bucket a present-but-empty ?interval=
+        falls into, rather than as the account's usual window. Without this
+        guard the filter card's <select> could show "Custom" selected over
+        data that _getDateRange has already fallen back to All Time for
+        (`/top-songs?interval=custom` used to do exactly this)."""
+        raw = request.args.get("interval")
+        if raw is None:
+            interval = absentDefault
+        elif raw == "":
+            interval = emptyDefault
+        else:
+            interval = self._getValidInterval(raw, default=absentDefault)
+        if interval == "custom" and not (customStart and customEnd):
+            interval = emptyDefault
+        return interval
 
     def _resolveGroupBy(self, groupByParam, startDate=None, endDate=None):
         """The trend-bucket size for a time-series chart: an explicit valid
