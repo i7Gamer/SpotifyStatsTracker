@@ -31,14 +31,14 @@
         data-peakplays="{{ peakListeningTime[1] if peakListeningTime else 'N/A' }}"
         data-discoveredsongs="{{ discoveredSongsCount }}"
         data-discoveredartists="{{ discoveredArtistsCount }}"
-        {#- exportTopSong/exportTopAlbum are the most-PLAYED song/album,
-           independent of the page's own sortBy (dashboard/wrapped_builder.py)
-           - topSongs[0]/topAlbums[0] follow sortBy instead, so a sortBy=name
-           export used to name the alphabetically-first item here rather than
-           the most-played one (2026-09-02 review, UT-5). data-topartist is
-           unchanged - out of scope for UT-5. #}
+        {#- exportTopSong/exportTopArtist/exportTopAlbum are the most-PLAYED
+           song/artist/album, independent of the page's own sortBy
+           (dashboard/wrapped_builder.py) - topSongs[0]/topArtists[0]/
+           topAlbums[0] follow sortBy instead, so a sortBy=name export used
+           to name the alphabetically-first item here rather than the
+           most-played one (2026-09-02 review, UT-5). #}
         data-topsong="{% if exportTopSong %}{{ exportTopSong['name'] }}{% if exportTopSong['artists'] %} - {{ exportTopSong['artists'][0]['name'] }}{% endif %}{% else %}N/A{% endif %}"
-        data-topartist="{% if topArtists %}{{ topArtists[0]['name'] }}{% else %}N/A{% endif %}"
+        data-topartist="{% if exportTopArtist %}{{ exportTopArtist['name'] }}{% else %}N/A{% endif %}"
         data-topalbum="{% if exportTopAlbum %}{{ exportTopAlbum['name'] }}{% else %}N/A{% endif %}">
   <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="display:inline-block;">
     <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>

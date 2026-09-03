@@ -289,11 +289,13 @@ class WrappedBuilderMixin:
             topAlbums = json.loads(cached["top_albums"])
 
             # The export button (see templates/_wrapped_export_button.html)
-            # always shows the most-PLAYED song/album, independent of the
-            # page's own sortBy - captured here from the plays-ranked pool,
-            # before the sortBy re-sort below can reorder or [:limit] can cut
-            # it out of topSongs/topAlbums entirely (2026-09-02 review, UT-5).
+            # always shows the most-PLAYED song/artist/album, independent of
+            # the page's own sortBy - captured here from the plays-ranked
+            # pool, before the sortBy re-sort below can reorder or [:limit]
+            # can cut it out of topSongs/topArtists/topAlbums entirely
+            # (2026-09-02 review, UT-5).
             exportTopSong = self._resortByMetric(topSongs, "plays")[0] if topSongs else None
+            exportTopArtist = self._resortByMetric(topArtists, "plays")[0] if topArtists else None
             exportTopAlbum = self._resortByMetric(topAlbums, "plays")[0] if topAlbums else None
 
             discoveredSongs = json.loads(cached["discovered_songs_list"])
@@ -322,30 +324,36 @@ class WrappedBuilderMixin:
         else:
             # Dynamic calculations for mocks (unit tests compatibility)
 
-            # getTopSongs/getTopAlbums push sorting AND the limit down into
-            # SQL (see Database.database.getTopSongs's docstring), so once
-            # sortBy != "plays" has limited the pool to the on-screen items,
-            # re-sorting it in Python can't recover the true most-played one
-            # - a dedicated plays-ranked, single-item fetch is the only way
-            # to get it (2026-09-02 review, UT-5). Skipped when sortBy is
-            # already "plays": the list below already starts with it.
+            # getTopSongs/getTopArtists/getTopAlbums push sorting AND the
+            # limit down into SQL (see Database.database.getTopSongs's
+            # docstring), so once sortBy != "plays" has limited the pool to
+            # the on-screen items, re-sorting it in Python can't recover the
+            # true most-played one - a dedicated plays-ranked, single-item
+            # fetch is the only way to get it (2026-09-02 review, UT-5).
+            # Skipped when sortBy is already "plays": the list below already
+            # starts with it.
             if sortBy == "plays":
-                exportTopSong = exportTopAlbum = None   #< resolved from topSongs/topAlbums once fetched, below
+                #< resolved from topSongs/topArtists/topAlbums once fetched, below
+                exportTopSong = exportTopArtist = exportTopAlbum = None
             else:
                 exportTopSongPool = db.getTopSongs(startDate=yearStart, endDate=yearEnd,
                                                    by="plays", limit=EXPORT_TOP_ITEM_COUNT)
+                exportTopArtistPool = db.getTopArtists(startDate=yearStart, endDate=yearEnd,
+                                                       by="plays", limit=EXPORT_TOP_ITEM_COUNT)
                 exportTopAlbumPool = db.getTopAlbums(startDate=yearStart, endDate=yearEnd,
                                                      by="plays", limit=EXPORT_TOP_ITEM_COUNT)
                 exportTopSong = exportTopSongPool[0] if exportTopSongPool else None
+                exportTopArtist = exportTopArtistPool[0] if exportTopArtistPool else None
                 exportTopAlbum = exportTopAlbumPool[0] if exportTopAlbumPool else None
 
             topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
             topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
             topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
             if sortBy == "plays":
-                # Already plays-ranked: topSongs/topAlbums[0] IS the most-
-                # played item, so no separate fetch is needed.
+                # Already plays-ranked: topSongs/topArtists/topAlbums[0] IS
+                # the most-played item, so no separate fetch is needed.
                 exportTopSong = topSongs[0] if topSongs else None
+                exportTopArtist = topArtists[0] if topArtists else None
                 exportTopAlbum = topAlbums[0] if topAlbums else None
             totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
 
@@ -393,6 +401,7 @@ class WrappedBuilderMixin:
             "topArtists": topArtists,
             "topAlbums": topAlbums,
             "exportTopSong": exportTopSong,
+            "exportTopArtist": exportTopArtist,
             "exportTopAlbum": exportTopAlbum,
             "discoveredSongs": discoveredSongs,
             "discoveredArtists": discoveredArtists,

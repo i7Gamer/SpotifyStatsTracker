@@ -370,12 +370,13 @@ class TestWrappedSortBy(_WrappedRouteTestBase):
 
 class TestWrappedExportTopItems(_WrappedRouteTestBase):
     """UT-5 (review 2026-09-02): the export button's data-topsong/
-    data-topalbum are drawn from _buildWrappedContext's exportTopSong/
-    exportTopAlbum, which must stay the most-PLAYED song/album regardless of
-    ?sortBy - not whatever sortBy happened to rank first in the on-screen
-    list (that list is what topSongs[0]/topAlbums[0] used to feed the
-    template with). A sortBy=name request whose alphabetically-first item is
-    NOT the most played pins the distinction."""
+    data-topalbum/data-topartist are drawn from _buildWrappedContext's
+    exportTopSong/exportTopAlbum/exportTopArtist, which must stay the
+    most-PLAYED song/album/artist regardless of ?sortBy - not whatever
+    sortBy happened to rank first in the on-screen list (that list is what
+    topSongs[0]/topAlbums[0]/topArtists[0] used to feed the template with).
+    A sortBy=name request whose alphabetically-first item is NOT the most
+    played pins the distinction."""
 
     def test_export_top_song_is_most_played_not_sort_order_first(self):
         dash = self._makeApp()
@@ -425,6 +426,32 @@ class TestWrappedExportTopItems(_WrappedRouteTestBase):
 
         self.assertIn('data-topsong="Only Song"', resp.data.decode())
         db.getTopSongs.assert_called_once()
+
+    def test_export_top_artist_is_most_played_not_sort_order_first(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        alphaFirst = _artist("alpha", "Aardvark Artist", plays=1, firstListenedAt=0)
+        mostPlayed = _artist("loud", "Zebra Artist", plays=99, firstListenedAt=0)
+
+        def getTopArtists(**kwargs):
+            return [mostPlayed] if kwargs.get("by") == "plays" else [alphaFirst]
+        db.getTopArtists.side_effect = getTopArtists
+
+        resp = self._getWrapped(dash, db, query="?sortBy=name")
+
+        body = resp.data.decode()
+        self.assertIn('data-topartist="Zebra Artist"', body)
+        self.assertNotIn('data-topartist="Aardvark Artist"', body)
+
+    def test_export_top_artist_matches_the_list_when_sort_by_is_plays(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getTopArtists.return_value = [_artist("a1", "Only Artist", plays=10, firstListenedAt=0)]
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertIn('data-topartist="Only Artist"', resp.data.decode())
+        db.getTopArtists.assert_called_once()
 
 
 class TestWrappedDiscoveries(_WrappedRouteTestBase):
