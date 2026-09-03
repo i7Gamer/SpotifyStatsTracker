@@ -447,8 +447,15 @@ class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
         return db
 
     def _startIndex(self, db):
-        db.getEntriesFromNew.assert_called_once()
-        return db.getEntriesFromNew.call_args.kwargs["startIndex"]
+        #< the BATCH call, which is always the first: an offset past row 0
+        #  also fetches the one row before it, to seed the appended batch's
+        #  month header and gap badge (see _songHistoryContext)
+        return db.getEntriesFromNew.call_args_list[0].kwargs["startIndex"]
+
+    def _seedIndex(self, db):
+        """The seed call's startIndex, or None when the batch opens the list."""
+        calls = db.getEntriesFromNew.call_args_list
+        return calls[1].kwargs["startIndex"] if len(calls) > 1 else None
 
     def test_an_absurd_offset_is_clamped_to_the_last_batch_boundary(self):
         from routes.charts import PAGE_SIZE
@@ -466,6 +473,8 @@ class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
 
                 self.assertEqual(resp.status_code, 200)
                 self.assertEqual(self._startIndex(db), 2 * PAGE_SIZE)
+                self.assertEqual(self._seedIndex(db), 2 * PAGE_SIZE - 1,
+                                 "and the seed is the row directly above it")
 
     def test_an_absurd_page_starts_at_the_first_page(self):
         db = self._db()
@@ -473,6 +482,7 @@ class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self._startIndex(db), 0)
+        self.assertIsNone(self._seedIndex(db), "row 0 opens the list; there is nothing above it")
 
     def test_a_real_offset_and_page_still_pass_through(self):
         from routes.charts import PAGE_SIZE

@@ -191,9 +191,19 @@ class ViewModelMixin:
         return plays
 
     def _enrichSongTimelineEntries(self, plays: list[dict], trackDurationMs: int | None = None,
-                                    completePercentThreshold: int | None = None) -> list[dict]:
+                                    completePercentThreshold: int | None = None,
+                                    previousPlay: dict | None = None) -> list[dict]:
         """Enriches play entries for the song detail timeline with playType,
         percentPlayed, monthYearHeader, and timePassedText.
+
+        `previousPlay` is the entry that precedes this batch IN DISPLAY ORDER,
+        for a batch that is APPENDED to rows already on screen ("Show more" -
+        see _songHistoryContext). Both the month header and the gap badge are
+        otherwise derived from state local to one call, so row 0 of a later
+        batch got a header the row above it already carried and never got the
+        connector every other row has: a song with 120 plays in one month
+        rendered that month's header twice. None for a batch that opens its own
+        list, where a header and no gap are exactly right.
 
         The full-vs-partial cutoff defaults to the admin's instance-wide
         completion-complete percent (getCompletionCompletePercent) - the same
@@ -209,7 +219,10 @@ class ViewModelMixin:
         db = g.get("db", None) if has_app_context() else None
         tz = db.tz if db else None
 
-        lastMonthYear = None
+        #< the seed's own month, so the first row of an appended batch only gets
+        #  a header when it genuinely starts a new one
+        lastMonthYear = (convertToDatetime(previousPlay.get("playedAt", 0), tz=tz).strftime("%B %Y")
+                         if previousPlay else None)
 
         for i, play in enumerate(plays):
             self._classifyPlay(play, play.get("duration") or trackDurationMs or 0,
@@ -227,9 +240,10 @@ class ViewModelMixin:
             # previous card in the list, so it must always describe the gap to the
             # previous entry regardless of sort direction (see _play_log.html).
             play["timePassedText"] = None
-            if i > 0:
+            previous = plays[i - 1] if i > 0 else previousPlay
+            if previous is not None:
                 current_ts = play.get("playedAt", 0)
-                previous_ts = plays[i - 1].get("playedAt", 0)
+                previous_ts = previous.get("playedAt", 0)
                 delta_sec = float(current_ts) - float(previous_ts)
                 play["timePassedText"] = formatTimeGap(abs(delta_sec), earlier=(delta_sec < 0))
 

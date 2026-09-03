@@ -154,6 +154,63 @@ class TestEnrichSongTimelineEntries(AppTestCase):
         self.assertIn("timePassedText", enriched[1])
         self.assertEqual(enriched[1]["timePassedText"], "3 hours later")
 
+    def test_a_seeded_batch_continues_the_month_instead_of_repeating_it(self):
+        """"Show more" APPENDS its batch below the rows already on screen, so
+        row 0 of a later batch has a predecessor this function cannot see. It
+        got a month header the row above it already carried - a song with 120
+        plays all in September rendered a second "September 2026" header in
+        the middle of its own list (2026-09-03 review, M6).
+
+        The seed is the row that precedes the batch IN DISPLAY ORDER."""
+        dash = self._makeApp()
+        first = {'id': 't1', 'playedAt': 1784560000, 'timePlayed': 180000, 'isSkip': False}
+        plays = [{'id': 't1', 'playedAt': 1784560000 - 10800, 'timePlayed': 180000,
+                  'isSkip': False}]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=200000,
+                                                   previousPlay=first)
+
+        self.assertIsNone(enriched[0]['monthYearHeader'],
+                          'the month is already on screen above this batch')
+        self.assertEqual(enriched[0]['timePassedText'], '3 hours earlier',
+                         'and the connector to the row above must be drawn')
+
+    def test_a_seeded_batch_that_crosses_a_month_still_gets_its_header(self):
+        dash = self._makeApp()
+        #< 2026-07-20, then 2026-06-20: a real month boundary inside the seam
+        first = {'id': 't1', 'playedAt': 1784560000, 'timePlayed': 180000, 'isSkip': False}
+        plays = [{'id': 't1', 'playedAt': 1784560000 - 30 * 86400, 'timePlayed': 180000,
+                  'isSkip': False}]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=200000,
+                                                   previousPlay=first)
+
+        self.assertIsNotNone(enriched[0]['monthYearHeader'])
+
+    def test_the_seed_reads_the_same_way_in_oldest_first_order(self):
+        """The gap badge describes the previous ENTRY regardless of sort
+        direction, and the seed is taken in that same display order."""
+        dash = self._makeApp()
+        first = {'id': 't1', 'playedAt': 1784560000, 'timePlayed': 180000, 'isSkip': False}
+        plays = [{'id': 't1', 'playedAt': 1784560000 + 10800, 'timePlayed': 180000,
+                  'isSkip': False}]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=200000,
+                                                   previousPlay=first)
+
+        self.assertEqual(enriched[0]['timePassedText'], '3 hours later')
+
+    def test_without_a_seed_the_first_row_still_opens_the_list(self):
+        """The negative control: the FIRST batch has nothing above it, so row
+        0 must keep its header and must not claim a gap to nothing."""
+        dash = self._makeApp()
+        plays = [{'id': 't1', 'playedAt': 1784560000, 'timePlayed': 180000, 'isSkip': False}]
+
+        enriched = dash._enrichSongTimelineEntries(plays, trackDurationMs=200000)
+
+        self.assertIsNotNone(enriched[0]['monthYearHeader'])
+        self.assertIsNone(enriched[0]['timePassedText'])
+
     def test_play_type_respects_explicit_threshold(self):
         # The full-vs-partial cutoff is a parameter, not a hardcoded 80: a 90%
         # play is "partial" under a 95% bar and "full" under an 80% bar.

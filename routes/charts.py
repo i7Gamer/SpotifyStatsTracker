@@ -1299,8 +1299,20 @@ def register(app, dashboard):
         fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
         plays = fetchEntries(count=limit, startIndex=offset,
                              trackId=trackId, includeSkips=showSkips)
+        # "Show more" APPENDS its batch below the rows already on screen, so a
+        # later batch's first row has a predecessor the enrichment cannot see -
+        # it repeated the month header that row already sat under and dropped
+        # its gap badge. One row, taken in DISPLAY order (which flips with
+        # ?sort=oldest, and fetchEntries already reflects that), is that
+        # predecessor. Only for a batch that HAS one: offset 0 opens the list.
+        previousPlay = None
+        if offset > 0:
+            seedRows = fetchEntries(count=1, startIndex=offset - 1,
+                                    trackId=trackId, includeSkips=showSkips)
+            previousPlay = seedRows[0] if seedRows else None
         plays = dashboard._embedSongsTextElements(plays)
-        plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs)
+        plays = dashboard._enrichSongTimelineEntries(plays, trackDurationMs=trackDurationMs,
+                                                     previousPlay=previousPlay)
 
         hasMore = (offset + len(plays)) < totalCount
         nextOffset = offset + len(plays)

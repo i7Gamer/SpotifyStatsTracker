@@ -631,8 +631,11 @@ class TestSongDetailRoute(_DetailRouteTestBase):
 
         self._getPath(dash, db, "/song/t1?page=2")
 
-        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("startIndex"), PAGE_SIZE)
-        self.assertEqual(db.getEntriesFromNew.call_args.kwargs.get("count"), PAGE_SIZE)
+        #< the first call is the batch; the second is the one-row seed for the
+        #  appended batch's month header and gap badge (see _songHistoryContext)
+        batchCall = db.getEntriesFromNew.call_args_list[0]
+        self.assertEqual(batchCall.kwargs.get("startIndex"), PAGE_SIZE)
+        self.assertEqual(batchCall.kwargs.get("count"), PAGE_SIZE)
 
     def test_play_log_empty_state(self):
         dash = self._makeApp()
