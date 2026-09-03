@@ -22,9 +22,14 @@
 
     <div class="form-group">
       <label for="display_name">Display name</label>
+      {# aria-describedby/aria-invalid only when this section actually has an
+         error to point at - the flash() macro only renders the id then, so
+         referencing it unconditionally would dangle (2026-09-02 review,
+         UT-20). #}
       <input type="text" id="display_name" class="profile-field"
              name="display_name" value="{{ displayName if displayName != username else '' }}"
-             placeholder="{{ username }}" maxlength="{{ displayNameMaxLength }}" autocomplete="off">
+             placeholder="{{ username }}" maxlength="{{ displayNameMaxLength }}" autocomplete="off"
+             {% if flashFor == 'display-name' and error %}aria-describedby="display-name-flash" aria-invalid="true"{% endif %}>
       <p class="profile-hint">
         The name shown to you and to people you share data with. {{ displayNameMinLength }}&ndash;{{ displayNameMaxLength }}
         characters; letters, digits, spaces, <code>-</code> and <code>_</code>. Leave it empty to go back to

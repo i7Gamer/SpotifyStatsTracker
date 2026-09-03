@@ -7,9 +7,13 @@
 {#- The success/error message for one section, rendered next to the form that
     produced it. `flashFor` is set by the redirect that followed the POST (see
     _profileRedirect in routes/auth.py) and matches the section's element id. -#}
+{#- The error paragraph carries an id (`{{ name }}-flash`) so the field that
+    produced it can point back at it via aria-describedby - see profile.html's
+    display_name input (2026-09-02 review, UT-20). Only the error half needs
+    one: nothing currently links a field to a success message. -#}
 {% macro flash(name) %}
   {% if flashFor == name %}
-    {% if error %}<p class="profile-flash profile-flash-error">{{ error }}</p>{% endif %}
+    {% if error %}<p class="profile-flash profile-flash-error" id="{{ name }}-flash">{{ error }}</p>{% endif %}
     {% if success %}<p class="profile-flash profile-flash-success">{{ success }}</p>{% endif %}
   {% endif %}
 {% endmacro %}

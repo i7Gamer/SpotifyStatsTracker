@@ -22,18 +22,18 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <div class="form-group">
         <label for="registerEmail">Email</label>
-        <input type="email" id="registerEmail" name="email" value="{{ email or '' }}" required autofocus>
+        <input type="email" id="registerEmail" name="email" value="{{ email or '' }}" autocomplete="username" required autofocus>
       </div>
 
       <div class="form-group">
         <label for="registerPassword">Password</label>
-        <input type="password" id="registerPassword" name="password" minlength="{{ minPasswordLength }}" required>
-        <small>At least {{ minPasswordLength }} characters, with uppercase, lowercase and a number or special character.</small>
+        <input type="password" id="registerPassword" name="password" minlength="{{ minPasswordLength }}" autocomplete="new-password" aria-describedby="registerPasswordHint" required>
+        <small id="registerPasswordHint">At least {{ minPasswordLength }} characters, with uppercase, lowercase and a number or special character.</small>
       </div>
 
       <div class="form-group">
         <label for="registerConfirmPassword">Confirm password</label>
-        <input type="password" id="registerConfirmPassword" name="confirm_password" minlength="{{ minPasswordLength }}" required>
+        <input type="password" id="registerConfirmPassword" name="confirm_password" minlength="{{ minPasswordLength }}" autocomplete="new-password" required>
       </div>
 
       <div class="form-group">
