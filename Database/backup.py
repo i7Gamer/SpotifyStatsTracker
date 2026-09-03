@@ -60,6 +60,10 @@ BACKUP_STARTUP_MAX_DELAY_SECONDS = 300      #  just ran, listeners are spinning 
                                             #  periodic workers instead of all firing at the same instant
 BACKUP_CHECK_INTERVAL_SECONDS = 15 * 60     #< how often the worker re-checks whether a backup is due
 BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"   #< lexicographic order == chronological order, which rotation relies on
+# How far past the newest existing snapshot a new name is pushed when the wall
+# clock would not already sort after it - one tick of the format's own
+# resolution, i.e. the smallest step that still orders. See _nextBackupStamp.
+BACKUP_STAMP_MIN_STEP_SECONDS = 1
 # Matches the app's own SQLITE_BUSY_TIMEOUT_MS. Not imported from Database.db:
 # this module is deliberately importable standalone (the migrators use it that
 # way, see Migrators/migrate.py's dual import).
@@ -251,7 +255,7 @@ class BackupWorker(WorkerTelemetryMixin):
         # Windows' UCRT parses TZ as a POSIX spec, so an IANA name silently
         # resolved to a fixed offset and every filename ran an hour off for
         # half the year. The name is what an operator picks a restore by.
-        stamp = datetime.datetime.now(tz=utils.tz).strftime(BACKUP_TIMESTAMP_FORMAT)
+        stamp = self._nextBackupStamp()
         finalPath = self.backupDir / f"{BACKUP_FILENAME_PREFIX}{stamp}.db"
         partialPath = finalPath.with_suffix(".partial")
 
@@ -287,10 +291,57 @@ class BackupWorker(WorkerTelemetryMixin):
             _discardPartial(partialPath)
             raise
         logger.info("Database backed up to %s", finalPath)
-        self._rotate()
+        self._rotate(justWritten=finalPath)
         return finalPath
 
-    def _rotate(self) -> None:
+    @staticmethod
+    def _stampOf(path: Path) -> str:
+        """The timestamp part of a snapshot's filename."""
+        return path.stem[len(BACKUP_FILENAME_PREFIX):]
+
+    def _nextBackupStamp(self) -> str:
+        """The filename stamp for a new snapshot, guaranteed to sort after
+        every snapshot already in the directory.
+
+        BACKUP_TIMESTAMP_FORMAT's comment states the invariant rotation relies
+        on - lexicographic order == chronological order - but nothing enforced
+        it, and the wall clock is not monotonic. A backward step (NTP
+        correcting a fast clock, a restored VM snapshot, a resume from suspend)
+        gave the new snapshot a name that sorted BEFORE the retained ones, so
+        _rotate deleted the file os.replace had just promoted, reported
+        success, and - because isDue()'s own future-mtime guard kept firing -
+        did it again on every check, copying the whole database each time.
+
+        Stepping past the newest existing name makes that invariant true by
+        construction, which is cheaper than teaching every reader of
+        _backupFiles() to distrust the order. The stamp then lags the wall
+        clock for as long as the anomaly lasts: that is the trade, and it is
+        the right way round, because a name off by the size of the clock error
+        still restores, while a directory that silently stops accepting
+        snapshots does not. The file's mtime still records when the copy was
+        really taken.
+
+        It also closes a smaller hole on the way past: two backups landing in
+        the same second used to build the same name, and os.replace would
+        overwrite a snapshot that was still being retained."""
+        stamp = datetime.datetime.now(tz=utils.tz).strftime(BACKUP_TIMESTAMP_FORMAT)
+        newest = self._newestBackupFile()
+        if newest is None:
+            return stamp
+        newestStamp = self._stampOf(newest)
+        if stamp > newestStamp:
+            return stamp
+        try:
+            newestMoment = datetime.datetime.strptime(newestStamp, BACKUP_TIMESTAMP_FORMAT)
+        except ValueError:
+            #< a hand-renamed file this cannot read; nothing better than the
+            #  wall clock is available, and _rotate's justWritten guard below
+            #  still keeps this run's own snapshot
+            return stamp
+        return (newestMoment + datetime.timedelta(seconds=BACKUP_STAMP_MIN_STEP_SECONDS)
+                ).strftime(BACKUP_TIMESTAMP_FORMAT)
+
+    def _rotate(self, justWritten: Path | None = None) -> None:
         # retentionCount 0 disables scheduled backups outright (see isEnabled),
         # so rotation must be a no-op: reading it as "keep zero snapshots"
         # would make a direct runBackup() call delete every existing snapshot -
@@ -299,6 +350,15 @@ class BackupWorker(WorkerTelemetryMixin):
             return
         files = self._backupFiles()
         for stale in files[:-self.retentionCount]:
+            # Belt and braces behind _nextBackupStamp: that makes this run's
+            # snapshot the newest name, so it cannot reach this slice - but
+            # "never delete the copy you just took" is the property that
+            # actually matters, and it should not rest on the naming alone
+            # (see the unparseable-name fallback above). Skipped here rather
+            # than filtered out of `files`, which would have excluded it from
+            # the retention COUNT too and kept one snapshot too many.
+            if justWritten is not None and stale == justWritten:
+                continue
             try:
                 stale.unlink()
                 logger.info("Rotated out old backup %s", stale.name)

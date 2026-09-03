@@ -243,6 +243,87 @@ class TestRunBackup(BackupWorkerTestCase):
         self.assertIn(newest.name, remaining)
         self.assertIn(f"{backupModule.BACKUP_FILENAME_PREFIX}20250103_000000.db", remaining)
 
+    def _futureNamedSnapshots(self, backupDir, count):
+        """`count` snapshots whose NAME and mtime are both ahead of the wall
+        clock - what a stretch of running on a fast clock leaves behind."""
+        import os
+        ahead = time.time() + (4 * 60 * 60)
+        for index in range(count):
+            path = backupDir / f"{backupModule.BACKUP_FILENAME_PREFIX}20270501_1200{index:02d}.db"
+            path.write_bytes(b"old")
+            os.utime(path, (ahead, ahead))
+
+    def test_a_snapshot_is_never_deleted_by_its_own_rotation(self):
+        """BACKUP_TIMESTAMP_FORMAT's comment states the invariant rotation
+        relies on - lexicographic order == chronological order - but the wall
+        clock is not monotonic, and nothing enforced it. After a backward step
+        (NTP correcting a fast clock, a restored VM snapshot, a resume from
+        suspend) the new snapshot's name sorted BEFORE every retained one, so
+        _rotate unlinked the file os.replace had just promoted. runBackup
+        returned normally, so the loop recorded success and /admin showed the
+        worker healthy while no backup was being kept at all."""
+        worker = self._makeWorker(retentionCount=3)
+        backupDir = self.root / "Backups"
+        backupDir.mkdir()
+        self._futureNamedSnapshots(backupDir, 3)
+
+        written = worker.runBackup()
+
+        self.assertTrue(written.exists(),
+                        "rotation deleted the snapshot runBackup had just written")
+
+    def test_retention_recovers_after_a_clock_step_instead_of_collapsing(self):
+        """The half that excluding-the-new-file alone does not fix: each
+        snapshot would survive its own rotation and then be deleted by the
+        NEXT one's, because the future-named files keep every retention slot
+        forever. Effective retention silently drops to one."""
+        retention = 3
+        worker = self._makeWorker(retentionCount=retention)
+        backupDir = self.root / "Backups"
+        backupDir.mkdir()
+        self._futureNamedSnapshots(backupDir, retention)
+
+        written = [worker.runBackup() for _ in range(retention)]
+
+        remaining = {p.name for p in backupDir.iterdir()}
+        self.assertEqual(len(remaining), retention)
+        for path in written:
+            self.assertIn(path.name, remaining,
+                          "a snapshot taken after the clock step was rotated out by the next one")
+
+    def test_the_stamp_is_the_wall_clock_whenever_it_is_already_the_newest(self):
+        """The ordinary case must be untouched: the name still says when the
+        copy was taken, so an operator picking a restore by name is reading a
+        real timestamp rather than a synthetic one."""
+        worker = self._makeWorker(retentionCount=3)
+        backupDir = self.root / "Backups"
+        backupDir.mkdir()
+        (backupDir / f"{backupModule.BACKUP_FILENAME_PREFIX}20250101_000000.db").write_bytes(b"old")
+
+        import datetime as dt
+        from Database import utils
+
+        before = dt.datetime.now(tz=utils.tz).strftime(backupModule.BACKUP_TIMESTAMP_FORMAT)
+        written = worker.runBackup()
+        after = dt.datetime.now(tz=utils.tz).strftime(backupModule.BACKUP_TIMESTAMP_FORMAT)
+
+        stamp = written.stem[len(backupModule.BACKUP_FILENAME_PREFIX):]
+        self.assertLessEqual(before, stamp)
+        self.assertLessEqual(stamp, after)
+
+    def test_two_snapshots_in_the_same_second_do_not_overwrite_each_other(self):
+        """Falls out of the same guarantee: the second call sees the first as
+        the newest and steps past it, where an identical name would have had
+        os.replace silently overwrite a snapshot that was being retained."""
+        worker = self._makeWorker(retentionCount=5)
+
+        first = worker.runBackup()
+        second = worker.runBackup()
+
+        self.assertNotEqual(first.name, second.name)
+        self.assertTrue(first.exists())
+        self.assertTrue(second.exists())
+
     def test_rotation_ignores_unrelated_files(self):
         worker = self._makeWorker(retentionCount=1)
         backupDir = self.root / "Backups"
