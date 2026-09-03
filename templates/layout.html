@@ -58,7 +58,12 @@
     <header class="topbar">
       <a class="brand" href="{{ url_for('overviewPage') }}">
         Spotify Tracker
-        <span id="listener-status-pill" class="status-pill status-initializing" title="Sync Status: Initializing" style="display:none;"></span>
+        {# UI-07 (2026-09-02 review): the pill's state was colour (its class)
+           and a hover-only title - nothing a screen reader could read without
+           hovering an element with no text of its own. static/js/layout-
+           chrome.js's updateListenerStatus writes the same words into this
+           span it also writes into the title, so the two can never drift. #}
+        <span id="listener-status-pill" class="status-pill status-initializing" title="Sync Status: Initializing" style="display:none;"><span class="visually-hidden" id="listener-status-text">Sync Status: Initializing</span></span>
       </a>
       <div id="version-badge" class="version-badge" style="display:none;"><span id="version-badge-text"></span></div>
       {% if pendingIncomingSharesCount %}

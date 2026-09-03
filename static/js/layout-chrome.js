@@ -73,6 +73,11 @@ const LISTENER_STATUS_POLL_MS = 10 * 1000;
 
 (function(){
   const statusPill = document.getElementById('listener-status-pill');
+  //< UI-07 (2026-09-02 review): the pill's state was colour (className) and a
+  //  hover-only title - nothing a screen reader could read without hovering
+  //  an element with no text of its own. This carries the same words,
+  //  visually-hidden, so it is read regardless.
+  const statusText = document.getElementById('listener-status-text');
 
   let poll = null;
 
@@ -98,8 +103,12 @@ const LISTENER_STATUS_POLL_MS = 10 * 1000;
         if (!data || !data.status || !statusPill) return;
 
         const status = data.status.toUpperCase();
+        //< the pill's title and the visually-hidden span carry this SAME
+        //  string, from the one place it is built, so the two can never drift
+        const label = `Sync Status: ${status.charAt(0) + status.slice(1).toLowerCase()}`;
         statusPill.className = `status-pill status-${status.toLowerCase()}`;
-        statusPill.title = `Sync Status: ${status.charAt(0) + status.slice(1).toLowerCase()}`;
+        statusPill.title = label;
+        if (statusText) statusText.textContent = label;
         statusPill.style.display = 'inline-block';
       })
       .catch(() => {});

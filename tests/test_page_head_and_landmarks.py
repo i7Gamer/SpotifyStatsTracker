@@ -137,6 +137,46 @@ class TestSkipLink(unittest.TestCase):
         self.assertNotIn("visibility: hidden", rule.group(1))
 
 
+class TestListenerStatusPillText(unittest.TestCase):
+    """UI-07 (2026-09-02 review): #listener-status-pill's state was colour (its
+    class) plus a hover-only title - nothing a screen reader could read
+    without hovering an element that carried no text of its own.
+    static/js/layout-chrome.js's updateListenerStatus writes the SAME words
+    into #listener-status-text that it writes into the title (see
+    tests/test_layout_chrome.js for the runtime half); this pins the static
+    markup only layout.html renders (layout_public.html has no pill - a
+    logged-out visitor has no listener to report on)."""
+
+    def test_the_pill_carries_a_visually_hidden_text_span(self):
+        source = _read(_TEMPLATES / "layout.html")
+        pill = re.search(r'<span id="listener-status-pill"[^>]*>(.*?)</span>\s*</a>', source, re.DOTALL)
+
+        self.assertIsNotNone(pill, "no #listener-status-pill in layout.html")
+        inner = re.search(r'<span class="visually-hidden" id="listener-status-text">([^<]*)</span>',
+                           pill.group(1))
+        self.assertIsNotNone(inner, "no #listener-status-text inside the pill")
+
+    def test_its_initial_text_matches_the_pill_s_own_title(self):
+        """The two must agree even before any poll has landed, or the very
+        first screen-reader announcement disagrees with what a sighted user
+        sees on hover."""
+        source = _read(_TEMPLATES / "layout.html")
+        pill = re.search(r'<span id="listener-status-pill"[^>]*title="([^"]*)"[^>]*>(.*?)</span>\s*</a>',
+                          source, re.DOTALL)
+        self.assertIsNotNone(pill)
+        title = pill.group(1)
+        inner = re.search(r'<span class="visually-hidden" id="listener-status-text">([^<]*)</span>',
+                           pill.group(2))
+        self.assertIsNotNone(inner)
+        self.assertEqual(inner.group(1), title)
+
+    def test_layout_public_has_no_pill_to_speak_of(self):
+        """A logged-out visitor has no listener state to report - confirms the
+        span belongs only where the poll that fills it in also runs."""
+        source = _read(_TEMPLATES / "layout_public.html")
+        self.assertNotIn("listener-status-pill", source)
+
+
 class TestTrackCardTabStops(unittest.TestCase):
     def setUp(self):
         self.source = _read(_TEMPLATES / "_track_card.html")

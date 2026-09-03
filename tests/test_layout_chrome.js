@@ -241,6 +241,31 @@ run('the sync pill reports the listener state', async () => {
   assert.strictEqual(pill.style.display, 'inline-block');
 });
 
+// UI-07 (2026-09-02 review): the pill's state was colour (className) and a
+// hover-only title - nothing a screen reader could read without hovering a
+// span with no text of its own. #listener-status-text carries the same words
+// as the title, always on screen for assistive tech via .visually-hidden.
+run('the pill also carries its state as text, matching the title word for word', async () => {
+  const pill = makeElement();
+  const text = makeElement();
+  loadChrome({
+    elements: { 'listener-status-pill': pill, 'listener-status-text': text },
+    responses: pillResponses('degraded'),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.strictEqual(text.textContent, 'Sync Status: Degraded');
+  assert.strictEqual(text.textContent, pill.title, 'the two must never be able to drift apart');
+});
+
+run('a page without the text span does not crash the poll', async () => {
+  const pill = makeElement();
+  loadChrome({ elements: { 'listener-status-pill': pill }, responses: pillResponses('active') });
+  await new Promise(resolve => setImmediate(resolve));   //< throws if the poll's .then() blew up
+
+  assert.strictEqual(pill.style.display, 'inline-block', 'the rest of the update must still land');
+});
+
 run('an expired session stops the poll instead of hiding the pill and polling on', async () => {
   const pill = makeElement();
   const chrome = loadChrome({
