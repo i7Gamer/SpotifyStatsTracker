@@ -30,9 +30,19 @@ class TagQueries:
         # so a tag added from any release's surface is one row, visible (and
         # removable) wherever the song shows. Reads still union across the
         # group for rows written before a merge existed.
-        if entity_type == "track":
-            entity_id = self.resolveCanonicalTrackId(entity_id)
         with conn:
+            if entity_type == "track":
+                #< BEGIN IMMEDIATE before the resolve, for the reason its
+                #  sibling removeTag gives: the INSERT below is built from the
+                #  resolve's answer, and a re-head landing between the two
+                #  writes the row against a pointer that has already moved.
+                #  Milder here than there - the union read still shows the row
+                #  and the group delete still removes it - but the guard costs
+                #  one PK probe's worth of lock and stops the two verbs
+                #  disagreeing about a shape they share (2026-09-03 review, C-11).
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                entity_id = self.resolveCanonicalTrackId(entity_id)
             conn.execute(
                 """
                 INSERT OR IGNORE INTO user_tags (username, tag, entity_type, entity_id, created_at)

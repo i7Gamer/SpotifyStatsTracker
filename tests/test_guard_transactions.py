@@ -167,6 +167,42 @@ class TestRemoveTagResolvesUnderTheLock(GuardTransactionTestCase):
         self.assertEqual(remaining, 0)
 
 
+class TestAddTagResolvesUnderTheLock(GuardTransactionTestCase):
+    """addTag's track arm resolves the canonical, then INSERTs against that
+    answer - the same decide-then-write shape removeTag already pins, and the
+    one place the two siblings disagreed (2026-09-03 review, C-11).
+
+    Milder than removeTag's: reads union across the group and removeTag
+    deletes across it, so a row that lands on a member stays visible and stays
+    removable. It is still a row written against a pointer that had already
+    moved, and the fix costs one guarded BEGIN IMMEDIATE."""
+
+    def test_the_canonical_resolve_holds_the_lock(self):
+        db = self._db()
+        self._seedTrack(db, "trA")
+        self._seedTrack(db, "trB", canonicalId="trA")
+
+        statements = self._statementsFor(
+            db, lambda: db.repo.addTag(USER, "mood", "track", "trB"))
+
+        self._assertDecisionReadsHoldTheLock(statements)
+        #< and it still lands on the canonical, not the member
+        rows = db.repo._conn().execute(
+            "SELECT entity_id FROM user_tags WHERE username=? AND tag='mood'",
+            (USER,)).fetchall()
+        self.assertEqual([r["entity_id"] for r in rows], ["trA"])
+
+    def test_a_non_track_tag_needs_no_resolve_and_still_writes(self):
+        """Artists and albums do not merge, so that arm has nothing to decide
+        and must not start taking the write lock early."""
+        db = self._db()
+        self._seedTrack(db, "trA")
+
+        self.assertEqual(db.repo.addTag(USER, "Mood", "artist", "art"), "mood")
+        rows = db.repo._conn().execute(
+            "SELECT entity_id FROM user_tags WHERE entity_type='artist'").fetchall()
+        self.assertEqual([r["entity_id"] for r in rows], ["art"])
+
 class TestArtistRepairDecidesUnderTheLock(GuardTransactionTestCase):
     """addMissingTrackArtists guards on "this track has NO links" before
     inserting links. The backfiller and an import can both reach the same
