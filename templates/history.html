@@ -46,13 +46,21 @@
          a later one. `change` here also fires when the search box blurs after
          typing, duplicating the debounced `input` request - harmless precisely
          because of this, and cheaper than the event filter that would suppress
-         it (which needs 'unsafe-eval', see above). #}
+         it (which needs 'unsafe-eval', see above).
+
+         `submit` is load-bearing too: it is what makes htmx register a submit
+         listener on this form at all, which is what lets the vendored htmx's
+         shouldCancel suppress the browser's OWN submission. Without it, Enter
+         in #historySearch (the only enabled text field) falls through to a
+         native form submit - a full navigation that PUSHES a history entry
+         and carries an empty query string, desyncing the box from the results
+         after Back. #}
       <form class="filter-section dashboard-filter" method="get" action="{{ url_for('history') }}"
             id="historyFilters"
             hx-get="{{ url_for('history') }}"
             hx-target="#historyResults"
             hx-swap="innerHTML"
-            hx-trigger="change, input changed delay:400ms from:#historySearch, search from:#historySearch, historyRefresh"
+            hx-trigger="change, input changed delay:400ms from:#historySearch, search from:#historySearch, historyRefresh, submit"
             hx-sync="#historyResults:replace"
             hx-indicator="#historyResults"
             hx-replace-url="true">

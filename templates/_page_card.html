@@ -21,13 +21,20 @@
 
    request.path rather than url_for(...): one partial, three endpoints
    (/top-songs, /top-artists, /top-albums), and the form always posts back to
-   the page it is on. #}
+   the page it is on.
+
+   `submit` in hx-trigger is load-bearing: it is what makes htmx register a
+   submit listener on this form at all, which is what lets the vendored
+   htmx's shouldCancel suppress the browser's OWN submission. Without it,
+   Enter in #searchQuery (the only enabled text field) falls through to a
+   native form submit - a full navigation that PUSHES a history entry and
+   carries an empty query string. #}
 {% set customActive = interval == 'custom' or (customStart and customEnd) %}
 <form class="filter-section" id="topListFilters" method="get" action="{{ request.path }}"
       hx-get="{{ request.path }}"
       hx-target="#topListResults"
       hx-swap="innerHTML"
-      hx-trigger="change, input changed delay:400ms from:#searchQuery, search from:#searchQuery"
+      hx-trigger="change, input changed delay:400ms from:#searchQuery, search from:#searchQuery, submit"
       hx-sync="#topListResults:replace"
       hx-indicator="#topListResults"
       hx-replace-url="true">

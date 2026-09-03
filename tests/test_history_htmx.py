@@ -195,6 +195,20 @@ class TestShell(HistoryHtmxTestCase):
         self.assertIn("hx-sync=", body)
         self.assertIn(":replace", body)
 
+    def test_enter_in_the_search_box_is_handled_by_htmx_not_a_native_submit(self):
+        """Without `submit` in hx-trigger, htmx never registers a submit
+        listener on the form, so pressing Enter in #historySearch (the only
+        enabled text field) falls through to the browser's native submission:
+        a full navigation that PUSHES a history entry and carries an empty
+        query string, desyncing the box from the results after Back. The
+        vendored htmx's shouldCancel only suppresses that native submit for a
+        trigger it is actually listening for."""
+        body = self._loggedInShell()
+
+        trigger = body[body.index('hx-trigger="') + len('hx-trigger="'):]
+        trigger = trigger[:trigger.index('"')]
+        self.assertIn("submit", [part.strip() for part in trigger.split(",")])
+
     def test_every_swap_dims_the_list_while_it_loads(self):
         """The indicator has to sit on the container, not only on the filter
         form: a boosted pagination link would otherwise mark ITSELF as busy and

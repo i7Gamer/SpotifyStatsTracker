@@ -182,6 +182,21 @@ class TestShell(TopListHtmxTestCase):
             with self.subTest(path=path):
                 self.assertIn('hx-trigger="load"', self._shell(path))
 
+    def test_enter_in_the_search_box_is_handled_by_htmx_not_a_native_submit(self):
+        """Without `submit` in hx-trigger, htmx never listens for the form's
+        submit event, so Enter in #searchQuery (the only enabled text field)
+        falls through to the browser's native submission: a full navigation
+        that PUSHES a history entry and carries an empty query string. The
+        vendored htmx's shouldCancel only suppresses that native submit for a
+        trigger it is actually listening for."""
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                body = self._shell(path)
+
+                trigger = body[body.index('hx-trigger="') + len('hx-trigger="'):]
+                trigger = trigger[:trigger.index('"')]
+                self.assertIn("submit", [part.strip() for part in trigger.split(",")])
+
     def test_the_first_load_url_holds_no_unvalidated_input(self):
         """interval used to reach the template and the pagination links raw -
         the DATA was always safe (_getDateRange coerces junk), but a stale URL
