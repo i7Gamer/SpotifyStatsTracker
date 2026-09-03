@@ -55,7 +55,11 @@
 
     <div style="margin-top: 2rem; padding: 1rem 1.5rem; background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
       <div>
-        <strong style="font-size: 1.1rem; color: var(--accent);" id="previewCount">0 tracks match selection</strong>
+        {# A live region: playlists.js rewrites this on every tag toggle, and
+           it is the only feedback the filters give. Polite, not assertive - it
+           changes on each toggle and must not interrupt mid-word. #}
+        <strong style="font-size: 1.1rem; color: var(--accent);" id="previewCount"
+                role="status" aria-live="polite">0 tracks match selection</strong>
         {# id (2026-09-02 review, UT-18): static/js/playlists.js's
            updatePreview hides this once a selection exists and shows it again
            once it's empty, the same way it already owns previewCount and

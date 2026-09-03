@@ -58,7 +58,12 @@
           Ready to import
         {% endif %}
       </p>
-      <progress id="progress-bar" value="{{ importProgress.percentage or 0 }}" max="100"></progress>
+      {# Named by the message above it: a bare <progress> is announced as
+         "progress bar" with no idea what it measures, and the sentence that
+         gives it meaning is the <p> this points at (which import-progress.js
+         keeps current in step with the value). #}
+      <progress id="progress-bar" aria-labelledby="progress-message"
+                value="{{ importProgress.percentage or 0 }}" max="100"></progress>
     </div>
   </section>
 
