@@ -34,13 +34,6 @@ _RUNTIME_SET_VARIABLES = {
     "--embed-max-height": "static/js/play-embed.js (container.style.setProperty)",
     "--topbar-current-height": "static/js/layout-chrome.js (documentElement.style.setProperty)",
     "--weeks": "templates/tracks.html (inline style=\"--weeks: ...\")",
-    # A pre-existing bug distinct from WP-5 (2026-09-02 review): three admin
-    # input rules (style.css ~4978, ~5060, ~5070) read --card-bg, which is
-    # declared nowhere - .stats-card hit the same bug once already and was
-    # moved onto --surface (see the comment there). Left alone here rather
-    # than folded into this fix: it is a different set of call sites than the
-    # ones WP-5 named, so fixing it is a separate change.
-    "--card-bg": "static/css/style.css ~4978/~5060/~5070 (undefined; pre-existing, tracked separately)",
 }
 
 

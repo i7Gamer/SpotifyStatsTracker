@@ -4116,7 +4116,7 @@ html.theme-red {
   align-items: center;
   gap: 20px;
   padding: 24px;
-  /* Was var(--card-bg), which is defined nowhere - the cards rendered with no
+  /* Was the undefined --card-bg token - the cards rendered with no
      background at all. Use the same surface token every other card uses. */
   background: var(--surface);
   border: 1px solid var(--glass-border);
@@ -4975,7 +4975,9 @@ html.theme-red {
   width: 5.5rem;
   padding: 6px 10px;
   font-size: 1.05rem;
-  background: var(--card-bg, #1e1e1e);
+  /* Was the undefined --card-bg token - see .stats-card above for the same
+     bug. --surface is the token every other card background uses. */
+  background: var(--surface);
   color: var(--fg, #eee);
   border: 1px solid var(--border, #444);
   border-radius: 10px;   /* the app's control radius, not its own 4px */
@@ -5057,7 +5059,9 @@ html.theme-red {
 .admin-text-input {
   width: 12rem;
   padding: 4px 8px;
-  background: var(--card-bg, #1e1e1e);
+  /* Was the undefined --card-bg token - see .stats-card above for the same
+     bug. --surface is the token every other card background uses. */
+  background: var(--surface);
   color: var(--fg, #eee);
   border: 1px solid var(--border, #444);
   border-radius: 4px;
@@ -5067,7 +5071,9 @@ html.theme-red {
   width: 9rem;
   max-width: 100%;
   padding: 4px 8px;
-  background: var(--card-bg, #1e1e1e);
+  /* Was the undefined --card-bg token - see .stats-card above for the same
+     bug. --surface is the token every other card background uses. */
+  background: var(--surface);
   color: var(--fg, #eee);
   border: 1px solid var(--border, #444);
   border-radius: 4px;
