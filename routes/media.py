@@ -16,6 +16,7 @@ from flask import make_response, session, send_from_directory
 from config import IMAGE_CACHE_CONTROL, IMAGE_CACHE_MAX_AGE_SECONDS
 from Database.database import Database
 from Database.db import SPOTIFY_TRACK_ID_LENGTH
+from Database.media_fetch import STORED_IMAGE_EXTENSION
 from Database.repository import IMAGE_KIND_ARTIST, IMAGE_KIND_TRACK
 
 # What a Spotify entity id looks like - every kind shares the track id's shape
@@ -61,8 +62,19 @@ def register(app, dashboard):
     def _imageIdFromFilename(filename):
         """The `<imageId>` of an `<imageId>.jpeg` filename, or None for
         anything else - the ids are alphanumeric, so a stem that is not one
-        names no image and must reach neither the images table nor a fetch."""
-        stem, _extension = os.path.splitext(filename)
+        names no image and must reach neither the images table nor a fetch.
+
+        The EXTENSION is checked too, which it used to claim to do and did not:
+        splitext threw it away and only the stem was validated, so `<id>.png`
+        yielded a real id for a path that can never exist (everything is stored
+        as STORED_IMAGE_EXTENSION - see Database/media_fetch.py). The
+        missing-file heal below then fired on every such request, deleting a
+        healthy 'ok' row and, on the artist route, spending a Spotify catalog
+        lookup and a CDN download from the process-wide budget to re-fetch a
+        file that was already correct."""
+        stem, extension = os.path.splitext(filename)
+        if extension != STORED_IMAGE_EXTENSION:
+            return None
         return stem if stem.isalnum() else None
 
     def _forgetMissingImage(username, imageId, kind):

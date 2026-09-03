@@ -163,6 +163,37 @@ class TestMissingImageHealsOnView(AppTestCase):
         self.assertEqual(self.db.repo.imageStatus(_ALBUM_ID, IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
         self.db._imageDownloadExecutor.submit.assert_not_called()
 
+    def test_a_non_jpeg_extension_neither_forgets_a_healthy_row_nor_refetches(self):
+        """The heal tested the file the CLIENT asked for, while the download
+        pipeline only ever writes <id>.jpeg (Database/media_fetch.py). So any
+        other extension named a path that could never exist: every such request
+        deleted a perfectly good 'ok' row, re-claimed it, and spent a Spotify
+        artist lookup plus a CDN download re-fetching a file already on disk.
+
+        _imageIdFromFilename's docstring said it answered None for "anything
+        else", but splitext threw the extension away and only checked the stem.
+        Looping one real artist id through this cost one catalog lookup per
+        request from the PROCESS-WIDE Spotify budget that every user's listener
+        and backfiller share."""
+        (self.artistsDir / f"{_ARTIST_ID}.jpeg").write_bytes(_PNG)
+        self.db.repo.markImageStatus(_ARTIST_ID, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+
+        response = self._get(f"/img/alice/artists/{_ARTIST_ID}.png")
+
+        self.assertEqual(response.status_code, 404)   #< no such file, and none is fetched for it
+        self.assertEqual(self.db.repo.imageStatus(_ARTIST_ID, IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+        self.db._imageDownloadExecutor.submit.assert_not_called()
+
+    def test_a_non_jpeg_track_request_does_not_forget_a_healthy_row(self):
+        """The cover twin of the above: no route-side fetch here, but the
+        forgotten row made the listener's next saveTrackImg re-download it."""
+        (self.tracksDir / f"{_ALBUM_ID}.jpeg").write_bytes(_PNG)
+        self.db.repo.markImageStatus(_ALBUM_ID, IMAGE_KIND_TRACK, IMAGE_STATUS_OK)
+
+        self.assertEqual(self._get(f"/img/alice/tracks/{_ALBUM_ID}.png").status_code, 404)
+
+        self.assertEqual(self.db.repo.imageStatus(_ALBUM_ID, IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
+
     def test_a_pending_row_without_its_file_is_left_to_its_claimer(self):
         """A pending row may be a download mid-write - forgetting it would let
         a second claim race the first onto the same file."""

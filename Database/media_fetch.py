@@ -27,6 +27,14 @@ from Database.dbmodule import dbmod as _dbmod
 # balloon a worker thread's footprint.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
+# Every stored image is normalized to JPEG under `<imgId>.jpeg` (see the save
+# below), so this is the ONLY extension that can name a file on disk. Exported
+# because the serving routes have to agree: routes/media.py used to derive the
+# image id with splitext and keep whatever stem it found, which made
+# `<id>.png` a request for a path that could never exist - and its
+# missing-file heal then deleted a healthy row and re-fetched on every hit.
+STORED_IMAGE_EXTENSION = ".jpeg"
+
 # Bounds both outbound requests below - the CDN image download and the Web API
 # artist lookup. Each runs on a background image thread and has a fallback
 # behind it (the cookie client, or a later retry through the pending claim), so
@@ -166,7 +174,7 @@ class MediaFetchMixin:
             # imagePath.exists() BEFORE it consults the download status, so that
             # broken file would be served forever and never re-fetched. Same
             # .partial + os.replace shape the database backup uses.
-            finalPath = path / f"{imgId}.jpeg"
+            finalPath = path / f"{imgId}{STORED_IMAGE_EXTENSION}"
             partialPath = finalPath.with_suffix(".partial")
             try:
                 img.save(partialPath, format="JPEG")
