@@ -31,12 +31,17 @@
             <div class="now-playing-progress"><div id="nowPlayingBar" class="now-playing-bar"></div></div>
           </div>
           {# No src attribute until the now-playing JS assigns one: src=""
-             fails at parse time, firing (and burning) the one-shot onerror
-             fallback before there was ever a real cover URL to fall back
-             from. #}
+             fails at parse time, and would fire the onerror fallback before
+             there was ever a real cover URL to fall back from.
+
+             onerror itself moved to static/js/dashboard-page.js (2026-09-02
+             review, X5): the inline version nulled itself out after firing
+             once, so a SECOND failure - a different track whose art also
+             hasn't been fetched yet - showed a broken-image icon with nothing
+             left to catch it. The JS-owned handler is idempotent instead of
+             one-shot, and is armed once at init rather than burned per track. #}
           <a id="nowPlayingCoverLink" class="now-playing-cover-link" aria-label="Open the current track">
-            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover"
-                 onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
+            <img id="nowPlayingCover" class="now-playing-cover" alt="Album cover" />
           </a>
         </div>
 

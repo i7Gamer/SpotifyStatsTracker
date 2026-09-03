@@ -34,7 +34,8 @@ global.document = {
 
 const { calendarTooltipLabel, friendsStripSignature, friendsChipAnchor,
         friendsChipLink, progressPercent, progressShouldAdvance,
-        pollIsStale } = require('../static/js/dashboard-page.js');
+        pollIsStale, coverErrorShouldFallback,
+        coverSrcNeedsUpdate } = require('../static/js/dashboard-page.js');
 
 function run(name, fn) {
   try { fn(); console.log(`ok - ${name}`); }
@@ -263,6 +264,39 @@ run('a single missed poll is not worth flagging', () => {
 run('three in a row means what is on screen may be minutes old', () => {
   assert.strictEqual(pollIsStale(3), true);
   assert.strictEqual(pollIsStale(9), true);
+});
+
+// --- the now-playing cover's onerror fallback (X5, 2026-09-02 review) --------
+//
+// templates/tracks.html used to carry `onerror="this.onerror=null;this.src=
+// window.PLACEHOLDER_IMG;"` - self-nulling, so it caught exactly one failure
+// per page load. static/js/dashboard-page.js now owns an idempotent handler,
+// armed once, that these two pure decisions drive.
+
+const PLACEHOLDER = 'data:image/svg+xml,placeholder';
+
+run('a real cover that fails to load falls back to the placeholder', () => {
+  assert.strictEqual(coverErrorShouldFallback('/img/alice/tracks/t1.jpeg', PLACEHOLDER), true);
+});
+
+run('the placeholder itself failing again does not loop', () => {
+  // The old inline handler had to null itself out for exactly this case; this
+  // guard is what makes that unnecessary.
+  assert.strictEqual(coverErrorShouldFallback(PLACEHOLDER, PLACEHOLDER), false);
+});
+
+run('a second, different track failing is still caught - the handler stays armed', () => {
+  assert.strictEqual(coverErrorShouldFallback('/img/alice/tracks/t2.jpeg', PLACEHOLDER), true);
+});
+
+run('a poll for the same imageId does not ask to re-set src', () => {
+  const wanted = '/img/alice/tracks/t1.jpeg';
+  assert.strictEqual(coverSrcNeedsUpdate(wanted, wanted), false);
+});
+
+run('a poll for a new imageId does ask to re-set src', () => {
+  assert.strictEqual(
+    coverSrcNeedsUpdate('/img/alice/tracks/t1.jpeg', '/img/alice/tracks/t2.jpeg'), true);
 });
 
 // --- the deferred cards' failure handling -------------------------------------

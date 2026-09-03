@@ -91,6 +91,28 @@ function progressShouldAdvance(playing, isStale) {
   return !!playing && !playing.isPaused && !isStale;
 }
 
+// X5 (2026-09-02 review): whether the cover's onerror fallback should actually
+// reassign its src. templates/tracks.html used to null the handler out after
+// firing once (`this.onerror=null`), so a SECOND failure - a different track
+// whose art also hasn't been fetched yet - showed a broken-image icon with no
+// handler left to catch it. Owned here instead and left armed forever: this
+// guard is what keeps that idempotent rather than looping, since the
+// placeholder is a data: URI that can never itself fail to "load".
+function coverErrorShouldFallback(currentSrc, placeholderSrc) {
+  return currentSrc !== placeholderSrc;
+}
+
+// Whether a freshly polled imageId's URL differs from what the cover was last
+// TOLD to show - deliberately NOT from its current src attribute, which the
+// fallback above may have already rewritten to the placeholder. Comparing
+// against that rewritten attribute (the old code's `cover.getAttribute('src')`)
+// made a not-yet-fetched cover's URL look "new" again on every single poll,
+// since the placeholder never equals a real image URL - a fetch retried every
+// 15 seconds for as long as the track keeps playing.
+function coverSrcNeedsUpdate(wantedSrc, newSrc) {
+  return wantedSrc !== newSrc;
+}
+
 // The streak calendar tooltip's second line. Pure and exported (see the bottom
 // of this file) because the DOM code that shows it cannot be tested from here,
 // and a source-shape assertion on it proved worthless: the check looked for the
@@ -238,6 +260,16 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
   var friendsMore = document.getElementById('friendsListeningMore');
   if (!card && !friendsRow) return;   //< nothing on this page to poll for
 
+  // X5 (2026-09-02 review): owned here, once, instead of the self-nulling
+  // inline onerror templates/tracks.html used to carry - see
+  // coverErrorShouldFallback's comment for why that broke a second failure.
+  var cover = document.getElementById('nowPlayingCover');
+  if (cover) {
+    cover.onerror = function () {
+      if (coverErrorShouldFallback(this.src, window.PLACEHOLDER_IMG)) this.src = window.PLACEHOLDER_IMG;
+    };
+  }
+
   function render(np) {
     if (!card) return;   //< now-playing card absent; the strip may still poll
     if (!np || !np.name) {
@@ -304,11 +336,18 @@ document.body.addEventListener('htmx:sendError', reportDashboardFailure);
     var stateEl = document.getElementById('nowPlayingState');
     stateEl.textContent = np.isPaused ? 'Paused' : 'Playing';
     stateEl.classList.toggle('paused', !!np.isPaused);
-    var cover = document.getElementById('nowPlayingCover');
     var coverLink = document.getElementById('nowPlayingCoverLink');
     if (np.imageId) {
       var src = '/img/' + encodeURIComponent(USERNAME) + '/tracks/' + encodeURIComponent(np.imageId) + '.jpeg';
-      if (cover.getAttribute('src') !== src) cover.src = src;
+      //< dataset.wanted, not the src attribute: the onerror fallback above may
+      //  have already rewritten that to the placeholder, and comparing against
+      //  the rewritten value made a not-yet-fetched cover re-request itself
+      //  every 15s poll for as long as the track keeps playing (see
+      //  coverSrcNeedsUpdate's comment).
+      if (coverSrcNeedsUpdate(cover.dataset.wanted, src)) {
+        cover.dataset.wanted = src;
+        cover.src = src;
+      }
       cover.style.display = '';
       if (coverLink) coverLink.style.display = '';
     } else {
@@ -671,5 +710,7 @@ if (typeof module !== 'undefined' && module.exports) {
     progressPercent: progressPercent,
     progressShouldAdvance: progressShouldAdvance,
     pollIsStale: pollIsStale,
+    coverErrorShouldFallback: coverErrorShouldFallback,
+    coverSrcNeedsUpdate: coverSrcNeedsUpdate,
   };
 }
