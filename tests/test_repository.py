@@ -2907,6 +2907,31 @@ class TestUserSettings(RepositoryTestCase):
         self.repo.updateUserSettings("alice", "month", "Europe/London", hide_tags_panel=False)
         self.assertFalse(self.repo.getUserSettings("alice")["hide_tags_panel"])
 
+    def test_an_omitted_dashboard_window_is_left_alone(self):
+        """save_preferences documents None as "never submitted, leave it
+        alone" for BOTH selects, and updateUserSettings implemented it for
+        default_top_list_window only - the dashboard one went straight into
+        the UPDATE against a nullable column, so a form that omitted it stored
+        NULL and every page silently fell back to "Yesterday" (2026-09-03
+        review, L5)."""
+        self.repo.updateUserSettings("alice", "month", "Europe/London")
+
+        self.repo.updateUserSettings("alice", None, "Europe/London")
+
+        self.assertEqual(self.repo.getUserSettings("alice")["default_dashboard_window"], "month")
+
+    def test_an_omitted_dashboard_window_still_saves_the_rest(self):
+        """"Leave it alone" must not mean "skip the write" - the other fields
+        in the same call are what the caller is actually saving."""
+        self.repo.updateUserSettings("alice", "month", None)
+
+        self.repo.updateUserSettings("alice", None, "Asia/Tokyo", hide_tags_panel=True)
+
+        settings = self.repo.getUserSettings("alice")
+        self.assertEqual(settings["default_dashboard_window"], "month")
+        self.assertEqual(settings["timezone"], "Asia/Tokyo")
+        self.assertTrue(settings["hide_tags_panel"])
+
     def test_settings_scoped_per_user(self):
         self.repo.upsertUser("bob", "bob@example.com")
         self.repo.updateUserSettings("alice", "week", "Asia/Tokyo", hide_tags_panel=True)

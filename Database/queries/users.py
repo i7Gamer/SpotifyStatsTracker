@@ -435,7 +435,7 @@ class UserQueries:
                 "default_top_list_window": TOP_LIST_DEFAULT_WINDOW, "timezone": None,
                 "hide_tags_panel": False, "hide_now_playing": False}
 
-    def updateUserSettings(self, username: str, default_dashboard_window: str, timezone: str | None,
+    def updateUserSettings(self, username: str, default_dashboard_window: str | None, timezone: str | None,
                            hide_tags_panel: bool = False, hide_now_playing: bool = False,
                            default_top_list_window: str | None = None) -> None:
         conn = self._conn()
@@ -448,6 +448,13 @@ class UserQueries:
         # their _present markers - see routes/auth.py's save_preferences.
         if default_top_list_window is None:
             default_top_list_window = previous["default_top_list_window"]
+        # The same rule for the window beside it, which save_preferences'
+        # comment already claims ("None (never submitted) means leave it alone")
+        # and only the top-list one implemented. The column is nullable, so a
+        # form that omitted the select stored NULL and every page fell back to
+        # "Yesterday" - silently, since nothing reads a NULL here as an error.
+        if default_dashboard_window is None:
+            default_dashboard_window = previous["default_dashboard_window"]
         with conn:
             conn.execute(
                 "UPDATE users SET default_dashboard_window=?, default_top_list_window=?, timezone=?, "
