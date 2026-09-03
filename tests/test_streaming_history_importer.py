@@ -1243,6 +1243,63 @@ class TestMusicoletSyntheticTimestampsAreDeterministic(unittest.TestCase):
         self.assertEqual(len(set(laterRun)), 5)
 
 
+class TestMusicoletSubSecondDurationsKeepTheirPlays(unittest.TestCase):
+    """A Musicolet row's synthetic clock advanced by the track's own DURATION_MS,
+    and the stamp is serialised with second resolution
+    (strftime("%Y-%m-%d %H:%M:%S")). Any row under one second therefore produced
+    repeated (track, played_at) pairs, and insertPlay treats a repeat as an
+    already-stored play - so PLAY_COUNT=N collapsed to fewer than N plays,
+    counted by no drop stat and invisible to _guardStagedDrops.
+
+    DURATION_MS=0 was the total case (all N on one stamp); 1..999 lost a
+    fraction. 2026-09-03 review, L8."""
+
+    def _run(self, durationMs, playCount):
+        csvData = (
+            "FILE_PATH,TITLE,ARTIST,ALBUM,ALBUM_ARTIST,COMPOSER,GENRE,YEAR,DURATION_MS,PLAY_COUNT\n"
+            f"/music/song.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,{durationMs},{playCount}\n"
+        )
+        rows = csvData.splitlines()[1:]
+        importer = Importer()
+        importer.sp = MagicMock()
+        importer.sp.search.return_value = {"tracks": {"items": [FAKE_TRACK]}}
+        tracks = list(importer.importMusicoletCSVExport(rows, known=[], progressCallback=None))
+        return [t["playedAt"] for t in tracks]
+
+    def test_a_zero_duration_row_keeps_every_play(self):
+        stamps = self._run(0, 3)
+
+        self.assertEqual(len(stamps), 3)
+        self.assertEqual(len(set(stamps)), 3)
+
+    def test_a_sub_second_duration_row_keeps_every_play(self):
+        """The half-second case: it used to yield two distinct stamps for three
+        plays, which is the same defect one notch less obvious."""
+        stamps = self._run(500, 3)
+
+        self.assertEqual(len(set(stamps)), 3)
+
+    def test_a_normal_duration_row_is_spaced_exactly_as_before(self):
+        """The negative control that keeps the re-import no-op intact: a real
+        track duration already exceeds the floor, so its expansion must be
+        byte-for-byte what it always was - the anchor, then +duration each."""
+        stamps = self._run(200000, 3)
+
+        #< offsets rather than absolutes: playedAt is an epoch second, so the
+        #  absolute value carries the app timezone and the spacing is what
+        #  this test is about
+        self.assertEqual([s - stamps[0] for s in stamps], [0, 200, 400])
+
+    def test_the_floor_is_the_serialised_resolution(self):
+        """The constant is not arbitrary: a floor below one second serialises to
+        the same string and would leave the collapse in place."""
+        self.assertEqual(Importer.MUSICOLET_MIN_PLAY_SPACING_MS, 1000)
+
+    def test_a_zero_duration_row_is_still_deterministic_across_runs(self):
+        """The anchor contract still holds for the rows this changes: the same
+        file twice yields the same stamps, so a re-import still dedupes."""
+        self.assertEqual(self._run(0, 4), self._run(0, 4))
+
 def makeRestrictedTrack(artistName="Various Artists", artistId="0LyfQWJT6nXafLPZqxe9Of", albumName=""):
     """Raw meta shape Spotify returns for region-restricted tracks: real track and
     album ids, but blanked name/duration and the generic Various Artists profile."""

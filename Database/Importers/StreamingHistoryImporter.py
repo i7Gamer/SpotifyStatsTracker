@@ -768,6 +768,17 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
     # of fake plays every time. An updated file with a higher play count for a
     # track only adds the new tail of plays.
     MUSICOLET_SYNTHETIC_TIME_ANCHOR = datetime.datetime(2000, 1, 1)
+    # Floor on how far the synthetic clock advances between two plays of the
+    # same row. Tied to the SERIALISED resolution, not chosen for taste: the
+    # stamp below is formatted "%Y-%m-%d %H:%M:%S" and stored as an epoch
+    # SECOND, so any smaller advance produces the identical (track, played_at)
+    # pair - which insertPlay reads as a play it already holds and silently
+    # discards, counted by no drop stat and therefore invisible to
+    # _guardStagedDrops. A row with DURATION_MS=0 lost every play but the
+    # first; 1..999 lost a fraction. A real track duration is minutes, so this
+    # floor never binds on a well-formed row and their expansion - and the
+    # re-import no-op the anchor above exists for - is unchanged.
+    MUSICOLET_MIN_PLAY_SPACING_MS = 1000
     # Ceiling on how many synthetic plays ONE Musicolet file may expand into.
     # PLAY_COUNT is an amplifier - one tuple is materialised per play - so a
     # ~60-byte row claiming 50 million plays costs ~4GB, in the process every
@@ -857,7 +868,8 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
                         timePlayed,
                         albumName
                     ))
-                    trackTime += datetime.timedelta(milliseconds=timePlayed)
+                    trackTime += datetime.timedelta(
+                        milliseconds=max(timePlayed, self.MUSICOLET_MIN_PLAY_SPACING_MS))
 
             except (IndexError, ValueError) as e:
                 # entriesSeen too, not just the drop: the all-unreadable guard
