@@ -215,13 +215,26 @@ class TestAReDecisionDropsTheCarry(ManualRestoreTestCase):
         self._reHomedHandMerge(db)
 
         db.repo.unmergeTrack(HAND, decidedBy="timorzipa")
-        db.repo.unmergeAllIsrcMerges()
 
-        #< taken out by hand and it stays out: the revert must not resurrect it
-        self.assertIsNone(self._canonical(db, HAND))
+        #< asserted HERE, before any revert: the revert clears every carry as
+        #  its last step, so checking afterwards cannot tell whether the split
+        #  dropped it or the revert did - and a split that leaves one behind
+        #  leaves the row claiming the matcher moved a verdict that no longer
+        #  points anywhere
         decision = self._decision(db, HAND)
         self.assertEqual(decision["reason"], "manual-split")
         self.assertIsNone(decision["carried_canonical_id"])
+
+    def test_a_split_track_is_not_resurrected_by_a_later_revert(self):
+        db = self._db()
+        self._reHomedHandMerge(db)
+        db.repo.unmergeTrack(HAND, decidedBy="timorzipa")
+
+        db.repo.unmergeAllIsrcMerges()
+
+        #< taken out by hand and it stays out
+        self.assertIsNone(self._canonical(db, HAND))
+        self._assertNoChains(db)
 
     def test_two_hand_merges_in_one_group_still_revert_without_a_chain(self):
         """The shape the clearing rule exists for, driven end to end."""

@@ -229,6 +229,27 @@ class TestAMergeRequeuesTheNewCanonical(GenreQueueTestCase):
 
         self.assertIsNotNone(self._attempted(db, ALBUM_CUT))
 
+    def test_a_settled_group_is_not_requeued_again_the_next_day(self):
+        """The matcher runs daily. A canonical that is genuinely tag-less
+        everywhere can never satisfy the own-rows test, so requeuing on every
+        pass rather than only when the group MOVED would re-look-it-up every
+        day forever - against a shared Last.fm rate limiter, for an answer that
+        has not changed."""
+        db = self._db(merged=False)
+        conn = db.repo._conn()
+        with conn:
+            conn.execute("UPDATE tracks SET isrc='ISRC00000001'")
+        db.repo.markTracksLastfmAttempted([SINGLE, ALBUM_CUT])
+        db.repo.mergeTracksByIsrc()
+        #< the backfiller answers: definitively tag-less, so it marks and
+        #  stores nothing - exactly the state that can never clear itself
+        db.repo.markTracksLastfmAttempted([ALBUM_CUT])
+        stamp = self._attempted(db, ALBUM_CUT)
+
+        db.repo.mergeTracksByIsrc()   #< the next day's pass; nothing to do
+
+        self.assertEqual(self._attempted(db, ALBUM_CUT), stamp)
+
     def test_a_manual_merge_requeues_its_target_too(self):
         db = self._db(merged=False)
         db.repo.markTracksLastfmAttempted([SINGLE, ALBUM_CUT])
