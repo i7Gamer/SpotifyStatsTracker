@@ -99,8 +99,16 @@ function loadWrapped(options) {
   };
   global.document = {
     documentElement: { className: options.theme || 'theme-rose' },
+    title: options.title || '2026 Wrapped - Spotify Tracker',
     addEventListener(type, fn) { calls.docListeners[type] = fn; },
-    body: { addEventListener(type, fn) { calls.bodyListeners[type] = fn; } },
+    //< multiple listeners for one event type, like the real DOM allows -
+    //  wrapped.js registers two separate htmx:afterSwap handlers, and a
+    //  single-slot stub would silently drop the first
+    body: {
+      addEventListener(type, fn) {
+        (calls.bodyListeners[type] = calls.bodyListeners[type] || []).push(fn);
+      },
+    },
     getElementById(id) { return elements[id] || null; },
     querySelector(selector) {
       const match = /\.stats-filter-button\[data-filter="(.*)"\]/.exec(selector);
@@ -144,8 +152,15 @@ function loadWrapped(options) {
   return calls;
 }
 
+// document.body can carry more than one listener per event type (wrapped.js
+// registers two separate htmx:afterSwap handlers) - fire every one of them,
+// the way the real DOM would.
+function fireBody(page, type, evt) {
+  (page.bodyListeners[type] || []).forEach((fn) => fn(evt));
+}
+
 function clickOn(page, node) {
-  page.bodyListeners.click({ target: { closest: (sel) => (node.selectors || []).includes(sel) ? node : null } });
+  fireBody(page, 'click', { target: { closest: (sel) => (node.selectors || []).includes(sel) ? node : null } });
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -234,7 +249,7 @@ run('the chosen category survives a swap, instead of bouncing back to All', () =
   dom.songs.selectors = ['.stats-filter-button'];
   clickOn(dom.page, dom.songs);
 
-  dom.page.bodyListeners['htmx:afterSwap']({ target: { id: 'wrappedResults' } });
+  fireBody(dom.page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
 
   assert.strictEqual(dom.songs.classList.contains('active'), true,
                      'the server has no idea which category is open - this file remembers');
@@ -249,7 +264,7 @@ run('a swap of the recap reloads the data and redraws once', () => {
   });
   const before = page.charts;
 
-  page.bodyListeners['htmx:afterSwap']({ target: { id: 'wrappedResults' } });
+  fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
 
   assert.strictEqual(page.charts, before + 1);
 });
@@ -260,9 +275,38 @@ run('an out-of-band region swapping does not redraw the chart again', () => {
   });
   const before = page.charts;
 
-  page.bodyListeners['htmx:afterSwap']({ target: { id: 'shareLinkPanel' } });
+  fireBody(page, 'htmx:afterSwap', { target: { id: 'shareLinkPanel' } });
 
   assert.strictEqual(page.charts, before, 'four OOB regions would otherwise redraw it four times');
+});
+
+// UT-7: document.title stayed on the year the page first loaded with. The
+// hero and the hidden year field both swap out of band on a year switch (see
+// _wrapped_hero.html / _wrapped_year_field.html) - OUTSIDE #wrappedResults -
+// so this is a second htmx:afterSwap listener, not a branch of the one above.
+
+run('a year switch updates document.title, keeping the server\'s suffix', () => {
+  const page = loadWrapped({ title: '2026 Wrapped - Spotify Tracker' });
+
+  fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedYearField', value: '2025' } });
+
+  assert.strictEqual(global.document.title, '2025 Wrapped - Spotify Tracker');
+});
+
+run('a self-hosted rename of the base title still tracks, nothing hardcoded', () => {
+  const page = loadWrapped({ title: '2026 Wrapped - My Own Instance' });
+
+  fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedYearField', value: '2019' } });
+
+  assert.strictEqual(global.document.title, '2019 Wrapped - My Own Instance');
+});
+
+run('the main results swap does not touch the title - it never carries the year field', () => {
+  const page = loadWrapped({ title: '2026 Wrapped - Spotify Tracker' });
+
+  fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
+
+  assert.strictEqual(global.document.title, '2026 Wrapped - Spotify Tracker');
 });
 
 run('the wrapped form prunes its empty params, and nothing else does', () => {
@@ -270,8 +314,8 @@ run('the wrapped form prunes its empty params, and nothing else does', () => {
   const mine = { groupBy: '' };
   const theirs = { groupBy: '' };
 
-  page.bodyListeners['htmx:configRequest']({ detail: { elt: { id: 'wrappedFilters' }, parameters: mine } });
-  page.bodyListeners['htmx:configRequest']({ detail: { elt: { id: 'somethingElse' }, parameters: theirs } });
+  fireBody(page, 'htmx:configRequest', { detail: { elt: { id: 'wrappedFilters' }, parameters: mine } });
+  fireBody(page, 'htmx:configRequest', { detail: { elt: { id: 'somethingElse' }, parameters: theirs } });
 
   assert.deepStrictEqual(page.pruned, [mine]);
 });

@@ -55,6 +55,12 @@ var SHARE_LINK_REVOKE_CONFIRM = 'Revoke this link? Anyone who has it will be ref
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
 
+  //< everything after the year in the title the server already rendered
+  //  ("{{ year }} Wrapped - Spotify Tracker" - templates/wrapped.html's title
+  //  block), derived rather than hardcoding "Spotify Tracker" a second time so
+  //  a renamed base title (layout.html) still matches
+  var WRAPPED_TITLE_SUFFIX = document.title.replace(/^\d+/, '');
+
   // --- the chart -------------------------------------------------------------
 
   // The time series is server-rendered into a JSON data island inside the swap
@@ -414,6 +420,18 @@ if (typeof document !== 'undefined') {
     //< cover-art fade-ins are handled once for the whole app in
     //  static/js/chrome-common.js, which already owned this behaviour and now
     //  re-runs its sweep on htmx:afterSwap
+  });
+
+  // document.title stayed on whatever year the page first loaded with: a year
+  // switch swaps the hero (its <h1>) and this hidden field out of band - both
+  // sit OUTSIDE #wrappedResults (see _wrapped_hero.html and
+  // _wrapped_year_field.html), so neither reaches the listener above, which is
+  // deliberately scoped to the main results swap only. The field, not the h1
+  // text: its value IS the plain year, with nothing to parse back out of
+  // "Your 2025 Wrapped" / "{name}'s 2025 Wrapped".
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    if (evt.target.id !== 'wrappedYearField') return;
+    document.title = evt.target.value + WRAPPED_TITLE_SUFFIX;
   });
 
   // A genuine failure gets the shared inline error + Retry rather than a page
