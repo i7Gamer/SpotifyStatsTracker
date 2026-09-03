@@ -102,11 +102,9 @@
      one wasted round trip per unfetched cover, 50 on a 50-card /history page.
      Skip the request entirely and go straight to the placeholder; onerror
      stays for the case a NON-empty imgId's file is missing or corrupt.
-     Same literal as window.PLACEHOLDER_IMG (templates/layout.html /
-     layout_public.html) - duplicated here rather than centralised through a
-     new context processor, which would touch layout.html (out of scope for
-     this pass - see 2026-09-02 review, UT-13). #}
-  {% set placeholderImgDataUri = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='16' fill='%231d1d1d'/><path d='M62 24v34.8a12 12 0 1 0 6 10.4V36l10-3v-9l-16 4z' fill='%23555'/></svg>" %}
+     placeholderImgDataUri comes from dashboard/context_processors.py's
+     _injectPlaceholderImage, the same value window.PLACEHOLDER_IMG below
+     is built from (config.py's PLACEHOLDER_IMG_DATA_URI). #}
   <img class="track-cover" loading="lazy" src="{{ (imageBase + '/' + imgFolder + '/' + imgId + '.jpeg') if imgId else placeholderImgDataUri }}" alt="{{ imgAlt }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
   {% if linkableId or externalUrl %}
     </a>

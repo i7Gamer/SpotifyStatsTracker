@@ -34,6 +34,7 @@ EXPECTED_CONTEXT_KEYS = frozenset({
     "minPasswordLength",
     "SYNTHETIC_FALLBACK_REASON", "RESTRICTED_FALLBACK_REASON",
     "MAX_INLINE_ARTISTS", "MIN_HIDDEN_ARTISTS",
+    "placeholderImgDataUri",
     "isAdmin",
     "registration_enabled", "share_links_enabled", "artist_bio_enabled",
     "album_bio_enabled", "lastfm_genre_enabled", "tags_enabled",

@@ -22,7 +22,7 @@ from flask import g, session
 from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 from config import (
     PASSWORD_MIN_LENGTH, MAX_INLINE_ARTISTS, MIN_HIDDEN_ARTISTS,
-    SPOTIFY_CALLBACK_URL_ENV_VAR,
+    PLACEHOLDER_IMG_DATA_URI, SPOTIFY_CALLBACK_URL_ENV_VAR,
 )
 
 #< where _memoizedSetting parks a toggle on g, kept apart from the bare
@@ -80,6 +80,15 @@ def register(app, dashboard) -> None:
             "MAX_INLINE_ARTISTS": MAX_INLINE_ARTISTS,
             "MIN_HIDDEN_ARTISTS": MIN_HIDDEN_ARTISTS,
         }
+
+    @app.context_processor
+    def _injectPlaceholderImage():
+        # Single-sources the placeholder cover/artist-image data URI (see
+        # config.py's PLACEHOLDER_IMG_DATA_URI) so layout.html/
+        # layout_public.html's window.PLACEHOLDER_IMG and _track_card.html's
+        # inline fallback src read the same literal instead of three
+        # hand-kept copies.
+        return {"placeholderImgDataUri": PLACEHOLDER_IMG_DATA_URI}
 
     @app.context_processor
     def _injectAdminStatus():

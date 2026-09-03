@@ -84,6 +84,17 @@ MAX_TREND_BUCKETS = 10_000
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MAX_INLINE_ARTISTS = 5   #< artist lists longer than this collapse behind a "+N more" toggle (_artist_links.html)...
 MIN_HIDDEN_ARTISTS = 2   #< ...but only when at least this many names would be hidden - "+1 more" saves no space
+# Shown in place of a track/artist/album cover that 404s or fails to load
+# (not yet downloaded, or the fetch failed) instead of a broken-image icon -
+# a plain music-note glyph on the app's surface color. Exposed to templates
+# via dashboard/context_processors.py so layout.html/layout_public.html's
+# window.PLACEHOLDER_IMG and _track_card.html's inline fallback src share one
+# literal instead of three hand-kept copies.
+PLACEHOLDER_IMG_DATA_URI = (
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+    "<rect width='100' height='100' rx='16' fill='%231d1d1d'/>"
+    "<path d='M62 24v34.8a12 12 0 1 0 6 10.4V36l10-3v-9l-16 4z' fill='%23555'/></svg>"
+)
 MAX_UPLOAD_MB = 500              #< cap on a single import-history request's total upload size
 # Unit conversions, named so the ladders that format a byte count or split
 # an hour total into days read as units rather than as bare powers of two.
