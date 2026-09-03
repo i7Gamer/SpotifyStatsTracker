@@ -368,6 +368,65 @@ class TestWrappedSortBy(_WrappedRouteTestBase):
         self.assertIn(b'<option value="plays" selected>Number of Plays</option>', resp.data)
 
 
+class TestWrappedExportTopItems(_WrappedRouteTestBase):
+    """UT-5 (review 2026-09-02): the export button's data-topsong/
+    data-topalbum are drawn from _buildWrappedContext's exportTopSong/
+    exportTopAlbum, which must stay the most-PLAYED song/album regardless of
+    ?sortBy - not whatever sortBy happened to rank first in the on-screen
+    list (that list is what topSongs[0]/topAlbums[0] used to feed the
+    template with). A sortBy=name request whose alphabetically-first item is
+    NOT the most played pins the distinction."""
+
+    def test_export_top_song_is_most_played_not_sort_order_first(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        alphaFirst = _song("alpha", "Aardvark Song", plays=1, firstListenedAt=0)
+        mostPlayed = _song("loud", "Zebra Anthem", plays=99, firstListenedAt=0)
+
+        def getTopSongs(**kwargs):
+            return [mostPlayed] if kwargs.get("by") == "plays" else [alphaFirst]
+        db.getTopSongs.side_effect = getTopSongs
+
+        resp = self._getWrapped(dash, db, query="?sortBy=name")
+
+        body = resp.data.decode()
+        # sortBy=name still shows the alphabetical list on the page itself...
+        self.assertIn("Aardvark Song", body)
+        # ...but the export card's hidden data must carry the top-PLAYED song.
+        self.assertIn('data-topsong="Zebra Anthem"', body)
+        self.assertNotIn('data-topsong="Aardvark Song"', body)
+
+    def test_export_top_album_is_most_played_not_sort_order_first(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        alphaFirst = _album("alpha", "Aardvark Album", plays=1, firstListenedAt=0)
+        mostPlayed = _album("loud", "Zebra Album", plays=99, firstListenedAt=0)
+
+        def getTopAlbums(**kwargs):
+            return [mostPlayed] if kwargs.get("by") == "plays" else [alphaFirst]
+        db.getTopAlbums.side_effect = getTopAlbums
+
+        resp = self._getWrapped(dash, db, query="?sortBy=name")
+
+        body = resp.data.decode()
+        self.assertIn('data-topalbum="Zebra Album"', body)
+        self.assertNotIn('data-topalbum="Aardvark Album"', body)
+
+    def test_export_top_song_matches_the_list_when_sort_by_is_plays(self):
+        """No bug when sortBy is already plays (the default) - the on-screen
+        top item and the exported one must agree, and this must not cost a
+        second db.getTopSongs call (call_args below stays the single real
+        call other TestWrappedSortBy/TestWrappedLimit tests rely on)."""
+        dash = self._makeApp()
+        db = self._makeDb()
+        db.getTopSongs.return_value = [_song("s1", "Only Song", plays=10, firstListenedAt=0)]
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertIn('data-topsong="Only Song"', resp.data.decode())
+        db.getTopSongs.assert_called_once()
+
+
 class TestWrappedDiscoveries(_WrappedRouteTestBase):
     def test_only_items_first_listened_in_the_selected_year_are_discoveries(self):
         dash = self._makeApp()

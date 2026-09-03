@@ -15,6 +15,11 @@ from config import (
     WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, WRAPPED_TOP_GENRES_LIMIT,
 )
 
+#< the export card shows exactly one top song/album (see
+#  templates/_wrapped_export_button.html), independent of the page's own
+#  list limit - the size of the dedicated plays-ranked fetch below.
+EXPORT_TOP_ITEM_COUNT = 1
+
 
 class WrappedBuilderMixin:
     """Wrapped page context builder, year/filter parsing, share-link panel args, and re-sort/discovery helpers."""
@@ -283,6 +288,14 @@ class WrappedBuilderMixin:
             topArtists = json.loads(cached["top_artists"])
             topAlbums = json.loads(cached["top_albums"])
 
+            # The export button (see templates/_wrapped_export_button.html)
+            # always shows the most-PLAYED song/album, independent of the
+            # page's own sortBy - captured here from the plays-ranked pool,
+            # before the sortBy re-sort below can reorder or [:limit] can cut
+            # it out of topSongs/topAlbums entirely (2026-09-02 review, UT-5).
+            exportTopSong = self._resortByMetric(topSongs, "plays")[0] if topSongs else None
+            exportTopAlbum = self._resortByMetric(topAlbums, "plays")[0] if topAlbums else None
+
             discoveredSongs = json.loads(cached["discovered_songs_list"])
             discoveredArtists = json.loads(cached["discovered_artists_list"])
             discoveredAlbums = json.loads(cached["discovered_albums_list"])
@@ -308,9 +321,32 @@ class WrappedBuilderMixin:
             discoveredAlbums = self._resortByMetric(discoveredAlbums, sortBy)[:limit]
         else:
             # Dynamic calculations for mocks (unit tests compatibility)
+
+            # getTopSongs/getTopAlbums push sorting AND the limit down into
+            # SQL (see Database.database.getTopSongs's docstring), so once
+            # sortBy != "plays" has limited the pool to the on-screen items,
+            # re-sorting it in Python can't recover the true most-played one
+            # - a dedicated plays-ranked, single-item fetch is the only way
+            # to get it (2026-09-02 review, UT-5). Skipped when sortBy is
+            # already "plays": the list below already starts with it.
+            if sortBy == "plays":
+                exportTopSong = exportTopAlbum = None   #< resolved from topSongs/topAlbums once fetched, below
+            else:
+                exportTopSongPool = db.getTopSongs(startDate=yearStart, endDate=yearEnd,
+                                                   by="plays", limit=EXPORT_TOP_ITEM_COUNT)
+                exportTopAlbumPool = db.getTopAlbums(startDate=yearStart, endDate=yearEnd,
+                                                     by="plays", limit=EXPORT_TOP_ITEM_COUNT)
+                exportTopSong = exportTopSongPool[0] if exportTopSongPool else None
+                exportTopAlbum = exportTopAlbumPool[0] if exportTopAlbumPool else None
+
             topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
             topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
             topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
+            if sortBy == "plays":
+                # Already plays-ranked: topSongs/topAlbums[0] IS the most-
+                # played item, so no separate fetch is needed.
+                exportTopSong = topSongs[0] if topSongs else None
+                exportTopAlbum = topAlbums[0] if topAlbums else None
             totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
 
             discoveredSongs = self._discoveriesInYear(
@@ -356,6 +392,8 @@ class WrappedBuilderMixin:
             "topSongs": topSongs,
             "topArtists": topArtists,
             "topAlbums": topAlbums,
+            "exportTopSong": exportTopSong,
+            "exportTopAlbum": exportTopAlbum,
             "discoveredSongs": discoveredSongs,
             "discoveredArtists": discoveredArtists,
             "discoveredAlbums": discoveredAlbums,

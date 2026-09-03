@@ -726,4 +726,11 @@ class TestWrappedRouteAjax(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         body = resp.data.decode()
-        self.assertLess(body.index("FewLongPlays"), body.index("ManyShortPlays"))
+        # Scoped to the results list itself: the export button (outside
+        # #wrappedResults) now also carries "ManyShortPlays" in its
+        # data-topsong, since that's the plays-ranked item independent of
+        # this request's sortBy (2026-09-02 review, UT-5) - it would
+        # otherwise appear before the sortBy-ordered list and break a
+        # whole-body ordering check that has nothing to do with it.
+        resultsStart = body.index('id="wrappedResults"')
+        self.assertLess(body.index("FewLongPlays", resultsStart), body.index("ManyShortPlays", resultsStart))
