@@ -71,6 +71,10 @@
     <p style="font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem;">Rename or delete tags across your library.</p>
     
     <table style="width: 100%; border-collapse: collapse;">
+      {# UT-19 (2026-09-02 review): eleven identical Rename/Delete buttons had
+         no accessible name, the tag cell was a plain <td> despite being each
+         row's identifying label, and the table itself had no caption. #}
+      <caption class="visually-hidden">Your tags</caption>
       <thead>
         <tr style="text-align: left; border-bottom: 1px solid var(--border-color, #444);">
           <th style="padding: 8px;">Tag</th>
@@ -81,13 +85,15 @@
       <tbody>
         {% for t in user_tags %}
         <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-          <td style="padding: 8px; font-weight: bold; color: var(--accent);">#{{ t.tag }}</td>
+          <th scope="row" style="padding: 8px; font-weight: bold; color: var(--accent); text-align: left;">#{{ t.tag }}</th>
           <td style="padding: 8px;">{{ t.count }}</td>
           <td style="padding: 8px; text-align: right; display: flex; gap: 8px; justify-content: flex-end;">
-            <button type="button" class="button button-small btn-rename-tag" data-tag="{{ t.tag }}">Rename</button>
+            <button type="button" class="button button-small btn-rename-tag" data-tag="{{ t.tag }}"
+                    aria-label="Rename #{{ t.tag }}">Rename</button>
             {# Danger tint lives in style.css, not inline: an inline background
                beats .btn-delete-tag:hover and left the button looking dead. #}
-            <button type="button" class="button button-small btn-delete-tag" data-tag="{{ t.tag }}">Delete</button>
+            <button type="button" class="button button-small btn-delete-tag" data-tag="{{ t.tag }}"
+                    aria-label="Delete #{{ t.tag }}">Delete</button>
           </td>
         </tr>
         {% endfor %}

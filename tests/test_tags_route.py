@@ -283,6 +283,47 @@ class TestTagsRoutes(_TagsRoutesBase):
         resp = self.client.get("/playlists")
         self.assertEqual(resp.status_code, 200)
 
+    def test_the_tag_manager_table_is_accessible(self):
+        """UT-19 (2026-09-02 review): 11 identical Rename/Delete buttons with
+        no accessible name, no row header, no caption - a screen reader had no
+        way to tell which of eleven identical "Rename"/"Delete" announcements
+        was focused, or that the table was about tags at all."""
+        import bs4
+        self._login()
+        self.dash.repo.addTag(self.username, "workout", "track", "t1")
+        self.dash.repo.addTag(self.username, "chill", "track", "t1")
+        self.dash.repo.commit()
+
+        resp = self.client.get("/playlists")
+        soup = bs4.BeautifulSoup(resp.get_data(as_text=True), "html.parser")
+        table = soup.find("table")
+
+        caption = table.find("caption")
+        self.assertIsNotNone(caption)
+        self.assertTrue(caption.text.strip())
+        self.assertIn("visually-hidden", caption.get("class", []))
+
+        rows = table.find("tbody").find_all("tr")
+        self.assertEqual(len(rows), 2)
+        renameLabels = set()
+        deleteLabels = set()
+        for row in rows:
+            tagHeader = row.find("th")
+            self.assertIsNotNone(tagHeader)
+            self.assertEqual(tagHeader.get("scope"), "row")
+            tagName = tagHeader.text.strip().lstrip("#")
+
+            renameBtn = row.find("button", class_="btn-rename-tag")
+            deleteBtn = row.find("button", class_="btn-delete-tag")
+            self.assertEqual(renameBtn.get("aria-label"), f"Rename #{tagName}")
+            self.assertEqual(deleteBtn.get("aria-label"), f"Delete #{tagName}")
+            renameLabels.add(renameBtn["aria-label"])
+            deleteLabels.add(deleteBtn["aria-label"])
+
+        #< a screen reader must not announce the same "Rename #x" twice
+        self.assertEqual(len(renameLabels), 2)
+        self.assertEqual(len(deleteLabels), 2)
+
     def test_nav_shows_playlists_link_by_default(self):
         self._login()
         resp = self.client.get("/profile")
