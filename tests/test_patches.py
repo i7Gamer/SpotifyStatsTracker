@@ -1293,6 +1293,50 @@ class TestPatchedGetPacket(unittest.TestCase):
 
         streamer.reconnect.assert_called_once_with()
 
+    def test_a_frame_clears_a_latched_reconnect_ceiling(self):
+        """Nothing else clears _recvReconnectFailures - patched_keep_alive
+        keeps its own local count and never touches this one - so a single
+        ~2-minute dealer outage retired the receive path for the life of the
+        streamer, while keep-alive's reconnect succeeded and frames resumed.
+        A frame arriving IS the transport proving itself."""
+        from Database.patches import WS_RECV_MAX_RECONNECT_FAILURES
+
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+        streamer._recvReconnectFailures = WS_RECV_MAX_RECONNECT_FAILURES
+
+        _getPacket(streamer)
+
+        self.assertEqual(streamer._recvReconnectFailures, 0)
+
+    def test_a_frame_after_a_latched_ceiling_restores_the_next_reconnect(self):
+        """What the latch actually cost: at each later routine hangup ("Spotify
+        hangs up the dealer cleanly about once an hour")
+        _reconnectAfterDroppedPacket returned False silently and the loop paced
+        itself 1s at a time until keep-alive's next ping noticed - up to 60s of
+        blind push, in which a track that both starts and ends is never seen."""
+        import websockets.exceptions
+        from Database.patches import WS_RECV_MAX_RECONNECT_FAILURES
+
+        streamer = _fakeStreamer(['{"type":"pong"}',
+                                  websockets.exceptions.ConnectionClosedOK(None, None)])
+        streamer._recvReconnectFailures = WS_RECV_MAX_RECONNECT_FAILURES
+
+        _getPacket(streamer)   #< keep-alive reconnected; frames are flowing again
+        with self.assertLogs("Database.patches", level="WARNING"):
+            self.assertIsNone(_getPacket(streamer))
+
+        streamer.reconnect.assert_called_once_with()
+
+    def test_an_ordinary_frame_does_not_pay_for_the_reset(self):
+        """Every pushed frame runs this path; the clear is guarded so the
+        healthy case is a read, not a write."""
+        streamer = _fakeStreamer(['{"type":"pong"}'])
+
+        with patch("Database.patches._setRecvReconnectFailures") as setter:
+            _getPacket(streamer)
+
+        setter.assert_not_called()
+
     def test_a_dead_socket_at_the_reconnect_ceiling_still_honours_the_timeout(self):
         """get_packet(timeout=X) promises "wait up to X", and _runPushLoop
         leans on it as its ONLY pacing - that loop has no sleep of its own.

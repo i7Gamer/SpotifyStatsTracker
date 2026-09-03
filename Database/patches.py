@@ -774,6 +774,17 @@ def patched_get_packet(self, timeout: float = WS_RECV_TIMEOUT_SECONDS):
                        type(e).__name__, e)
         return None
 
+    # A frame arrived, so reads work again: clear whatever a past outage left
+    # on the receive-reconnect counter. Nothing else clears it - patched_keep_alive
+    # keeps a separate local count and never touches this one - so one ~2-minute
+    # dealer outage retired this path for the life of the streamer while
+    # keep-alive's own reconnect succeeded and frames resumed. Every later
+    # routine hangup then had _reconnectAfterDroppedPacket return False in
+    # silence, leaving the loop to pace itself 1s at a time until the next ping
+    # noticed. Read-guarded: every pushed frame runs this line.
+    if getattr(self, "_recvReconnectFailures", 0):
+        _setRecvReconnectFailures(self, 0)
+
     try:
         packet = json.loads(raw)
     except Exception:
