@@ -4,7 +4,14 @@
 {# Locked-state placeholder for genre features + the overview progress card.
    Expects `coverage` in context: the sanitized dict from resolveGenreCoverage
    (song/album/artist each {covered, total, percent}, overall.percent).
-   The gate thresholds come from the jinja globals registered in app.py. #}
+   The gate thresholds come from the jinja globals registered in app.py.
+
+   Also expects `lastfmConfigured`, the instance-wide Last.fm kill switch -
+   without it, `not coverage.song.total` fires the same way whether Last.fm
+   was never configured or a working key just landed on a range with zero
+   song plays (2026-09-02 review, UT-12). Optional for back-compat: a caller
+   that omits it keeps today's behaviour (the API-key pitch on zero
+   coverage) rather than crashing. #}
 <div class="genre-progress">
   <p style="font-size: 0.9rem; color: var(--muted, #aaa); margin-bottom: 1rem;">
     Genre insights unlock once enough of {{ (username + "'s") if publicView else "your" }} listening history has genre data from Last.fm:
@@ -35,9 +42,19 @@
     Overall: <strong>{{ coverage.overall.percent }}%</strong>
   </p>
   {% if not coverage.song.total %}
-  <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
-    Add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
-  </p>
+    {% if lastfmConfigured is defined and lastfmConfigured %}
+    {#- A working key, just an empty range: the "add a key" pitch below would
+        be actively wrong here. #}
+    <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
+      No plays in this period yet.
+    </p>
+    {% else %}
+    {#- Either genuinely unconfigured, or an old caller that hasn't been
+        updated to pass lastfmConfigured yet - both keep today's pitch. #}
+    <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
+      Add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
+    </p>
+    {% endif %}
   {% endif %}
   {% import "_genre_macros.html" as genreMacros %}
   {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}

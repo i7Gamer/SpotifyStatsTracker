@@ -237,6 +237,29 @@ class ChartsGenresTestCase(AppTestCase):
         self.assertIn("90", html)
         self.assertIn("45", html)
 
+    def test_zero_song_plays_in_range_says_no_plays_not_add_a_key(self):
+        """2026-09-02 review, UT-12: the section only ever reaches
+        _genre_progress.html while lastfmEnabled is true (the section is
+        hidden entirely otherwise - see the disabled test below), so a
+        selected range with zero song plays here is never a missing-key
+        situation. The old unqualified `not coverage.song.total` check
+        pitched an API key even to a user who already has one and just
+        picked an empty week.
+
+        coverage.song.total=0 means literally zero song plays in the
+        selected range (the coverage denominator) - not zero coverage
+        percent, which coverageDict's default total=1000 keeps nonzero."""
+        dash = self._makeApp()
+        coverage = coverageDict(0, 90, 45)
+        coverage["song"]["total"] = 0
+        coverage["song"]["covered"] = 0
+        db = self._makeDb(coverage=coverage)
+
+        html = self._getData(dash, db).get_data(as_text=True)
+
+        self.assertIn("No plays in this period yet.", html)
+        self.assertNotIn("Add a Last.fm API key", html)
+
     def test_unlocked_renders_the_genre_chart_with_the_distribution(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),

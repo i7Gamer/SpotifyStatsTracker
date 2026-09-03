@@ -19,7 +19,7 @@
       <p class="empty-state">No genre data for {{ (username + "'s") if publicView else "your" }} {{ year }} plays yet.</p>
     {% endif %}
   {% else %}
-    {% with coverage = genreCoverage %}{% include "_genre_progress.html" %}{% endwith %}
+    {% with coverage = genreCoverage, lastfmConfigured = lastfmEnabled %}{% include "_genre_progress.html" %}{% endwith %}
   {% endif %}
 </div>
 {% endif %}

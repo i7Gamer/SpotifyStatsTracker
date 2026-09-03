@@ -137,7 +137,7 @@
         <span class="badge badge-secondary">GENRE INSIGHTS LOCKED</span>
       {% endif %}
     </div>
-    {% with coverage = genre_coverage %}{% include "_genre_progress.html" %}{% endwith %}
+    {% with coverage = genre_coverage, lastfmConfigured = lastfm_enabled %}{% include "_genre_progress.html" %}{% endwith %}
     {% if not genre_worker.configured %}
       <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
         Add a Last.fm API key on your <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling.
