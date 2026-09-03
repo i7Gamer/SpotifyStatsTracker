@@ -7,8 +7,10 @@
    #chartsGenreSection placeholder via the /charts?ajax=true payload (its
    coverage is range-scoped, so the locked/unlocked structure can change with
    the filter and must ship as HTML, not just data).
-   Expects: genreUnlocked, genreCoverage, lastfmEnabled (routes/charts.py
-   renders this from _charts_results.html's context, which carries it). #}
+   Expects: genreUnlocked, genreCoverage, lastfmConfigured (routes/charts.py
+   renders this from _charts_results.html's context, which carries it) -
+   lastfmConfigured is whether THIS user has a Last.fm key, not the admin's
+   instance-wide lastfmEnabled toggle (2026-09-02 review, UT-12 follow-up). #}
 {% if genreUnlocked %}
   <div class="chart-canvas-wrap">
     <canvas id="genreChart" role="img" aria-label="Top genres by plays"></canvas>
@@ -16,5 +18,5 @@
   {% import "_genre_macros.html" as genreMacros %}
   {{ genreMacros.lastfmAttribution(marginTop='0.5rem') }}
 {% else %}
-  {% with coverage = genreCoverage, lastfmConfigured = lastfmEnabled %}{% include "_genre_progress.html" %}{% endwith %}
+  {% with coverage = genreCoverage, lastfmConfigured = lastfmConfigured %}{% include "_genre_progress.html" %}{% endwith %}
 {% endif %}

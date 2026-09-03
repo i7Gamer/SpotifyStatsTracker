@@ -5,8 +5,9 @@
    user_wrapped - the Last.fm backfill keeps growing coverage and the admin's
    inherited-genres toggle changes the numbers retroactively). Expects
    `topGenres` ({genre: plays}, most-played first), `genreCoverage`,
-   `genreUnlocked` and `year`. Also returned as the ajax "topGenresHtml"
-   chunk, swapped into #wrappedGenresCard on year changes. #}
+   `genreUnlocked`, `lastfmConfigured` (whether THIS user has a Last.fm key -
+   2026-09-02 review, UT-12 follow-up) and `year`. Also returned as the ajax
+   "topGenresHtml" chunk, swapped into #wrappedGenresCard on year changes. #}
 {% import "_genre_macros.html" as genreMacros %}
 {% if lastfmEnabled %}
 <div class="chart-section">
@@ -19,7 +20,7 @@
       <p class="empty-state">No genre data for {{ (username + "'s") if publicView else "your" }} {{ year }} plays yet.</p>
     {% endif %}
   {% else %}
-    {% with coverage = genreCoverage, lastfmConfigured = lastfmEnabled %}{% include "_genre_progress.html" %}{% endwith %}
+    {% with coverage = genreCoverage, lastfmConfigured = lastfmConfigured %}{% include "_genre_progress.html" %}{% endwith %}
   {% endif %}
 </div>
 {% endif %}

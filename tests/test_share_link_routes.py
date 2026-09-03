@@ -739,6 +739,34 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         self.assertIn("alice&#39;s listening history", body)
         self.assertNotIn("your listening history", body)
 
+    def test_genre_locked_progress_pitches_a_key_for_the_owners_keyless_account(self):
+        """2026-09-02 review, UT-12 follow-up: sharedWrappedPage renders the
+        OWNER's db (patched in via _getReadOnlyUserDb, same as the test
+        above), so the "add a key"/"no plays" split must follow the OWNER's
+        Last.fm key, not the viewer (who has none - this route needs no
+        session at all)."""
+        token = self._createLink()
+        self.dash.repo.setLastfmGenreBackfillEnabled(True)
+        db = self._makeDb()   #< getGenreCoverage AND getLastfmWorkerStatus both bare MagicMocks
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn("Add a Last.fm API key", body)
+        self.assertNotIn("No plays in this period yet.", body)
+
+    def test_genre_locked_progress_shows_no_plays_for_the_owners_keyed_account(self):
+        token = self._createLink()
+        self.dash.repo.setLastfmGenreBackfillEnabled(True)
+        db = self._makeDb()
+        db.getLastfmWorkerStatus.return_value = {"configured": True, "running": True}
+
+        resp = self._getShared(token, db=db)
+        body = resp.data.decode()
+
+        self.assertIn("No plays in this period yet.", body)
+        self.assertNotIn("Add a Last.fm API key", body)
+
     def test_track_card_images_use_the_token_keyed_image_route(self):
         """_track_card.html's imageBase override must actually take effect on
         the public page - otherwise cards would request /img/alice/... ,

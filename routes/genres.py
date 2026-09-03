@@ -56,7 +56,7 @@ from Database.utils import msToString, convertToDatetime
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     resolveGenreTrends, resolveGenreStats, resolveTopArtistsForGenre, resolveTopTracksForGenre,
-    resolveGenreHeatmap, emptyHeatmapGrid, resolveGenreArtistCounts,
+    resolveGenreHeatmap, emptyHeatmapGrid, resolveGenreArtistCounts, userHasLastfmKey,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,9 +190,16 @@ def register(app, dashboard):
         lastfmEnabled = dashboard.repo.isLastfmGenreBackfillEnabled()
         genreCoverage = emptyGenreCoverage()
         genreUnlocked = False
+        # Whether THIS user has a Last.fm key, not just whether the admin's
+        # instance-wide toggle is on - only needed for the locked branch,
+        # which is the only one that renders _genre_progress.html (2026-09-02
+        # review, UT-12 follow-up).
+        lastfmConfigured = False
         if lastfmEnabled:
             genreCoverage = resolveGenreCoverage(db, None, None)
             genreUnlocked = genreGatePasses(genreCoverage)
+            if not genreUnlocked:
+                lastfmConfigured = userHasLastfmKey(dashboard.repo, db)
 
         # Lightweight shell: the disabled/locked/unlocked structure is decided
         # here (all-time gate, one cheap coverage query), but every per-range
@@ -209,6 +216,7 @@ def register(app, dashboard):
                 username=username,
                 section="genres",
                 lastfmEnabled=lastfmEnabled,
+                lastfmConfigured=lastfmConfigured,
                 genreCoverage=genreCoverage,
                 genreUnlocked=genreUnlocked,
                 interval=interval,

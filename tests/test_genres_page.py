@@ -40,13 +40,15 @@ def coverageDict(song, album, artist, total=1000):
 
 
 class GenresPageTestCase(AppTestCase):
-    def _makeDb(self, coverage=None, distribution=None, window="all time"):
+    def _makeDb(self, coverage=None, distribution=None, window="all time", workerStatus=None):
         db = MagicMock()
         db.repo.getUserSettings.return_value = {"default_dashboard_window": window, "timezone": None}
         if coverage is not None:
             db.getGenreCoverage.return_value = coverage
         if distribution is not None:
             db.getGenreDistribution.return_value = distribution
+        if workerStatus is not None:
+            db.getLastfmWorkerStatus.return_value = workerStatus
         db.getGenreTrends.return_value = {"buckets": ["2026-01"], "series": [{"name": "rock", "data": [1]}]}
         db.getGenreStats.return_value = {"plays": 10, "listenMs": 60000, "firstPlayedTs": None, "sharePercent": 25.0}
         db.getTopArtistsForGenre.return_value = []
@@ -87,6 +89,25 @@ class GenresPageTestCase(AppTestCase):
         self.assertIn(b"Genre insights unlock", resp.data)
         db.getGenreDistribution.assert_not_called()
         db.getGenreTrends.assert_not_called()
+
+    def test_locked_shell_pitches_a_key_for_a_keyless_user(self):
+        """2026-09-02 review, UT-12 follow-up: the locked shell used to pass
+        the admin's instance-wide lastfmEnabled toggle as _genre_progress's
+        lastfmConfigured, so a keyless user with zero coverage (an unstubbed
+        getLastfmWorkerStatus, like the regression guard above) saw "No
+        plays in this period yet." instead of the "add a key" pitch."""
+        dash = self._makeApp()
+        db = self._makeDb()   #< getGenreCoverage AND getLastfmWorkerStatus both bare MagicMocks
+        resp = self._get(dash, db)
+        self.assertIn(b"Add a Last.fm API key", resp.data)
+        self.assertNotIn(b"No plays in this period yet.", resp.data)
+
+    def test_locked_shell_shows_no_plays_for_a_keyed_user(self):
+        dash = self._makeApp()
+        db = self._makeDb(workerStatus={"configured": True, "running": True})
+        resp = self._get(dash, db)
+        self.assertIn(b"No plays in this period yet.", resp.data)
+        self.assertNotIn(b"Add a Last.fm API key", resp.data)
 
     def test_locked_at_exact_threshold(self):
         dash = self._makeApp()

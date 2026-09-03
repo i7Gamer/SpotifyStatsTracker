@@ -33,7 +33,7 @@ class WrappedGenresTestBase(AppTestCase):
         nowPatcher.start()
         self.addCleanup(nowPatcher.stop)
 
-    def _makeDb(self, earliestPlayedAt=None, coverage=None, distribution=None):
+    def _makeDb(self, earliestPlayedAt=None, coverage=None, distribution=None, workerStatus=None):
         db = MagicMock()
         db.getEntriesFromOld.return_value = (
             [{"id": "x", "playedAt": earliestPlayedAt, "timePlayed": 1}] if earliestPlayedAt is not None else []
@@ -46,6 +46,8 @@ class WrappedGenresTestBase(AppTestCase):
             db.getGenreCoverage.return_value = coverage
         if distribution is not None:
             db.getGenreDistribution.return_value = distribution
+        if workerStatus is not None:
+            db.getLastfmWorkerStatus.return_value = workerStatus
         return db
 
     def _getWrapped(self, dash, db, query="", headers=None):
@@ -73,6 +75,30 @@ class TestWrappedGenreCard(WrappedGenresTestBase):
         self.assertIn(b"Top Genres of 2026", resp.data)
         self.assertIn(b"Genre insights unlock", resp.data)
         db.getGenreDistribution.assert_not_called()
+
+    def test_locked_card_pitches_a_key_for_a_keyless_user(self):
+        """2026-09-02 review, UT-12 follow-up: the locked card used to pass
+        the admin's instance-wide lastfmEnabled toggle as _genre_progress's
+        lastfmConfigured, so a keyless user (an unstubbed
+        getLastfmWorkerStatus, like the regression guard above) with zero
+        year coverage saw "No plays in this period yet." instead of the
+        "add a key" pitch."""
+        dash = self._makeApp()
+        db = self._makeDb()   #< genre AND worker-status methods left as bare MagicMocks
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertIn(b"Add a Last.fm API key", resp.data)
+        self.assertNotIn(b"No plays in this period yet.", resp.data)
+
+    def test_locked_card_shows_no_plays_for_a_keyed_user(self):
+        dash = self._makeApp()
+        db = self._makeDb(workerStatus={"configured": True, "running": True})
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertIn(b"No plays in this period yet.", resp.data)
+        self.assertNotIn(b"Add a Last.fm API key", resp.data)
 
     def test_unlocked_card_lists_the_genres(self):
         dash = self._makeApp()

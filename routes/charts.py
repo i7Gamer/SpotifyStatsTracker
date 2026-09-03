@@ -28,7 +28,7 @@ from Database.database import Database
 from Database.utils import dateToString, msToString
 from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
-    emptyBiographyCoverage, resolveBiographyCoverage,
+    emptyBiographyCoverage, resolveBiographyCoverage, userHasLastfmKey,
 )
 from services.milestones import buildNextMilestones, formatMilestone, MS_PER_HOUR
 from services.rank_movement import (
@@ -1193,6 +1193,11 @@ def register(app, dashboard):
         genreCoverage = emptyGenreCoverage()
         genreUnlocked = False
         genreDistribution = None
+        # Whether THIS user has a Last.fm key, not just whether the admin's
+        # instance-wide toggle is on - only needed for the locked branch,
+        # which is the only one that renders _genre_progress.html (2026-09-02
+        # review, UT-12 follow-up).
+        lastfmConfigured = False
         if lastfmEnabled:
             genreCoverage = resolveGenreCoverage(db, startDate, endDate)
             genreUnlocked = genreGatePasses(genreCoverage)
@@ -1204,6 +1209,8 @@ def register(app, dashboard):
                 # top one belongs in the first row rather than at the bottom of
                 # a chart that climbs toward it.
                 genreDistribution = list(distribution.items())
+            else:
+                lastfmConfigured = userHasLastfmKey(dashboard.repo, db)
 
         # The chart card as markup, with every series riding inside it as one
         # JSON data island (see _charts_results.html). What used to be fifteen
@@ -1220,6 +1227,7 @@ def register(app, dashboard):
             lastDayDate=lastDayDate,
             artistTrend=artistTrend,
             lastfmEnabled=lastfmEnabled,
+            lastfmConfigured=lastfmConfigured,
             genreUnlocked=genreUnlocked,
             genreCoverage=genreCoverage,
             #< exactly the window.__chartData charts.js reads - the client used

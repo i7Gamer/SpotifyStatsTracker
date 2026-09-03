@@ -102,6 +102,33 @@ def genreGatePasses(coverage: dict) -> bool:
                for categoryName in GENRE_COVERAGE_CATEGORIES)
 
 
+def userHasLastfmKey(repo, db) -> bool:
+    """Whether THIS user has a Last.fm API key configured - not merely
+    whether the admin's instance-wide genre backfill toggle is on
+    (repo.isLastfmGenreBackfillEnabled(), which every _genre_progress.html
+    include site used to pass as `lastfmConfigured` instead). The four
+    genre-gate include sites (Charts, the dedicated Genres page, Wrapped -
+    including its public /shared view, which already renders the OWNER's db -
+    and Overview) need this distinction: _genre_progress.html's zero-song-
+    plays branch means something different for a keyless user (never
+    configured - keep pitching the API key) than for a keyed one whose
+    selected range just has no plays yet (show "No plays in this period
+    yet." instead). Mirrors overviewPage's genre_worker["configured"], which
+    already read this correctly (2026-09-02 review, UT-12 follow-up).
+
+    False when db is None (no owner db to ask) or the instance-wide kill
+    switch is off - every caller already hides the whole genre section in
+    that case, and the worker never runs, so "configured" would be moot."""
+    if db is None or not repo.isLastfmGenreBackfillEnabled():
+        return False
+    try:
+        status = db.getLastfmWorkerStatus()
+    except Exception as e:
+        logger.warning("Last.fm worker status lookup failed: %s", e)
+        return False
+    return bool(isinstance(status, dict) and status.get("configured"))
+
+
 def resolveGenreTrends(db, genres, startDate, endDate, groupBy="month") -> dict:
     """Bucketed genre trend ({"buckets", "series"}) for a user db - `groupBy`
     sizes the buckets (see Database.getGenreTrends; default month keeps old

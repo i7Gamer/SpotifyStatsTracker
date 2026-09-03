@@ -37,7 +37,7 @@
   {% elif not genreUnlocked %}
     <section class="card">
       <h2>Top Genres</h2>
-      {% with coverage = genreCoverage, lastfmConfigured = lastfmEnabled %}{% include "_genre_progress.html" %}{% endwith %}
+      {% with coverage = genreCoverage, lastfmConfigured = lastfmConfigured %}{% include "_genre_progress.html" %}{% endwith %}
     </section>
   {% else %}
     {# hx-get + hx-trigger="change" replace updateGenresIntervalFilter's and

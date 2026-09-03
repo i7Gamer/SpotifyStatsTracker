@@ -160,7 +160,7 @@ class ResolveGenresForManyTestCase(unittest.TestCase):
 
 
 class ChartsGenresTestCase(AppTestCase):
-    def _makeDb(self, coverage=None, distribution=None):
+    def _makeDb(self, coverage=None, distribution=None, workerStatus=None):
         db = MagicMock()
         db.getListeningTimeSeries.return_value = []
         db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
@@ -177,6 +177,8 @@ class ChartsGenresTestCase(AppTestCase):
             db.getGenreCoverage.return_value = coverage
         if distribution is not None:
             db.getGenreDistribution.return_value = distribution
+        if workerStatus is not None:
+            db.getLastfmWorkerStatus.return_value = workerStatus
         return db
 
     def _get(self, dash, db, query=""):
@@ -238,13 +240,13 @@ class ChartsGenresTestCase(AppTestCase):
         self.assertIn("45", html)
 
     def test_zero_song_plays_in_range_says_no_plays_not_add_a_key(self):
-        """2026-09-02 review, UT-12: the section only ever reaches
-        _genre_progress.html while lastfmEnabled is true (the section is
-        hidden entirely otherwise - see the disabled test below), so a
-        selected range with zero song plays here is never a missing-key
-        situation. The old unqualified `not coverage.song.total` check
-        pitched an API key even to a user who already has one and just
-        picked an empty week.
+        """2026-09-02 review, UT-12 (+follow-up): a user who already has a
+        working Last.fm key and just picked an empty week must see "No
+        plays", not the API-key pitch. lastfmEnabled being true (the
+        section is hidden entirely otherwise - see the disabled test below)
+        is the admin's INSTANCE-WIDE toggle, not proof this particular user
+        has a key - that's userHasLastfmKey/genre_worker.configured, stubbed
+        here via getLastfmWorkerStatus.
 
         coverage.song.total=0 means literally zero song plays in the
         selected range (the coverage denominator) - not zero coverage
@@ -253,12 +255,29 @@ class ChartsGenresTestCase(AppTestCase):
         coverage = coverageDict(0, 90, 45)
         coverage["song"]["total"] = 0
         coverage["song"]["covered"] = 0
-        db = self._makeDb(coverage=coverage)
+        db = self._makeDb(coverage=coverage, workerStatus={"configured": True, "running": True})
 
         html = self._getData(dash, db).get_data(as_text=True)
 
         self.assertIn("No plays in this period yet.", html)
         self.assertNotIn("Add a Last.fm API key", html)
+
+    def test_zero_song_plays_in_range_pitches_a_key_for_a_keyless_user(self):
+        """The other half of UT-12's follow-up: a user who has never
+        configured a Last.fm key at all (getLastfmWorkerStatus unstubbed,
+        like every other test in this class before this fix) must still see
+        the "add a key" pitch on a zero-play range, not "No plays in this
+        period yet." - that message would be actively wrong for them."""
+        dash = self._makeApp()
+        coverage = coverageDict(0, 90, 45)
+        coverage["song"]["total"] = 0
+        coverage["song"]["covered"] = 0
+        db = self._makeDb(coverage=coverage)   #< getLastfmWorkerStatus left as a bare MagicMock
+
+        html = self._getData(dash, db).get_data(as_text=True)
+
+        self.assertIn("Add a Last.fm API key", html)
+        self.assertNotIn("No plays in this period yet.", html)
 
     def test_unlocked_renders_the_genre_chart_with_the_distribution(self):
         dash = self._makeApp()

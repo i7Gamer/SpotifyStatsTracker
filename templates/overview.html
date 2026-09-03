@@ -137,12 +137,12 @@
         <span class="badge badge-secondary">GENRE INSIGHTS LOCKED</span>
       {% endif %}
     </div>
-    {% with coverage = genre_coverage, lastfmConfigured = lastfm_enabled %}{% include "_genre_progress.html" %}{% endwith %}
-    {% if not genre_worker.configured %}
-      <p style="font-size: 0.85rem; color: var(--muted); margin-top: 0.75rem;">
-        Add a Last.fm API key on your <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling.
-      </p>
-    {% endif %}
+    {#- lastfmConfigured = genre_worker.configured (per-user: has a key), not
+        lastfm_enabled (the admin's instance-wide toggle this whole section
+        is already gated on) - _genre_progress.html now owns the "add a key"
+        pitch below zero song plays, so it isn't duplicated here anymore
+        (2026-09-02 review, UT-12 follow-up). #}
+    {% with coverage = genre_coverage, lastfmConfigured = genre_worker.configured %}{% include "_genre_progress.html" %}{% endwith %}
   </div>
 </section>
 {% endif %}

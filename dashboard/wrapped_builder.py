@@ -9,7 +9,10 @@ import time
 
 from flask import request
 from Database.utils import convertToDatetime, now, SECONDS_PER_DAY
-from services.genre_gate import emptyGenreCoverage, genreGatePasses, resolveGenreCoverage, resolveGenreDistribution
+from services.genre_gate import (
+    emptyGenreCoverage, genreGatePasses, resolveGenreCoverage, resolveGenreDistribution,
+    userHasLastfmKey,
+)
 from config import (
     SHARE_LINK_EXPIRY_CHOICES, SHARE_LINK_MAX_PER_BUCKET,
     WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, WRAPPED_TOP_GENRES_LIMIT,
@@ -189,12 +192,22 @@ class WrappedBuilderMixin:
         genreCoverage = emptyGenreCoverage()
         genreUnlocked = False
         topGenres = None
+        # Whether THIS user has a Last.fm key, not just whether the admin's
+        # instance-wide toggle is on - only needed for the locked branch,
+        # which is the only one _wrapped_genres.html renders
+        # _genre_progress.html for (2026-09-02 review, UT-12 follow-up).
+        # `db` is already the OWNER's db on both callers - wrappedPage's own
+        # db, and sharedWrappedPage's dashboard._getReadOnlyUserDb(link
+        # owner) - so the public /shared view gets the right answer for free.
+        lastfmConfigured = False
         if includeGenres and lastfmEnabled:
             genreCoverage = resolveGenreCoverage(db, yearStart, yearEnd)
             genreUnlocked = genreGatePasses(genreCoverage)
             if genreUnlocked:
                 topGenres = resolveGenreDistribution(db, yearStart, yearEnd,
                                                      WRAPPED_TOP_GENRES_LIMIT)
+            else:
+                lastfmConfigured = userHasLastfmKey(self.repo, db)
 
         # 1. Fetch precalculated cached wrapped stats from database - the
         # only path (R6, 2026-09-02): a real Database always has one, on
@@ -325,4 +338,5 @@ class WrappedBuilderMixin:
             "genreCoverage": genreCoverage,
             "genreUnlocked": genreUnlocked,
             "lastfmEnabled": lastfmEnabled,
+            "lastfmConfigured": lastfmConfigured,
         }

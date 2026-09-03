@@ -90,6 +90,38 @@ class TestOverviewGenreCard(OverviewGenresTestBase):
         self.assertIn(b"Genre Backfill Progress", resp.data)
         self.assertIn(b"NO API KEY", resp.data)   #< sanitized worker status defaults
 
+    def test_keyless_user_sees_the_pitch_exactly_once(self):
+        """2026-09-02 review, UT-12 follow-up: overview.html used to pass its
+        _genre_progress.html include the instance-wide lastfm_enabled toggle
+        (always true here, since the section is gated on it) rather than the
+        per-user genre_worker.configured flag, so a keyless user with zero
+        coverage saw the partial's own "No plays in this period yet." message
+        ABOVE overview's own separate "Add a Last.fm API key..." pitch - both
+        at once, and the wrong one of the two. The partial now owns the
+        message and reads the right flag, so the pitch appears exactly once.
+
+        Biography backfill turned off so its own, unrelated "Add a Last.fm
+        API key..." pitch (same wording, different section) can't be
+        mistaken for a second genre-card copy."""
+        dash = self._makeApp()
+        dash.repo.setArtistBioEnabled(False)
+        dash.repo.setAlbumBioEnabled(False)
+        resp = self._getOverview(dash, self._makeDb())   #< NO API KEY, per the test above
+
+        self.assertEqual(resp.data.count(b"Add a Last.fm API key"), 1)
+        self.assertNotIn(b"No plays in this period yet.", resp.data)
+
+    def test_keyed_user_with_zero_coverage_sees_no_plays_not_the_pitch(self):
+        dash = self._makeApp()
+        dash.repo.setArtistBioEnabled(False)
+        dash.repo.setAlbumBioEnabled(False)
+        db = self._makeDb(workerStatus={"configured": True, "running": False})
+
+        resp = self._getOverview(dash, db)
+
+        self.assertIn(b"No plays in this period yet.", resp.data)
+        self.assertNotIn(b"Add a Last.fm API key", resp.data)
+
     def test_worker_status_exception_degrades_to_the_unconfigured_badge(self):
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(10, 10, 10))
