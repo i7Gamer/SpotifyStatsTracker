@@ -24,9 +24,12 @@ const realConsole = console;
 
 function makeChip(tag) {
   const handlers = {};
+  const attrs = {};
   return {
-    dataset: { tag }, style: {}, handlers,
+    dataset: { tag }, style: {}, handlers, attrs,
     addEventListener(type, fn) { handlers[type] = fn; },
+    setAttribute(name, value) { attrs[name] = String(value); },
+    getAttribute(name) { return name in attrs ? attrs[name] : null; },
     click() { handlers.click(); },
   };
 }
@@ -179,6 +182,31 @@ run('deselecting the last tag asks the server nothing at all', async () => {
   assert.strictEqual(dom.calls.fetched.length, asked, 'an empty selection is answered locally');
   assert.strictEqual(dom.previewCount.textContent, '0 tracks match selection');
   assert.strictEqual(dom.btnDownload.disabled, true);
+});
+
+// UT-8: the chip's selected state was inline styles only (background/border/
+// color) - nothing a screen reader could read. A toggle button's pressed
+// state belongs on aria-pressed, kept in step with the styling.
+
+run('every chip starts unpressed', () => {
+  const dom = previewSetup();
+
+  assert.strictEqual(dom.chipA.getAttribute('aria-pressed'), 'false');
+  assert.strictEqual(dom.chipB.getAttribute('aria-pressed'), 'false');
+});
+
+run('selecting a tag marks its chip pressed; deselecting reverts it', async () => {
+  const dom = previewSetup({ respond: jsonOnce({ track_count: 12 }) });
+
+  dom.chipA.click();
+  await tick();
+  assert.strictEqual(dom.chipA.getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(dom.chipB.getAttribute('aria-pressed'), 'false',
+                     'an unrelated chip must not report itself as pressed too');
+
+  dom.chipA.click();
+  await tick();
+  assert.strictEqual(dom.chipA.getAttribute('aria-pressed'), 'false');
 });
 
 run('both selected tags travel together, one tags= param each', async () => {

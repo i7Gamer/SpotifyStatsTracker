@@ -30,19 +30,26 @@
     }
 
     tagChips.forEach(function(chip) {
+      //< a toggle button's pressed state belongs on aria-pressed, not only in
+      //  the inline styles below - a screen reader has no way to read those
+      chip.setAttribute('aria-pressed', 'false');
       chip.addEventListener('click', function() {
         var tag = chip.dataset.tag;
+        var selected;
         if (selectedTags.has(tag)) {
           selectedTags.delete(tag);
+          selected = false;
           chip.style.background = 'rgba(255,255,255,0.05)';
           chip.style.borderColor = 'var(--border-color, #444)';
           chip.style.color = 'inherit';
         } else {
           selectedTags.add(tag);
+          selected = true;
           chip.style.background = 'color-mix(in srgb, var(--accent) 20%, transparent)';
           chip.style.borderColor = 'var(--accent)';
           chip.style.color = 'var(--accent)';
         }
+        chip.setAttribute('aria-pressed', String(selected));
         updatePreview();
       });
     });
