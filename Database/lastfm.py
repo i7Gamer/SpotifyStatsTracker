@@ -335,29 +335,6 @@ def _extractAlbumInfoTags(payload) -> list:
     return []
 
 
-def _extractTrackInfoTags(payload) -> list:
-    """track.toptags.tag from a track.getinfo payload - the fallback source
-    for tracks where track.gettoptags comes back empty. Built by analogy to
-    _extractAlbumInfoTags (Last.fm's docs show track.getInfo embeds
-    toptags.tag under the `track` key, the same shape album.getInfo embeds
-    tags.tag under `album`) - but note the analogy is structural only: the
-    gettoptags-vs-getinfo divergence that makes the ALBUM fallback worthwhile
-    has never been observed for tracks. See _fetchTrackTopTagsForArtist. Same
-    bare-dict-vs-list normalization as _extractTags."""
-    track = payload.get("track") if isinstance(payload, dict) else None
-    if not isinstance(track, dict):
-        return []
-    tagsContainer = track.get("toptags")
-    if not isinstance(tagsContainer, dict):
-        return []
-    tags = tagsContainer.get("tag")
-    if isinstance(tags, dict):
-        return [tags]
-    if isinstance(tags, list):
-        return tags
-    return []
-
-
 def _hasUsableGenres(outcome) -> bool:
     """Whether a tag lookup actually resolved the entity - i.e. produced at
     least one tag that survives the genre whitelist. Raw tags are the wrong
@@ -609,43 +586,29 @@ class LastfmClient:
     def _fetchTrackTopTagsForArtist(self, artistName: str, trackName: str,
                                     stop_event: threading.Event | None,
                                     timeout: float | None = None) -> FetchOutcome | None:
-        """One track.gettoptags call for `artistName`/`trackName`, falling
-        back to track.getinfo's embedded tags on a definitive-empty OR
-        not-found result. Structurally mirrors _fetchAlbumTopTagsForArtist,
-        but do NOT read that as the same evidence: the album fallback was
-        verified against the live API, and this one was built by analogy from
-        Last.fm's docs alone.
-
-        MEASURED 2026-07-23 AND IT RECOVERS NOTHING. Over a week of dev
-        app.log with the backfillers active, "album.getinfo fallback
-        recovered" fired 5016x and "track.getinfo fallback recovered" 0x. The
-        database says why: only 1,334/24,538 tracks (5.4%) carry their own
+        """One track.gettoptags call for `artistName`/`trackName`. Unlike
+        _fetchAlbumTopTagsForArtist, this does NOT fall back to
+        track.getinfo's embedded tags on a definitive-empty result: that
+        fallback was built by analogy to the album one (never verified
+        against the live API the way the album divergence was), and was
+        MEASURED 2026-07-23 to recover nothing - over a week of dev app.log
+        with the backfillers active, "album.getinfo fallback recovered"
+        fired 5016x against "track.getinfo fallback recovered" 0x. The
+        database says why: only 1,334/24,538 tracks (5.4%) carried their own
         tags, against 42% of albums and 73% of artists - track tags are
-        absent at the SOURCE, on both endpoints, so the "costs nothing extra
-        on the majority where gettoptags already succeeds" argument that
-        justifies the album fallback is inverted here: this fires on ~95% of
-        tracks and buys one wasted rate-limited call each. It is kept only
-        because removing it is a behavior change nobody has asked for; the
-        real coverage answer for tracks is genre inheritance from the album/
-        artist, which already covers 20,179 of them. If you are here to
-        extend this, delete it instead (_extractTrackInfoTags and its tests
-        come out too), and do not add an artist-side getinfo fallback on the
-        strength of the album one.
+        absent at the SOURCE, on both endpoints, so the fallback fired on
+        ~95% of tracks and bought one wasted rate-limited call each for zero
+        benefit. Removed 2026-09-02 (X1); the real coverage answer for
+        tracks is genre inheritance from the album/artist, which already
+        covers most of them (see the genre backfill investigation). Do not
+        re-add an artist-side getinfo fallback on the strength of the album
+        one - that shape was never confirmed for tracks either.
 
         This is the per-artist-name unit that getTrackTopTags retries under
         alternate spellings via _lookupWithArtistNameFallback."""
-        outcome = self._fetchTopTags("track.gettoptags",
-                                     {"artist": artistName, "track": trackName}, stop_event,
-                                     timeout=timeout)
-        if outcome is None or outcome.status not in (OUTCOME_OK, OUTCOME_NOT_FOUND) or outcome.tags:
-            return outcome
-        fallback = self._fetchTopTags("track.getinfo",
-                                      {"artist": artistName, "track": trackName}, stop_event,
-                                      timeout=timeout,
-                                      extractFn=_extractTrackInfoTags)
-        if fallback is not None and fallback.status == OUTCOME_OK and fallback.tags:
-            _logGetInfoRecovery("track", fallback.tags, artistName, trackName)
-        return fallback
+        return self._fetchTopTags("track.gettoptags",
+                                  {"artist": artistName, "track": trackName}, stop_event,
+                                  timeout=timeout)
 
     def validateApiKey(self) -> dict:
         """One cheap lookup to vet a key before storing it. {"ok": bool,
