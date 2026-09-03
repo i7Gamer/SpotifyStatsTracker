@@ -43,6 +43,7 @@ from services.email_service import (
     get_smtp_config, save_smtp_config, send_test_email,
     get_instance_public_url, save_instance_public_url,
     DEFAULT_SMTP_PORT, DEFAULT_SMTP_ENCRYPTION, DEFAULT_SMTP_FROM_NAME,
+    _isValidFromEmail, _isValidPublicUrl,
 )
 from services.email_worker import EMAIL_WORKER
 
@@ -487,6 +488,18 @@ def register(app, dashboard):
         from_email = request.form.get("smtp_from_email", "")
         from_name = request.form.get("smtp_from_name", DEFAULT_SMTP_FROM_NAME)
         public_url = request.form.get("instance_public_url", "")
+
+        # Reject before either save touches app_settings, so a bad submission
+        # never overwrites a working configuration (UT-16).
+        if enabled and not host.strip():
+            return redirect(url_for("adminPage", tab="settings",
+                                    error="Enabling notifications requires an SMTP host."))
+        if not _isValidFromEmail(from_email.strip()):
+            return redirect(url_for("adminPage", tab="settings",
+                                    error="From address must be a valid email address."))
+        if not _isValidPublicUrl(public_url.strip()):
+            return redirect(url_for("adminPage", tab="settings",
+                                    error="Public URL must start with http:// or https://."))
 
         save_smtp_config(
             repo=dashboard.repo,

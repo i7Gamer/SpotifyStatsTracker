@@ -953,6 +953,67 @@ class TestAdminEmailSettings(AdminRouteTestBase):
         from services.email_service import get_smtp_config, DEFAULT_SMTP_PORT
         self.assertEqual(get_smtp_config(dash.repo)["port"], DEFAULT_SMTP_PORT)
 
+    def test_malformed_from_email_is_rejected_and_nothing_saved(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "smtp_host": "smtp.example.com",
+            "smtp_from_email": "notanemail",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+        from services.email_service import get_smtp_config
+        config = get_smtp_config(dash.repo)
+        self.assertEqual(config["host"], "")
+        self.assertEqual(config["from_email"], "")
+
+    def test_javascript_scheme_public_url_is_rejected_and_nothing_saved(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "instance_public_url": "javascript:alert(1)",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+        from services.email_service import get_instance_public_url
+        self.assertEqual(get_instance_public_url(dash.repo), "")
+
+    def test_enabling_notifications_with_empty_host_is_rejected_and_nothing_saved(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "email_notifications_enabled": "1",
+            "smtp_host": "",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+        from services.email_service import get_smtp_config
+        self.assertFalse(get_smtp_config(dash.repo)["enabled"])
+
+    def test_invalid_submission_does_not_clobber_a_working_configuration(self):
+        dash = self._makeApp()
+        self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "email_notifications_enabled": "1",
+            "smtp_host": "smtp.example.com",
+            "smtp_from_email": "noreply@example.com",
+            "instance_public_url": "https://tracker.example.com",
+        })
+
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "email_notifications_enabled": "1",
+            "smtp_host": "smtp.example.com",
+            "smtp_from_email": "not-an-address",
+            "instance_public_url": "https://tracker.example.com",
+        })
+        self.assertIn("error=", resp.headers["Location"])
+
+        from services.email_service import get_smtp_config, get_instance_public_url
+        config = get_smtp_config(dash.repo)
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["host"], "smtp.example.com")
+        self.assertEqual(config["from_email"], "noreply@example.com")
+        self.assertEqual(get_instance_public_url(dash.repo), "https://tracker.example.com")
+
 
 class TestSmtpPasswordStaysOutOfTemplateContext(AdminRouteTestBase):
     """admin.html only ever uses the SMTP password as a presence check (the

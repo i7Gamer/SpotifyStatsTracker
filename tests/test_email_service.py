@@ -14,6 +14,8 @@ from services.email_service import (
     send_email_notification,
     send_test_email,
     _render_event_template,
+    _isValidFromEmail,
+    _isValidPublicUrl,
 )
 from Database.queries.email_queries import (
     EVENT_INVALID_COOKIES,
@@ -67,6 +69,51 @@ def test_instance_public_url_strips_trailing_slash():
     repo = Repository()
     save_instance_public_url(repo, "https://tracker.example.com/ ")
     assert get_instance_public_url(repo) == "https://tracker.example.com"
+
+
+class TestIsValidFromEmail:
+    """Empty means "not configured yet" (the same shape as the public URL
+    setting), and once non-empty must have exactly one "@" with content on
+    both sides - not full RFC validation, just enough to reject the finding's
+    case (UT-16: a from-address with no "@" saved unchecked)."""
+
+    def test_empty_is_valid(self):
+        assert _isValidFromEmail("") is True
+
+    def test_plain_address_is_valid(self):
+        assert _isValidFromEmail("noreply@example.com") is True
+
+    def test_no_at_sign_is_invalid(self):
+        assert _isValidFromEmail("notanemail") is False
+
+    def test_two_at_signs_is_invalid(self):
+        assert _isValidFromEmail("a@b@example.com") is False
+
+    def test_empty_local_part_is_invalid(self):
+        assert _isValidFromEmail("@example.com") is False
+
+    def test_empty_domain_part_is_invalid(self):
+        assert _isValidFromEmail("noreply@") is False
+
+
+class TestIsValidPublicUrl:
+    """Empty means "no link configured"; a non-empty value must be an
+    http(s) URL - rejects a javascript: (or any other) scheme."""
+
+    def test_empty_is_valid(self):
+        assert _isValidPublicUrl("") is True
+
+    def test_http_is_valid(self):
+        assert _isValidPublicUrl("http://tracker.example.com") is True
+
+    def test_https_is_valid(self):
+        assert _isValidPublicUrl("https://tracker.example.com") is True
+
+    def test_javascript_scheme_is_invalid(self):
+        assert _isValidPublicUrl("javascript:alert(1)") is False
+
+    def test_bare_domain_is_invalid(self):
+        assert _isValidPublicUrl("tracker.example.com") is False
 
 
 def test_build_email_message():

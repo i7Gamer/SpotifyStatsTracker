@@ -100,6 +100,23 @@ def get_smtp_config(repo: Repository, include_password: bool = True) -> dict[str
     }
 
 
+def _isValidFromEmail(s: str) -> bool:
+    """Empty means "not configured yet" (the same shape `_isValidPublicUrl`
+    treats its field as); a non-empty value must have exactly one "@" with
+    non-empty content on both sides. Not full RFC validation - just enough to
+    reject a plain non-address like "notanemail" from silently saving as the
+    SMTP From header's address (UT-16)."""
+    return not s or (s.count("@") == 1 and all(s.split("@")))
+
+
+def _isValidPublicUrl(s: str) -> bool:
+    """Empty means "no link configured" (see get_instance_public_url); a
+    non-empty value must be an http(s) URL, rejecting a javascript: (or any
+    other) scheme from being stored and later emitted as a link href
+    (UT-16)."""
+    return not s or s.startswith(("http://", "https://"))
+
+
 def save_smtp_config(
     repo: Repository,
     enabled: bool,
