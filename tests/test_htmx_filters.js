@@ -474,4 +474,43 @@ run('a swap nobody had focus in front of leaves nothing to restore', () => {
   assert.strictEqual(target.focusCalls, 0);
 });
 
+run('two overlapping swaps each restore their own focus', () => {
+  /* The flag used to be ONE module-global boolean, so the second swap's
+   * beforeSwap cleared the first's: with two regions in flight (Compare
+   * alone swaps a dozen), the first region's focus was never restored
+   * (2026-09-03 review, C-12). Recorded on the target instead, so a second
+   * swap can no longer answer for the first. */
+  const buttonA = makeFocusable();
+  const targetA = makeFocusable();
+  targetA.contains = (node) => node === buttonA;
+  const targetB = makeFocusable();
+  targetB.contains = () => false;
+
+  global.document = { activeElement: buttonA };
+  rememberFocusBeforeSwap({ detail: { target: targetA } });
+  global.document = { activeElement: makeFocusable() };
+  rememberFocusBeforeSwap({ detail: { target: targetB } });   //< the interleaved one
+
+  restoreFocusAfterSwap({ detail: { target: targetA } });
+  restoreFocusAfterSwap({ detail: { target: targetB } });
+
+  assert.strictEqual(targetA.focusCalls, 1, 'the region that held focus gets it back');
+  assert.strictEqual(targetB.focusCalls, 0, 'the one that never had it must not steal it');
+});
+
+run('a second settle of the same target does not re-focus it', () => {
+  //< the record is consumed, not left standing: a later settle of a region
+  //  the user has since left must not pull focus back
+  const button = makeFocusable();
+  const target = makeFocusable();
+  target.contains = (node) => node === button;
+  global.document = { activeElement: button };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 1);
+});
+
 console.log('All htmx filter tests passed.');

@@ -247,19 +247,27 @@ function onSwapFailure(targetId, retry) {
 // bottom of this file) - no page registers these itself, unlike
 // onSwapFailure, which needs a page-specific target id and retry callback
 // this pair does not.
-var _focusWasInSwapTarget = false;
+// Recorded ON THE TARGET, not in a module-global boolean. One response can
+// settle several regions and a page can have several requests in flight
+// (Compare swaps a dozen), so with one flag the second beforeSwap cleared the
+// first's: the region the user actually had focus in was left unrestored,
+// silently, whenever anything overlapped it.
+var FOCUS_WAS_INSIDE = '_htmxFocusWasInside';
 
 function rememberFocusBeforeSwap(evt) {
   var target = evt && evt.detail && evt.detail.target;
+  if (!target) return;
   var active = document.activeElement;
-  _focusWasInSwapTarget = !!(target && active && target.contains && target.contains(active));
+  target[FOCUS_WAS_INSIDE] = !!(active && target.contains && target.contains(active));
 }
 
 function restoreFocusAfterSwap(evt) {
-  if (!_focusWasInSwapTarget) return;
-  _focusWasInSwapTarget = false;
   var target = evt && evt.detail && evt.detail.target;
-  if (!target || !target.focus) return;
+  if (!target || !target[FOCUS_WAS_INSIDE]) return;
+  //< consumed, not merely read: a later settle of a region the user has since
+  //  left must not pull focus back out of wherever they are now
+  target[FOCUS_WAS_INSIDE] = false;
+  if (!target.focus) return;
   //< a container (a <div>, typically) is not focusable at all without one -
   //  document.body must never be where focus lands instead
   if (!target.hasAttribute || !target.hasAttribute('tabindex')) {
