@@ -139,7 +139,9 @@ function installProfileDom() {
     _pushed: [],
     pushState(state, title, url) { this._pushed.push({ state, url }); },
   };
-  global.location = { href: '/profile', origin: '' };
+  //< a real browser always has a real origin, and _syncNav resolves both the
+  //  nav hrefs and the target against it - an empty one makes `new URL` throw
+  global.location = { href: '/profile', origin: 'http://localhost' };
 
   global.document = {
     createElement(tag) {
@@ -335,6 +337,22 @@ run('_syncNav marks the matching link active and clears others', () => {
   assert.strictEqual(linkAcct._attrs['aria-current'], undefined);
 });
 
+run('_syncNav matches on path, ignoring a redirect query string and anchor', () => {
+  /* Every profile save redirects through routes/auth.py's _profileRedirect,
+     which appends ?success=...&flash_for=... and a #anchor. Back onto that
+     entry hands navigate() a URL no bare nav href can equal, and the swapped-in
+     tab was left with no .active and no aria-current at all. */
+  const { nav, linkAcct, linkShare } = installProfileDom();
+  nav.querySelectorAll = (sel) => (sel === 'a' ? [linkAcct, linkShare] : []);
+
+  ProfilePage._syncNav('/profile/sharing?success=1&flash_for=share#share-form');
+
+  assert.ok(linkShare.classList.contains('active'),
+            'the saved tab must keep its highlight after the redirect');
+  assert.strictEqual(linkShare._attrs['aria-current'], 'page');
+  assert.ok(!linkAcct.classList.contains('active'));
+});
+
 run('_swapBody removes old siblings and inserts new ones', () => {
   const { card, section } = installProfileDom();
 
@@ -449,6 +467,40 @@ run('a superseded response does not clear the loading state of the live one', as
     await second;
     assert.ok(!card.classList.contains('profile-tab-loading'),
               'and is cleared once the live one lands');
+  } finally {
+    restore();
+  }
+});
+
+run('a superseded FAILURE never reaches the caller', async () => {
+  /* init()'s catch turns a rejection into `location.href = href` for the click
+     that started it, so the abandoned tab answering 500 after the user had
+     clicked a second one hard-navigated the browser back to the tab they had
+     just left. Only the success path was sequence-guarded. */
+  const { pending, restore } = installNavigableProfileDom();
+  try {
+    const first  = ProfilePage.navigate('/profile');
+    const second = ProfilePage.navigate('/profile/sharing');
+
+    pending[0]({ ok: false, status: 500, text: () => Promise.resolve('') });
+    assert.strictEqual(await first, false,
+              'the abandoned tab failing must resolve quietly, not reject onto the live click');
+
+    pending[1](tabResponse('<section>SHARING</section>'));
+    assert.strictEqual(await second, true, 'and the live request still lands');
+  } finally {
+    restore();
+  }
+});
+
+run('the LIVE request still rejects when it fails', async () => {
+  /* The guard above must not swallow the rejection graceful degradation needs. */
+  const { pending, restore } = installNavigableProfileDom();
+  try {
+    const navigated = ProfilePage.navigate('/profile');
+    pending[0]({ ok: false, status: 503, text: () => Promise.resolve('') });
+    await assert.rejects(navigated, /HTTP 503/,
+              'the current request failing must still reject so init() can hard-navigate');
   } finally {
     restore();
   }

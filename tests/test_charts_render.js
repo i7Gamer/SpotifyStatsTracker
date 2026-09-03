@@ -293,6 +293,40 @@ run('the skip axis and the x-label spacing come from the library\'s constants', 
   assert.deepStrictEqual(page.labelSpacings, [77]);
 });
 
+// ------------------------------------------------- the hour-bucketed axis
+
+// The server hour-buckets BOTH single-day intervals (dashboard/date_ranges.py's
+// SINGLE_DAY_INTERVALS = ("today", "day")) and labels them "YYYY-MM-DD HH:00".
+// charts.js only knew about 'day', so the Today view - one option above
+// Yesterday in the same select - drew the whole date-and-time string at the
+// wide spacing meant for date labels.
+const HOUR_SERIES = [
+  { label: '2026-07-01 09:00', totalTimeListened: 60000, plays: 1, skips: 0 },
+  { label: '2026-07-01 10:00', totalTimeListened: 30000, plays: 1, skips: 0 },
+];
+
+function renderWithInterval(interval) {
+  const page = loadCharts({
+    defer: true,
+    chartData: { interval, timeSeries: HOUR_SERIES },
+    elements: { timeSeriesChart: makeCanvas() },
+  });
+  page.window.renderAllCharts();
+  return page;
+}
+
+run('the Today view gets the hour axis, not the date axis', () => {
+  assert.deepStrictEqual(renderWithInterval('today').labelSpacings, [30]);
+});
+
+run('the Yesterday view still gets the hour axis', () => {
+  assert.deepStrictEqual(renderWithInterval('day').labelSpacings, [30]);
+});
+
+run('a multi-day interval keeps the wide date-label spacing', () => {
+  assert.deepStrictEqual(renderWithInterval('month').labelSpacings, [77]);
+});
+
 (async () => {
   for (const { name, fn } of results) {
     try {

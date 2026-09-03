@@ -37,6 +37,15 @@
   var Y_AXIS_LABEL_GAP_PX = CU.Y_AXIS_LABEL_GAP_PX;
   var Y_AXIS_MIN_PADDING_PX = 34;  //< floor so narrow labels (e.g. "0m") still get consistent left padding
 
+  // The intervals the SERVER buckets by hour, so the labels arrive shaped
+  // "YYYY-MM-DD HH:00" and only the time half belongs on the axis. This is the
+  // client's copy of dashboard/date_ranges.py's SINGLE_DAY_INTERVALS, and it
+  // had drifted: only 'day' was listed, so the Today view - which the server
+  // hour-buckets exactly like Yesterday - drew the whole date-and-time string
+  // at the wide spacing meant for date labels.
+  var HOUR_BUCKETED_INTERVALS = ['day', 'today'];
+  var HOUR_AXIS_LABEL_SPACING_PX = 30;   //< "HH:00" is far narrower than a date, so it can sit closer
+
   function msToShortLabel(ms) {
     if (!ms) {
       return '0m';
@@ -97,7 +106,7 @@
     }
     var data = (window.__chartData && window.__chartData.timeSeries) || [];
     var interval = (window.__chartData && window.__chartData.interval) || '';
-    var isLastDay = interval === 'day';
+    var isLastDay = HOUR_BUCKETED_INTERVALS.indexOf(interval) !== -1;
     var setup = setupCanvas(canvas, 260);
     var ctx = setup.ctx, width = setup.width, height = setup.height;
     ctx.clearRect(0, 0, width, height);
@@ -169,7 +178,7 @@
     var labels = isLastDay
       ? data.map(function (d) { return d.label.split(' ')[1]; })  // Extract "HH:00" from "YYYY-MM-DD HH:00"
       : data.map(function (d) { return d.label; });
-    var labelSpacing = isLastDay ? 30 : MIN_AXIS_LABEL_SPACING_PX;
+    var labelSpacing = isLastDay ? HOUR_AXIS_LABEL_SPACING_PX : MIN_AXIS_LABEL_SPACING_PX;
     drawSparseXLabels(ctx, labels, paddingLeft, plotWidth, plotHeight, paddingTop, function (i) {
       return paddingLeft + i * slotWidth + slotWidth / 2;
     }, labelSpacing);

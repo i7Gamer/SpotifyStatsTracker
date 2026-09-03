@@ -125,6 +125,18 @@
           _runInlineScripts();
           return true;
         })
+        .catch(function (error) {
+          //< a SUPERSEDED request's failure must not reach the caller: init()'s
+          //  catch turns a rejection into `location.href = href` for the click
+          //  that started it, so a slow first tab answering 500 after the user
+          //  had clicked a second one hard-navigated back to the tab they had
+          //  left. Same guard the success path above has carried since the
+          //  two-clicks fix; the rejection path never got one (see the note
+          //  there on why an AbortController was rejected for creating exactly
+          //  this rejection - it also arrives on its own from any failure).
+          if (seq !== _navSeq) return false;
+          throw error;
+        })
         .finally(function () {
           //< the class is shared, so a stale response clearing it would stop the
           //  page looking busy while the request it is waiting on is still open

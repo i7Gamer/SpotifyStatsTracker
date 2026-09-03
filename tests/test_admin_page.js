@@ -171,6 +171,41 @@ run('a superseded response does not clear the loading state of the live one', as
   }
 });
 
+run('a superseded FAILURE never reaches the caller', async () => {
+  // init()'s catch turns a rejection into `location.href = href` for the click
+  // that started it. So the abandoned tab answering 500 after the user had
+  // clicked a second one hard-navigated the browser straight back to the tab
+  // they had just left, discarding the request they actually wanted. Only the
+  // success path was sequence-guarded.
+  const { AdminPage, pending, restore } = setupNavigableWindow('http://localhost/admin');
+  try {
+    const first = AdminPage.navigate('/admin?tab=sync');
+    const second = AdminPage.navigate('/admin?tab=users');
+
+    pending[0]({ ok: false, status: 500, text: () => Promise.resolve('') });
+    assert.strictEqual(await first, false,
+      'the abandoned tab failing must resolve quietly, not reject onto the live click');
+
+    pending[1](tabResponse('USERS'));
+    assert.strictEqual(await second, true, 'and the live request still lands');
+  } finally {
+    restore();
+  }
+});
+
+run('the LIVE request still rejects when it fails', async () => {
+  // The guard above must not swallow the rejection graceful degradation needs.
+  const { AdminPage, pending, restore } = setupNavigableWindow('http://localhost/admin');
+  try {
+    const navigated = AdminPage.navigate('/admin?tab=sync');
+    pending[0]({ ok: false, status: 503, text: () => Promise.resolve('') });
+    await assert.rejects(navigated, /HTTP 503/,
+      'the current request failing must still reject so init() can hard-navigate');
+  } finally {
+    restore();
+  }
+});
+
 run('a non-ok response rejects with the http status', async () => {
   // navigate()'s graceful degradation (init()'s catch -> location.href) only
   // kicks in if this rejects; a fetch that lands but 500s used to have no

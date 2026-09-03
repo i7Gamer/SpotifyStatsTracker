@@ -67,8 +67,15 @@
   function _syncNav(href) {
     var nav = document.querySelector(SUBNAV_SEL);
     if (!nav) return;
+    /* Compared by PATH, the way static/js/admin-page.js's twin already does
+       it, not by the whole href string. Every profile save redirects through
+       routes/auth.py's _profileRedirect, which appends ?success=…&flash_for=…
+       and a #anchor - so after a save, Back onto that entry handed this a URL
+       no bare nav href could ever equal, and the swapped-in tab was left with
+       no .active and no aria-current at all. */
+    var targetPath = new URL(href, location.origin).pathname;
     nav.querySelectorAll('a').forEach(function (a) {
-      var match = a.getAttribute('href') === href;
+      var match = new URL(a.getAttribute('href'), location.origin).pathname === targetPath;
       a.classList.toggle('active', match);
       if (match) {
         a.setAttribute('aria-current', 'page');
@@ -208,6 +215,21 @@
           _syncNav(url.replace(location.origin, ''));
           _runInlineScripts();
           return true;
+        })
+        .catch(function (error) {
+          /* A SUPERSEDED request's failure must not reach the caller. init()'s
+             catch below turns a rejection into `location.href = href` for the
+             click that started it, so a slow first tab answering 500 after the
+             user had already clicked a second one hard-navigated the browser
+             back to the tab they had left - discarding the request they
+             actually wanted.
+
+             The comment above explains why an AbortController was rejected for
+             creating exactly this rejection; the same shape arrives on its own
+             from any HTTP or network failure, and only the success path was
+             guarded. */
+          if (seq !== _navSeq) return false;
+          throw error;
         })
         .finally(function () {
           /* The class is shared, so a stale response clearing it would stop the
