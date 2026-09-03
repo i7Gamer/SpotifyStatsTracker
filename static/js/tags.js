@@ -155,11 +155,11 @@ if (typeof window !== 'undefined') (function() {
           .then(function(data) { return tagUpdateOutcome(res.ok, data, fallbackMessage); });
       })
       .then(function(outcome) {
-        if (!outcome) { settleTagRequest(); return; }   //< navigating to /login
+        if (!outcome) { return settleTagRequest(); }   //< navigating to /login
         /* Checked AFTER the 401 peel above and never before it: a 401 is news
            about the SESSION, which every in-flight submit shares, so whichever
            one notices acts on it (see wrapped.js, same rule). */
-        if (seq !== tagSeq) { settleTagRequest(); return; }
+        if (seq !== tagSeq) { return settleTagRequest(); }
         if (outcome.apply) {
           hideTagError();
           //< mid-span, this response's own tags list isn't trusted - only the
