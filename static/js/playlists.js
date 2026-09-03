@@ -9,6 +9,9 @@
     var exportFormat = document.getElementById('exportFormat');
     var previewCount = document.getElementById('previewCount');
     var btnDownload = document.getElementById('btnDownloadPlaylist');
+    //< UT-18 (2026-09-02 review): "Select one or more tags above..." used to
+    //  stay on screen even once a real count sat right next to it
+    var tagSelectionHint = document.getElementById('tagSelectionHint');
 
     var selectedTags = new Set();
 
@@ -66,6 +69,9 @@
 
     function updatePreview() {
       var token = ++previewToken;
+      //< owns the hint the same way it owns previewCount/btnDownload: visible
+      //  exactly while there is nothing to preview
+      if (tagSelectionHint) tagSelectionHint.hidden = selectedTags.size > 0;
       if (selectedTags.size === 0) {
         if (previewCount) previewCount.textContent = '0 tracks match selection';
         if (btnDownload) btnDownload.disabled = true;
@@ -94,7 +100,11 @@
           if (token !== previewToken) return;   //< superseded by a newer selection
           var cnt = data.track_count || 0;
           if (previewCount) {
-            previewCount.textContent = cnt + ' track' + (cnt !== 1 ? 's' : '') + ' match selection';
+            //< UT-18: the noun pluralised ("track"/"tracks") but the verb
+            //  stayed plural regardless - "1 track match selection" reads
+            //  wrong. A count of exactly one is the only singular subject.
+            previewCount.textContent = cnt + ' track' + (cnt !== 1 ? 's' : '') +
+              (cnt === 1 ? ' matches' : ' match') + ' selection';
           }
           if (btnDownload) {
             btnDownload.disabled = (cnt === 0);

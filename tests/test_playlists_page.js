@@ -121,6 +121,12 @@ function run(name, fn) { results.push({ name, fn }); }
 
 // ------------------------------------------------------------ tag selection
 
+//< the static hint's stand-in - hidden tracked the way a real element's
+//  `.hidden` property is (see the convention note on UT-18 below)
+function makeHint() {
+  return { hidden: false };
+}
+
 function previewSetup(options) {
   const chipA = makeChip('jazz');
   const chipB = makeChip('lofi');
@@ -129,14 +135,15 @@ function previewSetup(options) {
   const matchMode = makeControl('any');
   const sortBy = makeControl('plays');
   const exportFormat = makeControl('m3u');
+  const tagSelectionHint = makeHint();
   const calls = loadPlaylists(Object.assign({
     selectors: { '.playlist-tag-chip': [chipA, chipB] },
     //< the id really is btnDownloadPlaylist; keying this map on the local name
     //  instead left the script with a null button, and every assertion about
     //  `disabled` then passed against the stub's own untouched initial value
-    elements: { previewCount, btnDownloadPlaylist: btnDownload, matchMode, sortBy, exportFormat },
+    elements: { previewCount, btnDownloadPlaylist: btnDownload, matchMode, sortBy, exportFormat, tagSelectionHint },
   }, options || {}));
-  return { calls, chipA, chipB, previewCount, btnDownload, matchMode, sortBy, exportFormat };
+  return { calls, chipA, chipB, previewCount, btnDownload, matchMode, sortBy, exportFormat, tagSelectionHint };
 }
 
 run('selecting a tag asks how many tracks match', async () => {
@@ -152,13 +159,25 @@ run('selecting a tag asks how many tracks match', async () => {
   assert.strictEqual(dom.btnDownload.disabled, false);
 });
 
-run('one match is reported in the singular', async () => {
+run('one match is reported in the singular, verb agreeing with it', async () => {
+  //< UT-18 (2026-09-02 review): "1 track match selection" pluralised the noun
+  //  ("track" -> stayed singular, correctly) but left the verb in its plural
+  //  form ("match") - a singular subject takes "matches".
   const dom = previewSetup({ respond: jsonOnce({ track_count: 1 }) });
 
   dom.chipA.click();
   await tick();
 
-  assert.strictEqual(dom.previewCount.textContent, '1 track match selection');
+  assert.strictEqual(dom.previewCount.textContent, '1 track matches selection');
+});
+
+run('more than one match keeps the plural verb', async () => {
+  const dom = previewSetup({ respond: jsonOnce({ track_count: 5 }) });
+
+  dom.chipA.click();
+  await tick();
+
+  assert.strictEqual(dom.previewCount.textContent, '5 tracks match selection');
 });
 
 run('a selection matching nothing leaves Download disabled', async () => {
@@ -182,6 +201,39 @@ run('deselecting the last tag asks the server nothing at all', async () => {
   assert.strictEqual(dom.calls.fetched.length, asked, 'an empty selection is answered locally');
   assert.strictEqual(dom.previewCount.textContent, '0 tracks match selection');
   assert.strictEqual(dom.btnDownload.disabled, true);
+});
+
+// UT-18: templates/playlists.html's "Select one or more tags above to
+// generate a playlist." hint was static markup with no id/toggle - it stayed
+// visible even once tags were selected and a real count was on screen right
+// next to it. updatePreview owns previewCount/btnDownload's state already, so
+// it also owns the hint's: hidden once a selection exists, shown again once
+// it's empty. `.hidden`, not a style write, per the convention already in use
+// elsewhere in this codebase (toggle the property, not inline display).
+
+run('the hint starts visible with nothing selected', () => {
+  const dom = previewSetup();
+
+  assert.strictEqual(dom.tagSelectionHint.hidden, false);
+});
+
+run('selecting a tag hides the hint', async () => {
+  const dom = previewSetup({ respond: jsonOnce({ track_count: 12 }) });
+
+  dom.chipA.click();
+  await tick();
+
+  assert.strictEqual(dom.tagSelectionHint.hidden, true);
+});
+
+run('clearing the selection shows the hint again', async () => {
+  const dom = previewSetup({ respond: jsonOnce({ track_count: 12 }) });
+  dom.chipA.click();
+  await tick();
+
+  dom.chipA.click();          //< toggles it back off, the empty-selection branch
+
+  assert.strictEqual(dom.tagSelectionHint.hidden, false);
 });
 
 // UT-8: the chip's selected state was inline styles only (background/border/
