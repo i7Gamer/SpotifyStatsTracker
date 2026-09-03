@@ -125,8 +125,17 @@
              rather than a URL param edited by hand is what lets htmx build the
              whole query string from one place. #}
           <input type="hidden" name="sort" id="historySortValue" value="{{ 'oldest' if sort == 'oldest' else '' }}">
+          {# aria-pressed + a wording that names the actual state (2026-09-02
+             review, UT-15): mirrors _play_log.html's sort-toggle link, whose
+             aria-label already says which order is active and which a click
+             would switch to, rather than the fixed "Toggle date sort order"
+             this button carried - a toggle BUTTON's state is what a screen
+             reader reads, so it also gets aria-pressed (the detail-history.js
+             filter-tab pattern). static/js/history-page.js's
+             updateHistorySort keeps both attributes in step after a click. #}
           <button type="button" class="button sort-toggle" id="historySort" onclick="updateHistorySort()"
-                  aria-label="Toggle date sort order">Date {{ '↑' if sort == 'oldest' else '↓' }}</button>
+                  aria-pressed="{{ 'true' if sort == 'oldest' else 'false' }}"
+                  aria-label="Sorted {{ 'oldest' if sort == 'oldest' else 'newest' }} first - click to sort {{ 'newest' if sort == 'oldest' else 'oldest' }} first">Date {{ '↑' if sort == 'oldest' else '↓' }}</button>
         </div>
 
         {% if tags_enabled and user_tags %}

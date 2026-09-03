@@ -84,7 +84,17 @@ if (typeof document !== 'undefined') {
     var field = byId('historySortValue');
     var next = field.value === 'oldest' ? '' : 'oldest';
     field.value = next;
-    byId('historySort').textContent = next === 'oldest' ? 'Date ↑' : 'Date ↓';
+    var oldest = next === 'oldest';
+    var button = byId('historySort');
+    button.textContent = oldest ? 'Date ↑' : 'Date ↓';
+    //< kept in step with the same wording templates/history.html renders on
+    //  first load (2026-09-02 review, UT-15) - a toggle button's state is
+    //  what a screen reader reads (the detail-history.js filter-tab pattern),
+    //  and the label names both the active order and what a click switches to
+    //  rather than the fixed "Toggle date sort order" it used to carry.
+    button.setAttribute('aria-pressed', String(oldest));
+    button.setAttribute('aria-label', 'Sorted ' + (oldest ? 'oldest' : 'newest') +
+      ' first - click to sort ' + (oldest ? 'newest' : 'oldest') + ' first');
     byId(HISTORY_FORM_ID).dispatchEvent(new Event('historyRefresh'));
   };
 

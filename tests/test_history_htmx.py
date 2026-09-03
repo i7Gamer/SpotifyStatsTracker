@@ -220,6 +220,25 @@ class TestShell(HistoryHtmxTestCase):
         self.assertIn('id="dateError" class="date-error" role="alert"', body)
         self.assertEqual(body.count('aria-describedby="dateError"'), 2)
 
+    def test_the_sort_toggle_carries_its_pressed_state_on_first_render(self):
+        """UT-15 (2026-09-02 review): the sort button's aria-label was a fixed
+        "Toggle date sort order" and it carried no aria-pressed - a screen
+        reader could not tell which order was active without reading the
+        "Date up-arrow/down-arrow" glyph. static/js/history-page.js's
+        updateHistorySort keeps both in step after a click (see
+        tests/test_history_page.js); this pins what the server renders BEFORE
+        any click, for both the default order and a page reloaded with
+        ?sort=oldest already in the URL."""
+        body = self._loggedInShell()
+        self.assertIn('id="historySort"', body)
+        self.assertIn('aria-pressed="false"', body)
+        self.assertIn('aria-label="Sorted newest first - click to sort oldest first"', body)
+
+        self._login()
+        oldestBody = self.client.get("/history?sort=oldest").get_data(as_text=True)
+        self.assertIn('aria-pressed="true"', oldestBody)
+        self.assertIn('aria-label="Sorted oldest first - click to sort newest first"', oldestBody)
+
     def test_every_swap_dims_the_list_while_it_loads(self):
         """The indicator has to sit on the container, not only on the filter
         form: a boosted pagination link would otherwise mark ITSELF as busy and

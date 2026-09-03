@@ -819,6 +819,23 @@ class TestPaginationExtras(_ListRouteTestBase):
 
         self.assertIn('class="pagination-page active"', resultsHtml)
 
+    def test_current_page_link_carries_aria_current(self):
+        """UT-15 (2026-09-02 review): the active page link was colour ('active')
+        alone, the same gap UI-04 closed for the year/counterpart/genre
+        pickers. Exactly one link in the window gets aria-current="page", and
+        it is the current page, not merely present somewhere in the markup."""
+        import bs4
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=500)   #< 10 pages of PAGE_SIZE=50
+
+        _, resultsHtml = self._getHistoryList(dash, db, query="?page=5")
+
+        links = bs4.BeautifulSoup(resultsHtml, "html.parser").select(".pagination-page")
+        current = [a for a in links if a.has_attr("aria-current")]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["aria-current"], "page")
+        self.assertEqual(current[0].text.strip(), "5")
+
     def test_no_ellipsis_when_all_pages_fit_in_the_window(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=120)   #< 3 pages, well within the window

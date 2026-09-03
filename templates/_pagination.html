@@ -11,7 +11,14 @@
       {% if link.ellipsis %}
         <span class="pagination-ellipsis">&hellip;</span>
       {% else %}
-        <a class="pagination-page{{ ' active' if link.current else '' }}" href="{{ link.url }}">{{ link.num }}</a>
+        {# aria-current after the class attribute (2026-09-02 review, UT-15,
+           the UI-04 pattern) so the existing 'class="pagination-page active"'
+           substring assertions keep matching. An {% if %} block, not a
+           {{ }} expression: autoescaping a string containing literal quote
+           characters turns them into &#34; entities, which renders as an
+           unquoted attribute whose value is the four literal characters
+           "page" (quotes included) instead of a real attribute. #}
+        <a class="pagination-page{{ ' active' if link.current else '' }}"{% if link.current %} aria-current="page"{% endif %} href="{{ link.url }}">{{ link.num }}</a>
       {% endif %}
     {% endfor %}
     {% if nextUrl %}

@@ -23,6 +23,18 @@ function makeField(value) {
   return { value: value === undefined ? '' : value, textContent: '' };
 }
 
+//< a button tracking aria-pressed/aria-label the way the real DOM would -
+//  the same shape as makeDateField below, plus textContent for the button's
+//  own "Date up-arrow/down-arrow" glyph
+function makeToggleButton() {
+  const attrs = {};
+  return {
+    textContent: '',
+    setAttribute(name, val) { attrs[name] = val; },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null; },
+  };
+}
+
 //< a date input, tracking aria-invalid the way the real DOM would
 function makeDateField(value) {
   const attrs = {};
@@ -77,7 +89,7 @@ function loadHistory(options) {
 
 function sortElements(currentValue) {
   const field = makeField(currentValue);
-  const button = makeField();
+  const button = makeToggleButton();
   const form = makeForm();
   return {
     elements: { historySortValue: field, historySort: button, historyFilters: form },
@@ -129,6 +141,32 @@ run('two flips return to exactly where they started', () => {
   assert.strictEqual(dom.field.value, '');
   assert.strictEqual(dom.button.textContent, 'Date ↓');
   assert.deepStrictEqual(dom.form.dispatched, ['historyRefresh', 'historyRefresh']);
+});
+
+// aria-pressed and a descriptive aria-label follow the same flip (UT-15,
+// 2026-09-02 review) - the fixed "Toggle date sort order" label never told a
+// screen reader which order was active, and the button carried no
+// aria-pressed at all, unlike detail-history.js's filter tabs.
+run('flipping to oldest sets aria-pressed and names both the active and next order', () => {
+  const dom = sortElements('');
+  const page = loadHistory({ elements: dom.elements });
+
+  page.window.updateHistorySort();
+
+  assert.strictEqual(dom.button.getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(dom.button.getAttribute('aria-label'),
+    'Sorted oldest first - click to sort newest first');
+});
+
+run('flipping back to newest clears aria-pressed and relabels for the reverse click', () => {
+  const dom = sortElements('oldest');
+  const page = loadHistory({ elements: dom.elements });
+
+  page.window.updateHistorySort();
+
+  assert.strictEqual(dom.button.getAttribute('aria-pressed'), 'false');
+  assert.strictEqual(dom.button.getAttribute('aria-label'),
+    'Sorted newest first - click to sort oldest first');
 });
 
 // ------------------------------------------------------------ jump to page
