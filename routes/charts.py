@@ -219,17 +219,80 @@ def register(app, dashboard):
                            sortBy=filters["sortBy"], **idKwarg)
         return uniqueCount
 
-    # What the movement endpoint needs to reproduce a page's ranking against
-    # the period before it: the same getter, and the same tag lookup narrowing
-    # it. Keyed by `section`, so the three pages and the endpoint share one
-    # vocabulary rather than mapping one set of names onto another.
-    _MOVEMENT_KINDS = {
-        "top_songs": {"getter": "getTopSongs", "tagIds": "getTaggedTrackIds",
-                      "idsKwarg": "trackIds", "entity": "track"},
-        "top_artists": {"getter": "getTopArtists", "tagIds": "getTaggedArtistIds",
-                        "idsKwarg": "artistIds", "entity": "artist"},
-        "top_albums": {"getter": "getTopAlbums", "tagIds": "getTaggedAlbumIds",
-                       "idsKwarg": "albumIds", "entity": "album"},
+    # The header cards' totals + the "Unique X" stat card, one small function
+    # per section because the underlying aggregates genuinely differ in
+    # shape (getArtistTotals returns a third number the other two don't) -
+    # everything else about the three Top pages is identical enough to share
+    # _topListPage below. `ids` is the tag-scoped id list (see
+    # _TOP_LIST_KINDS' `idsKwarg`), already resolved by the caller.
+    def _songsStats(db, startDate, endDate, fullPlaysOnly, ids):
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly, trackIds=ids)
+        uniqueCount = db.getSongsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly, trackIds=ids)
+        return totalPlays, totalMs, uniqueCount, [
+            {"label": "Total Plays", "value": totalPlays},
+            {"label": "Time", "value": msToString(totalMs)},
+            {"label": "Unique Songs", "value": uniqueCount},
+        ]
+
+    def _albumsStats(db, startDate, endDate, fullPlaysOnly, ids):
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly, albumIds=ids)
+        uniqueCount = db.getAlbumsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly, albumIds=ids)
+        return totalPlays, totalMs, uniqueCount, [
+            {"label": "Total Plays (top list)", "value": totalPlays},
+            {"label": "Time", "value": msToString(totalMs)},
+            {"label": "Unique Albums", "value": uniqueCount},
+        ]
+
+    def _artistsStats(db, startDate, endDate, fullPlaysOnly, ids):
+        totalPlays, totalUnique, totalMs = db.getArtistTotals(
+            startDate, endDate, fullPlaysOnly=fullPlaysOnly, artistIds=ids)
+        uniqueCount = db.getArtistsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly, artistIds=ids)
+        return totalPlays, totalMs, uniqueCount, [
+            {"label": "Total Plays (top list)", "value": totalPlays},
+            {"label": "Unique Songs (top list)", "value": totalUnique},
+            {"label": "Unique Artists", "value": uniqueCount},
+        ]
+
+    # The one step besides `stats` that isn't shared verbatim: songs run an
+    # extra _embedSongsTextElements pass the other two don't need.
+    def _songsEmbed(items, sortBy, totalPlays, totalMs):
+        items = dashboard._embedSongsTextElements(items)
+        return dashboard._embedTopSongsTextElements(items, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+
+    def _albumsEmbed(items, sortBy, totalPlays, totalMs):
+        return dashboard._embedAlbumsTextElements(items, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+
+    def _artistsEmbed(items, sortBy, totalPlays, totalMs):
+        return dashboard._embedArtistsTextElements(items, sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+
+    # Everything that tells the three Top pages apart, keyed by `section` so
+    # _topListPage and topListMovement share one vocabulary rather than
+    # mapping one set of names onto another (CORE-7, 2026-09-02 review - this
+    # table used to be _MOVEMENT_KINDS, movement-endpoint-only; the four
+    # fields below are all it ever needed, and are exactly what _topListPage
+    # needs too).
+    _TOP_LIST_KINDS = {
+        "top_songs": {
+            "getter": "getTopSongs", "tagIds": "getTaggedTrackIds",
+            "idsKwarg": "trackIds", "entity": "track", "countFn": "getSongsCount",
+            "template": "top_songs.html", "endpoint": "topSongsPage",
+            "emptyMessage": "No top songs available. Import some listening history first.",
+            "stats": _songsStats, "embed": _songsEmbed,
+        },
+        "top_artists": {
+            "getter": "getTopArtists", "tagIds": "getTaggedArtistIds",
+            "idsKwarg": "artistIds", "entity": "artist", "countFn": "getArtistsCount",
+            "template": "top_artists.html", "endpoint": "topArtistsPage",
+            "emptyMessage": "No top artists available. Import some listening history first.",
+            "stats": _artistsStats, "embed": _artistsEmbed,
+        },
+        "top_albums": {
+            "getter": "getTopAlbums", "tagIds": "getTaggedAlbumIds",
+            "idsKwarg": "albumIds", "entity": "album", "countFn": "getAlbumsCount",
+            "template": "top_albums.html", "endpoint": "topAlbumsPage",
+            "emptyMessage": "No top albums available. Import some listening history first.",
+            "stats": _albumsStats, "embed": _albumsEmbed,
+        },
     }
 
     # The movement URL carries the page's ids positionally: position i is rank
@@ -327,7 +390,7 @@ def register(app, dashboard):
         plain 401: this is a background request, and answering it with
         HX-Redirect would navigate the whole page away from under someone who
         is reading it."""
-        spec = _MOVEMENT_KINDS.get(request.args.get("kind", ""))
+        spec = _TOP_LIST_KINDS.get(request.args.get("kind", ""))
         filters = _topListFilters(db, username)
         if spec is None or filters["sortBy"] not in MOVEMENT_SORT_BY:
             return ""
@@ -406,6 +469,64 @@ def register(app, dashboard):
             emptyMessage=_narrowedEmptyMessage(
                 filters["searchQuery"], filters["tag"], filters["interval"], emptyMessage),
             movementUrl=_movementUrl(section, filters, page, dateRange, items), **pagination)
+
+    def _topListPage(username, db, section):
+        """The Top Songs/Artists/Albums route body, shared (CORE-7,
+        2026-09-02 review): which aggregate to read and what to call things
+        (see _TOP_LIST_KINDS) is the only thing that ever differed between
+        the three - the two-phase shell split, the pagination context and
+        the results render were written out three times, which is how the
+        skip-sort filters got fixed in one and missed in the others before
+        _topListFilters/_topListResults existed (reviewFindings.md
+        2026-07-25 item 10; d441a77 stopped at those shared helpers)."""
+        spec = _TOP_LIST_KINDS[section]
+        filters = _topListFilters(db, username)
+        if not isHtmxSwap():
+            return _topListShell(section, spec["template"], spec["endpoint"], username, filters)
+
+        tag = filters["tag"]
+        ids = getattr(db.repo, spec["tagIds"])(username, [tag]) if tag else None
+        startDate, endDate = dashboard._getDateRange(
+            filters["interval"], filters["customStart"], filters["customEnd"],
+            default="all time", tz=db.tz)
+        fullPlaysOnly = filters["fullPlaysOnly"]
+        idKwarg = {spec["idsKwarg"]: ids}
+
+        # The header cards' totals are a whole-range aggregate regardless of
+        # search - a cheap dedicated query (spec["stats"]) instead of
+        # summing every item's metadata. The TAG filter DOES scope them
+        # (unlike search): a tag narrows what the page is about, so cards
+        # reading whole-library numbers above a tag-filtered list
+        # contradicted the pager right below them.
+        totalPlays, totalMs, uniqueCount, statCards = spec["stats"](db, startDate, endDate, fullPlaysOnly, ids)
+
+        totalCount = _topListTotal(
+            filters, lambda **kw: getattr(db, spec["countFn"])(startDate, endDate, **kw), uniqueCount,
+            **idKwarg)
+        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
+        # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
+        # WHERE-clause matching instead of sorting+hydrating+filtering every
+        # item ever played in Python.
+        items = getattr(db, spec["getter"])(
+            startDate=startDate, endDate=endDate, by=filters["sortBy"],
+            limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
+            fullPlaysOnly=fullPlaysOnly, **idKwarg)
+
+        items = spec["embed"](items, filters["sortBy"], totalPlays, totalMs)
+        items = dashboard._attachGenres(db, items, spec["entity"])
+
+        return _topListResults(
+            section, spec["endpoint"], username, filters, items, statCards=statCards,
+            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
+            dateRange=(startDate, endDate), emptyMessage=spec["emptyMessage"])
+
+    # Reachable as dashboard._topListPage rather than only as the bare closure
+    # above: the three one-line routes below call it through `dashboard` so a
+    # test can patch.object(dash, "_topListPage") and assert each one passes
+    # its own section - patching the closure itself has no effect on what a
+    # route calls, since Python resolves a free variable lexically, not
+    # through the instance.
+    dashboard._topListPage = _topListPage
 
     def overviewPage():
         # Intentionally unauthenticated: aggregate counts/DB size carry no
@@ -910,141 +1031,17 @@ def register(app, dashboard):
 
     @requiresUser
     def topSongsPage(username, db):
-        filters = _topListFilters(db, username)
-        if not isHtmxSwap():
-            return _topListShell("top_songs", "top_songs.html", "topSongsPage", username, filters)
-
-        tag = filters["tag"]
-        trackIds = db.repo.getTaggedTrackIds(username, [tag]) if tag else None
-        startDate, endDate = dashboard._getDateRange(
-            filters["interval"], filters["customStart"], filters["customEnd"],
-            default="all time", tz=db.tz)
-        fullPlaysOnly = filters["fullPlaysOnly"]
-        # totalPlays/totalMs are a whole-range aggregate regardless of search -
-        # a cheap dedicated query instead of summing every song's metadata.
-        # The TAG filter does scope them (unlike search): a tag narrows what
-        # the page is about, so cards reading whole-library numbers above a
-        # tag-filtered list contradicted the pager right below them.
-        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
-                                               trackIds=trackIds)
-        uniqueSongs = db.getSongsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
-                                       trackIds=trackIds)
-
-        totalCount = _topListTotal(
-            filters, lambda **kw: db.getSongsCount(startDate, endDate, **kw), uniqueSongs,
-            trackIds=trackIds)
-        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-        # Only materialize the page being shown - SQL-level LIMIT/OFFSET and
-        # WHERE-clause matching (see Repository.getSongsPage) instead of
-        # sorting+hydrating+filtering every song ever played in Python.
-        tracks = db.getTopSongs(startDate=startDate, endDate=endDate, by=filters["sortBy"],
-                                 limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
-                                 trackIds=trackIds, fullPlaysOnly=fullPlaysOnly)
-
-        tracks = dashboard._embedSongsTextElements(tracks)
-        tracks = dashboard._embedTopSongsTextElements(
-            tracks, sortBy=filters["sortBy"], totalPlays=totalPlays, totalMs=totalMs)
-        tracks = dashboard._attachGenres(db, tracks, "track")
-
-        return _topListResults(
-            "top_songs", "topSongsPage", username, filters, tracks,
-            statCards=[
-                {"label": "Total Plays", "value": totalPlays},
-                {"label": "Time", "value": msToString(totalMs)},
-                {"label": "Unique Songs", "value": uniqueSongs},
-            ],
-            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
-            dateRange=(startDate, endDate),
-            emptyMessage="No top songs available. Import some listening history first.")
+        return dashboard._topListPage(username, db, "top_songs")
     app.add_url_rule("/top-songs", "topSongsPage", topSongsPage, methods=["GET"])
 
     @requiresUser
     def topAlbumsPage(username, db):
-        filters = _topListFilters(db, username)
-        if not isHtmxSwap():
-            return _topListShell("top_albums", "top_albums.html", "topAlbumsPage", username, filters)
-
-        tag = filters["tag"]
-        albumIds = db.repo.getTaggedAlbumIds(username, [tag]) if tag else None
-        startDate, endDate = dashboard._getDateRange(
-            filters["interval"], filters["customStart"], filters["customEnd"],
-            default="all time", tz=db.tz)
-        fullPlaysOnly = filters["fullPlaysOnly"]
-        #< albumIds: the tag filter scopes the header cards too - see topSongsPage
-        totalPlays, totalMs = db.getPlayTotals(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
-                                               albumIds=albumIds)
-        uniqueAlbums = db.getAlbumsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
-                                         albumIds=albumIds)
-
-        totalCount = _topListTotal(
-            filters, lambda **kw: db.getAlbumsCount(startDate, endDate, **kw), uniqueAlbums,
-            albumIds=albumIds)
-        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-        albums = db.getTopAlbums(startDate=startDate, endDate=endDate, by=filters["sortBy"],
-                                  limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
-                                  albumIds=albumIds, fullPlaysOnly=fullPlaysOnly)
-
-        albums = dashboard._embedAlbumsTextElements(
-            albums, sortBy=filters["sortBy"], totalPlays=totalPlays, totalMs=totalMs)
-        albums = dashboard._attachGenres(db, albums, "album")
-
-        return _topListResults(
-            "top_albums", "topAlbumsPage", username, filters, albums,
-            statCards=[
-                {"label": "Total Plays (top list)", "value": totalPlays},
-                {"label": "Time", "value": msToString(totalMs)},
-                {"label": "Unique Albums", "value": uniqueAlbums},
-            ],
-            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
-            dateRange=(startDate, endDate),
-            emptyMessage="No top albums available. Import some listening history first.")
+        return dashboard._topListPage(username, db, "top_albums")
     app.add_url_rule("/top-albums", "topAlbumsPage", topAlbumsPage, methods=["GET"])
 
     @requiresUser
     def topArtistsPage(username, db):
-        filters = _topListFilters(db, username)
-        if not isHtmxSwap():
-            return _topListShell("top_artists", "top_artists.html", "topArtistsPage", username, filters)
-
-        tag = filters["tag"]
-        artistIds = db.repo.getTaggedArtistIds(username, [tag]) if tag else None
-        startDate, endDate = dashboard._getDateRange(
-            filters["interval"], filters["customStart"], filters["customEnd"],
-            default="all time", tz=db.tz)
-        fullPlaysOnly = filters["fullPlaysOnly"]
-        # totalPlays/totalUnique/totalMs are the whole (date-range-scoped) top
-        # list's totals regardless of search - mirrors getPlayTotals()'s role
-        # for the songs/albums pages, computed via a dedicated SQL aggregate
-        # instead of fetching every artist and summing in Python. The tag
-        # filter scopes them, like the songs/albums headers - see topSongsPage.
-        totalPlays, totalUnique, totalMs = db.getArtistTotals(startDate, endDate,
-                                                              fullPlaysOnly=fullPlaysOnly,
-                                                              artistIds=artistIds)
-        uniqueArtists = db.getArtistsCount(startDate, endDate, fullPlaysOnly=fullPlaysOnly,
-                                           artistIds=artistIds)
-
-        totalCount = _topListTotal(
-            filters, lambda **kw: db.getArtistsCount(startDate, endDate, **kw), uniqueArtists,
-            artistIds=artistIds)
-        page, totalPages, startIndex = dashboard._calculatePagination(totalCount)
-        artists = db.getTopArtists(startDate=startDate, endDate=endDate, by=filters["sortBy"],
-                                    limit=PAGE_SIZE, offset=startIndex, searchQuery=filters["searchQuery"],
-                                    artistIds=artistIds, fullPlaysOnly=fullPlaysOnly)
-
-        artists = dashboard._embedArtistsTextElements(
-            artists, sortBy=filters["sortBy"], totalPlays=totalPlays, totalMs=totalMs)
-        artists = dashboard._attachGenres(db, artists, "artist")
-
-        return _topListResults(
-            "top_artists", "topArtistsPage", username, filters, artists,
-            statCards=[
-                {"label": "Total Plays (top list)", "value": totalPlays},
-                {"label": "Unique Songs (top list)", "value": totalUnique},
-                {"label": "Unique Artists", "value": uniqueArtists},
-            ],
-            page=page, totalPages=totalPages, totalCount=totalCount, startIndex=startIndex,
-            dateRange=(startDate, endDate),
-            emptyMessage="No top artists available. Import some listening history first.")
+        return dashboard._topListPage(username, db, "top_artists")
     app.add_url_rule("/top-artists", "topArtistsPage", topArtistsPage, methods=["GET"])
 
     @requiresUser

@@ -23,7 +23,7 @@ here and in the sibling files, and only half checked all three things.
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -253,5 +253,33 @@ class TestFullPlaysOnlyToggle(TopListHtmxTestCase):
         for path in TOP_LIST_PATHS:
             with self.subTest(path=path):
                 self.assertIn("fullOnly=0", self._shell(path, "?fullOnly=0"))
+
+
+class TestEachRouteDelegatesToTopListPage(TopListHtmxTestCase):
+    """CORE-7 (2026-09-02 review): the three Top routes are now one-line
+    calls into dashboard._topListPage(username, db, section) - the shared
+    _TOP_LIST_KINDS table is what tells them apart, not three copies of the
+    route body. Patched on `dashboard` rather than imported from the module:
+    _topListPage is a closure inside routes/charts.py's register(), and each
+    route calls it as a free variable resolved from that enclosing scope, so
+    patching the closure object itself would have no effect on what the
+    route actually calls - dashboard._topListPage exists as a test seam for
+    exactly this reason (see its assignment in register())."""
+
+    _SECTION_BY_PATH = {
+        "/top-songs": "top_songs",
+        "/top-artists": "top_artists",
+        "/top-albums": "top_albums",
+    }
+
+    def test_each_route_calls_topListPage_with_its_own_section(self):
+        for path, section in self._SECTION_BY_PATH.items():
+            with self.subTest(path=path):
+                with patch.object(self.dash, "_topListPage", return_value=("", 200)) as mocked:
+                    self._login()
+                    resp = self.client.get(path)
+
+                self.assertEqual(resp.status_code, 200)
+                mocked.assert_called_once_with(self.username, ANY, section)
 
 
