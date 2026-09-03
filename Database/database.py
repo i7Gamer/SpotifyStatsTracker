@@ -1625,6 +1625,14 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # twice). getTracksByIds answers the whole set in 3, deduped. Still at
         # most 3 tracks with Fresh Find in the list - it is only ever set when
         # rediscovery is not.
+        #
+        # Deduped is exactly why each card below stamps its subtitle onto a COPY.
+        # One dict comes back per id, and a song last heard in the spring that is
+        # then played six times this week wins the obsession AND the rediscovery
+        # query - neither excludes the other. Sharing the object meant the second
+        # stamp overwrote the first, so the Obsession card rendered "6 plays this
+        # week - unplayed for 174 days". Only the top level is written to; the
+        # nested album/artist dicts are never mutated, so a shallow copy is enough.
         songsById = self.repo.getTracksByIds([
             item["track_id"] for item in
             (raw.get("obsession"), raw.get("rediscovery"), raw.get("freshFind"),
@@ -1635,6 +1643,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             item = raw["obsession"]
             song = songsById.get(item["track_id"])
             if song:
+                song = dict(song)   #< a copy per card - see getTracksByIds above
                 song["trend_subtitle"] = obsessionSubtitle(item)
                 result["obsession"] = song
 
@@ -1642,6 +1651,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             item = raw["rediscovery"]
             song = songsById.get(item["track_id"])
             if song:
+                song = dict(song)   #< a copy per card - see getTracksByIds above
                 song["trend_subtitle"] = rediscoverySubtitle(item, now_ts)
                 result["rediscovery"] = song
 
@@ -1649,6 +1659,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             item = raw["freshFind"]
             song = songsById.get(item["track_id"])
             if song:
+                song = dict(song)   #< a copy per card - see getTracksByIds above
                 song["trend_subtitle"] = freshFindSubtitle(item, now_ts)
                 result["freshFind"] = song
 
@@ -1656,6 +1667,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             item = raw["forgotten"]
             song = songsById.get(item["track_id"])
             if song:
+                song = dict(song)   #< a copy per card - see getTracksByIds above
                 song["trend_subtitle"] = forgottenSubtitle(item, now_ts)
                 result["forgotten"] = song
 

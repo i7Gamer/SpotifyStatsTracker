@@ -201,6 +201,59 @@ class TestTrendQueries(unittest.TestCase):
         self.assertIsNone(trends["freshFind"])
 
 
+class TestOneTrackFillingTwoSlots(unittest.TestCase):
+    """A song last heard in the spring, then played six times this week,
+    satisfies BOTH the obsession and the rediscovery query - and neither
+    excludes the other (only Fresh Find carries an obsession exclusion).
+
+    getTracksByIds returns ONE dict per id, so both cards were handed the same
+    object and the second stamp overwrote the first: the Obsession card
+    rendered the Rediscovery card's subtitle, "6 plays this week - unplayed for
+    174 days", and obsessionSubtitle's output was computed and thrown away."""
+
+    def setUp(self):
+        self.db = Database("alice", dbPath=Path(":memory:"), startWorkers=False)
+        self.repo = self.db.repo
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.now_ts = 1000000.0
+        day = 86400
+
+        self.repo.upsertTrack(makeTrack(trackId="both_track", name="Both Song"))
+        #< the old half: enough plays, long enough ago, to be a rediscovery
+        for i in range(5):
+            self.repo.insertPlay("alice", "both_track", self.now_ts - (200 * day) - (i * 100), 200000)
+        #< the recent half: enough plays this week to be an obsession too
+        for i in range(6):
+            self.repo.insertPlay("alice", "both_track", self.now_ts - (i * 3600), 200000)
+        self.repo.commit()
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+
+    def test_the_same_track_can_win_both_slots(self):
+        """The premise. If a query gains an exclusion later this fails first,
+        and says so, rather than the two tests below quietly passing on a
+        scenario that no longer exists."""
+        raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+
+        self.assertEqual(raw["obsession"]["track_id"], "both_track")
+        self.assertEqual(raw["rediscovery"]["track_id"], "both_track")
+
+    def test_each_card_keeps_its_own_subtitle(self):
+        trends = self.db.getDashboardTrends(now_ts=self.now_ts)
+
+        self.assertEqual(trends["obsession"]["trend_subtitle"], "6 plays in the past week")
+        self.assertIn("unplayed for", trends["rediscovery"]["trend_subtitle"])
+
+    def test_the_two_cards_are_not_the_same_object(self):
+        """The mechanism, pinned directly: a later card stamping its subtitle
+        must not be able to reach an earlier one."""
+        trends = self.db.getDashboardTrends(now_ts=self.now_ts)
+
+        self.assertIsNot(trends["obsession"], trends["rediscovery"])
+        self.assertEqual(trends["obsession"]["id"], trends["rediscovery"]["id"])
+
+
 class TestRediscoveryGapLadder(unittest.TestCase):
     """Rediscovery used to be all-or-nothing on the 180-day gap - the only one
     of the three cards with no fallback at all. It now walks the shorter gaps in
