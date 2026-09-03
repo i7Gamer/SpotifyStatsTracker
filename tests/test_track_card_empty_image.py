@@ -21,13 +21,20 @@ import jinja2
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from config import PLACEHOLDER_IMG_DATA_URI
+
 _TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
 
 
 def _renderTrackCard(**context):
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(_TEMPLATES), autoescape=True)
     env.globals["url_for"] = lambda *args, **kwargs: "#"
-    return env.get_template("_track_card.html").render(**context)
+    #< normally supplied by dashboard/context_processors.py's
+    #  _injectPlaceholderImage - this bare environment has no context
+    #  processors, so it's set explicitly here (2026-09-02 review, UT-13
+    #  follow-up: the partial used to hold its own copy of the literal)
+    return env.get_template("_track_card.html").render(
+        placeholderImgDataUri=PLACEHOLDER_IMG_DATA_URI, **context)
 
 
 class TrackCardEmptyImageTestCase(unittest.TestCase):
