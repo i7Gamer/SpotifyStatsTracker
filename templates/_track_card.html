@@ -63,6 +63,23 @@
      other include of this partial keeps the unqualified label. #}
   {% set wrappedCard = wrappedCard if wrappedCard is defined else false %}
 
+  {# The SAME caption, qualified again for the Top pages and Compare when a
+     time filter is on. getTopSongs/Artists/Albums compute
+     MIN(p.played_at) AS first_listened_at inside a statement whose WHERE
+     already carries the range clause, so on ?interval=week a song first played
+     in 2019 rendered "First Listened: <this week>". Only All Time is the
+     lifetime value the unqualified wording claims.
+
+     Set by the routes that know the resolved range - _topListResults and
+     comparePage's listArgs - from `startDate is not None`, which is what
+     _getDateRange returns for All Time and is independent of the two pages'
+     different spellings of it (""=All Time on Compare, "all time" on the Top
+     pages). Wrapped's own wording wins where both are set: its range IS the
+     year it already names. #}
+  {% set rangeScopedFirstListen = rangeScopedFirstListen if rangeScopedFirstListen is defined else false %}
+  {% set firstListenedLabel = 'First heard this year' if wrappedCard
+        else ('First heard in this range' if rangeScopedFirstListen else 'First Listened') %}
+
   {% if section == 'top_artists' %}
     {% set detailUrl = url_for('artistDetailPage', artist_id=track.get('id')) if track.get('id') else '#' %}
   {% elif section == 'top_albums' %}
@@ -288,7 +305,7 @@
           {% endif %}
         {% elif section == 'top_songs' %}
           {% if track.get('firstListenedText') %}
-            <span class="track-label">{{ 'First heard this year' if wrappedCard else 'First Listened' }}: {{ track.get('firstListenedText') }}</span>
+            <span class="track-label">{{ firstListenedLabel }}: {{ track.get('firstListenedText') }}</span>
           {% endif %}
           {% if track.get('durationText') %}
             <span class="track-label">Duration: {{ track.get('durationText') }}</span>
@@ -302,10 +319,10 @@
           {% endif %}
         {% elif section == 'top_artists' %}
           {% if track.get('firstListenedText') %}
-            <span class="track-label">{{ 'First heard this year' if wrappedCard else 'First Listened' }}: {{ track.get('firstListenedText') }}</span>
+            <span class="track-label">{{ firstListenedLabel }}: {{ track.get('firstListenedText') }}</span>
           {% endif %}
         {% elif section == 'top_albums' %}
-          {% if track.get('firstListenedText') %}<span class="track-label">{{ 'First heard this year' if wrappedCard else 'First Listened' }}: {{ track.get('firstListenedText') }}</span>{% endif %}
+          {% if track.get('firstListenedText') %}<span class="track-label">{{ firstListenedLabel }}: {{ track.get('firstListenedText') }}</span>{% endif %}
           {% if track.get('releaseDateText') %}<span class="track-label">Released: {{ track.get('releaseDateText') }}</span>{% endif %}
           {% if track.get('totalTracks') %}<span class="track-label">{{ track.get('totalTracks') }} tracks</span>{% endif %}
         {% endif %}

@@ -112,6 +112,42 @@ class TopListWindowTestCase(AppTestCase):
         return self.client.get(f"{path}{query}").get_data(as_text=True)
 
 
+class TestTheFirstListenedCaptionNamesItsScope(TopListWindowTestCase):
+    """The cards' "First Listened" is MIN(p.played_at) computed inside a
+    statement whose WHERE already carries the range clause, so on any narrowed
+    window it is the first play IN THAT WINDOW - not the lifetime first play
+    the unqualified wording claims (2026-09-03 review, M3). The fixture's
+    ancient 1970 play is exactly the case that made it visible: on ?interval=year
+    the recent track's caption is this year's date, whatever its history.
+
+    Driven off the resolved range rather than the interval string, which is why
+    a junk interval - coerced to the stored window by _getValidInterval - has to
+    follow the data it actually rendered."""
+
+    def test_a_narrowed_window_qualifies_the_caption(self):
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                body = self._list(path, "?interval=year")
+
+                self.assertIn("First heard in this range", body)
+                self.assertNotIn("First Listened:", body)
+
+    def test_all_time_keeps_the_lifetime_wording(self):
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                body = self._list(path, "?interval=all+time")
+
+                self.assertIn("First Listened:", body)
+                self.assertNotIn("in this range", body)
+
+    def test_the_stored_window_qualifies_it_too(self):
+        """The narrowing does not have to be in the URL - a saved
+        default_top_list_window scopes the same aggregate."""
+        self._setWindow("year")
+
+        self.assertIn("First heard in this range", self._list("/top-songs"))
+
+
 class TestTheStoredWindowScopesTheList(TopListWindowTestCase):
     def test_the_default_is_all_time(self):
         """Nothing changes for an account that never touches the setting - the

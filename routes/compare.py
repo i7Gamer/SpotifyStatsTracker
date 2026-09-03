@@ -215,7 +215,11 @@ def register(app, dashboard):
         # never disagree about what one of the six lists looks like.
         #< each item's own linkExternally decides internal vs. Spotify (see _markLinkExternally)
         listArgs = dict(my=my, their=their, username=username, compareWith=withUsername,
-                        emptyMessage="No plays in this period.")
+                        emptyMessage="No plays in this period.",
+                        #< the cards' "First Listened" is a MIN over the selected
+                        #  range (see _track_card.html); only All Time - the one
+                        #  interval _getDateRange leaves open - is a lifetime first
+                        rangeScopedFirstListen=startDate is not None)
 
         # A sortBy change swaps only those six lists, so its request
         # (?scope=sortable, see the Sort by control in compare.html) stops here

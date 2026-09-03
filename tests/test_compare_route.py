@@ -28,6 +28,7 @@ import app as appModule
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 from _compare_fragment import HX_HEADERS, fetchComparison
+from routes.compare import COMPARE_SORTABLE_SCOPE
 
 _SECRET_KEY_PATCH = 'app.SpotifyDashboardApp._get_or_create_secret_key'
 
@@ -405,6 +406,48 @@ class TestCompareRoute(AppTestCase):
         html = self._ajaxHtml(data)
         self.assertIn("7 plays", html)
         self.assertIn("1h 0m 0s", html)   #< msToString(3600000), only present when embedded
+
+    def test_a_narrowed_range_qualifies_the_first_listened_caption(self):
+        """Compare's Top lists come from the same range-scoped
+        MIN(p.played_at) the Top pages use, so on anything but All Time the
+        caption is the first play IN THE RANGE (2026-09-03 review, M3). All
+        Time here is the empty interval, not the "all time" string the Top
+        pages send - which is why the flag is derived from the resolved range
+        rather than from either spelling."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceSong", firstListenedAt=0)]
+        client = self._loginAs("alice")
+
+        _, data = self._ajax(client, "/compare?interval=week")
+
+        html = self._ajaxHtml(data)
+        self.assertIn("First heard in this range", html)
+        self.assertNotIn("First Listened:", html)
+
+    def test_all_time_keeps_the_lifetime_wording(self):
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceSong", firstListenedAt=0)]
+        client = self._loginAs("alice")
+
+        _, data = self._ajax(client, "/compare?interval=")
+
+        html = self._ajaxHtml(data)
+        self.assertIn("First Listened:", html)
+        self.assertNotIn("in this range", html)
+
+    def test_the_sort_only_refresh_carries_the_same_scope(self):
+        """The six lists also come back on their own (?scope=sortable), from a
+        second render of the same partial - the two must not disagree about
+        what the caption means."""
+        self._accept("alice", "bob")
+        self.dbs["alice"].getTopSongs.return_value = [_song("s1", "AliceSong", firstListenedAt=0)]
+        client = self._loginAs("alice")
+
+        body = client.get("/compare?interval=week&scope=" + COMPARE_SORTABLE_SCOPE,
+                          headers=HX_HEADERS).get_data(as_text=True)
+
+        self.assertIn("First heard in this range", body)
+        self.assertNotIn("First Listened:", body)
 
     def test_counterpart_cards_are_not_linked_to_detail_pages(self):
         """Detail pages resolve against the VIEWER's own db, so linking the

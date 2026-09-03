@@ -468,7 +468,12 @@ def register(app, dashboard):
             section=section, username=username,
             emptyMessage=_narrowedEmptyMessage(
                 filters["searchQuery"], filters["tag"], filters["interval"], emptyMessage),
-            movementUrl=_movementUrl(section, filters, page, dateRange, items), **pagination)
+            movementUrl=_movementUrl(section, filters, page, dateRange, items),
+            #< the cards' "First Listened" is a MIN over the SELECTED range (see
+            #  _track_card.html); All Time is the only one where it is a lifetime
+            #  first play, and it is the only interval _getDateRange leaves open
+            rangeScopedFirstListen=dateRange[0] is not None,
+            **pagination)
 
     def _topListPage(username, db, section):
         """The Top Songs/Artists/Albums route body, shared (CORE-7,

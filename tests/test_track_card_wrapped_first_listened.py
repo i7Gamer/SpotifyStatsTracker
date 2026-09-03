@@ -9,9 +9,13 @@ two apart.
 
 `_track_card.html` now takes an opt-in `wrappedCard` flag (the same contract
 `showSkipStats`/`suppressDetailLinks` already use) that swaps the caption
-wording to "First heard this year" - only set by _wrapped_results.html, so
-every other page (Top Songs/Artists/Albums, Compare) keeps the unqualified
-"First Listened" label byte-for-byte.
+wording to "First heard this year" - only set by _wrapped_results.html.
+
+A second flag on the same caption, `rangeScopedFirstListen`, covers the Top
+pages and Compare: their MIN(played_at) is scoped to the SELECTED range too, so
+only All Time is the lifetime value the plain wording claims (2026-09-03 review,
+M3, in the second class below). An unflagged include - the dashboard, the detail
+pages, the history list - still renders byte-for-byte as before.
 
 Rendered through a bare Jinja environment, like test_track_card_none_name.py.
 
@@ -34,13 +38,15 @@ def _renderTrackCard(**context):
 
 
 class TrackCardWrappedFirstListenedTestCase(unittest.TestCase):
-    def _card(self, section, wrappedCard=None):
+    def _card(self, section, wrappedCard=None, rangeScopedFirstListen=None):
         context = {
             "track": {"id": "e1", "name": "Fixture Entity", "firstListenedText": "Mar 2026"},
             "section": section, "username": "tester", "publicView": False,
         }
         if wrappedCard is not None:
             context["wrappedCard"] = wrappedCard
+        if rangeScopedFirstListen is not None:
+            context["rangeScopedFirstListen"] = rangeScopedFirstListen
         return _renderTrackCard(**context)
 
     def test_wrapped_top_songs_card_says_first_heard_this_year(self):
@@ -83,6 +89,53 @@ class TrackCardWrappedFirstListenedTestCase(unittest.TestCase):
         html = self._card("top_songs", wrappedCard=False)
 
         self.assertIn("First Listened: Mar 2026", html)
+
+
+class TrackCardRangeScopedFirstListenTestCase(unittest.TestCase):
+    """The same caption, wrong for a second reason (2026-09-03 review, M3):
+    getTopSongs/Artists/Albums compute MIN(p.played_at) AS first_listened_at
+    inside a statement whose WHERE already carries the range clause. On
+    /top-songs?interval=week a song first played in 2019 and played six times
+    this week rendered "First Listened: <this week>" - and this partial's own
+    comment asserted the opposite ("The Top pages' identical caption is a
+    genuine lifetime first play"). Only All Time was ever right."""
+
+    def _card(self, section, **flags):
+        context = {
+            "track": {"id": "e1", "name": "Fixture Entity", "firstListenedText": "Mar 2026"},
+            "section": section, "username": "tester", "publicView": False,
+        }
+        context.update(flags)
+        return _renderTrackCard(**context)
+
+    def test_a_range_scoped_card_qualifies_the_label(self):
+        for section in ("top_songs", "top_artists", "top_albums"):
+            with self.subTest(section=section):
+                html = self._card(section, rangeScopedFirstListen=True)
+
+                self.assertIn("First heard in this range: Mar 2026", html)
+                self.assertNotIn("First Listened:", html)
+
+    def test_an_all_time_card_keeps_the_unqualified_label(self):
+        """All Time IS the lifetime range, so the plain wording is correct
+        there - and it is the default every other include of this partial
+        (the dashboard, the detail pages, the history list) keeps."""
+        for section in ("top_songs", "top_artists", "top_albums"):
+            with self.subTest(section=section):
+                html = self._card(section, rangeScopedFirstListen=False)
+
+                self.assertIn("First Listened: Mar 2026", html)
+                self.assertNotIn("in this range", html)
+
+    def test_wrapped_wording_wins_when_both_flags_are_set(self):
+        """Wrapped renders a year-scoped range, so both flags are true of it -
+        but its own caption already names the scope, and naming it twice
+        ("First heard in this range" on a page titled 2026 Wrapped) is worse
+        than either."""
+        html = self._card("top_songs", wrappedCard=True, rangeScopedFirstListen=True)
+
+        self.assertIn("First heard this year: Mar 2026", html)
+        self.assertNotIn("in this range", html)
 
 
 class WrappedResultsSetsTheFlagAtAllSixSitesTestCase(unittest.TestCase):
