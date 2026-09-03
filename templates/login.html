@@ -1,7 +1,14 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{% extends "layout.html" %}
+{#- layout_public.html, not layout.html (2026-09-02 review, UT-6): this page
+    is reached with no session, so layout.html's full topbar - the app nav,
+    the account dropdown, the Log Out button - rendered a keyboard user 11
+    dead controls to tab through before the login form. This page uses no
+    layout.html block besides title/content and queues no flash(), so the
+    public layout (already used by the shared Wrapped page for the same
+    reason) covers it with no loss. -#}
+{% extends "layout_public.html" %}
 {% block title %}Log in - {{ super() }}{% endblock %}
 {% block content %}
 
