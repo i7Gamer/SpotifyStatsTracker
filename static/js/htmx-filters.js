@@ -98,6 +98,33 @@ function rangeProblemFromDom() {
                       document.getElementById('endDate').value);
 }
 
+// aria-invalid on the two date inputs, driven by the same `problem` value
+// showRangeError paints #dateError from, so the two can never disagree about
+// what "invalid" means. Removed rather than set to "false" when clear: an
+// absent attribute is what a screen reader treats as "no opinion", matching
+// every other field on the page that was never marked invalid at all.
+//
+// FOLLOW-UP (2026-09-02 review): /history got this treatment first
+// (history-page.js's syncDateAriaInvalid, c40dbc6, alongside #dateError's
+// role="alert" + aria-describedby in templates/history.html). Folded in here
+// instead of copied a second time, so /top-songs, /top-artists and
+// /top-albums - which share this file and templates/_page_card.html - report
+// an inverted range too. history-page.js keeps calling its own copy after
+// this one runs; both write the same value off the same `problem`, so the
+// redundancy is harmless, not a second source of truth.
+function syncDateAriaInvalid(problem) {
+  var invalid = problem === RANGE_INVERTED;
+  var startField = document.getElementById('startDate');
+  var endField = document.getElementById('endDate');
+  if (invalid) {
+    startField.setAttribute('aria-invalid', 'true');
+    endField.setAttribute('aria-invalid', 'true');
+  } else {
+    startField.removeAttribute('aria-invalid');
+    endField.removeAttribute('aria-invalid');
+  }
+}
+
 // All four ids are addressed unguarded, because they are ONE control set: a
 // template rendering any of them renders all of them, which
 // tests/test_custom_date_controls.py asserts. #dateError used to be the one
@@ -111,6 +138,7 @@ function showRangeError(problem) {
   errorEl.style.display = invalid ? 'block' : 'none';   //< block, like every sibling page
   document.getElementById('startDate').style.borderColor = invalid ? 'var(--accent)' : '';
   document.getElementById('endDate').style.borderColor = invalid ? 'var(--accent)' : '';
+  syncDateAriaInvalid(problem);
 }
 
 // Called from the Time Period select's onchange. Runs before htmx's own
@@ -247,6 +275,7 @@ var HtmxFilters = {
   hidesTrendBuckets: hidesTrendBuckets,
   rangeProblemFromDom: rangeProblemFromDom,
   showRangeError: showRangeError,
+  syncDateAriaInvalid: syncDateAriaInvalid,
   syncCustomRange: syncCustomRange,
   syncFullPlaysFilter: syncFullPlaysFilter,
   failureUi: failureUi,

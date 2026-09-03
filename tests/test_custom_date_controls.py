@@ -171,5 +171,37 @@ class TestCustomDateControlsHaveOneImplementation(unittest.TestCase):
                 self.assertRegex(privateCopy, pattern)
 
 
+class TestPageCardDateErrorIsAnnouncedAndTied(unittest.TestCase):
+    """FOLLOW-UP (2026-09-02 review): templates/history.html's #dateError got
+    role="alert" + aria-describedby, and history-page.js got aria-invalid, in
+    c40dbc6 (UT-4). The three Top pages (/top-songs, /top-artists,
+    /top-albums) share _page_card.html and htmx-filters.js's showRangeError/
+    syncCustomRange for the exact same control set, so this pins that they got
+    the same treatment - folded into the SHARED code (see
+    TestShowRangeErrorSetsAriaInvalid below), not copied a third time."""
+
+    def setUp(self):
+        self.markup = (TEMPLATES_DIR / "_page_card.html").read_text(encoding="utf-8")
+
+    def test_the_error_span_is_an_alert(self):
+        self.assertIn('id="dateError" class="date-error" role="alert"', self.markup)
+
+    def test_both_date_inputs_point_at_it(self):
+        self.assertEqual(self.markup.count('aria-describedby="dateError"'), 2)
+
+
+class TestShowRangeErrorSetsAriaInvalid(unittest.TestCase):
+    """The JS half of the same follow-up, pinned structurally rather than by
+    running the DOM (tests/test_htmx_filters.js does that): showRangeError
+    itself must call the shared syncDateAriaInvalid, since that is what makes
+    every page routing through it - not just /history - benefit."""
+
+    def test_show_range_error_calls_the_shared_sync(self):
+        code = _codeOf(STATIC_JS_DIR / SHARED_MODULE)
+        showRangeError = re.search(r"function showRangeError\([^)]*\)\s*\{(.*?)\n\}", code, re.DOTALL)
+        self.assertIsNotNone(showRangeError, "showRangeError not found in " + SHARED_MODULE)
+        self.assertIn("syncDateAriaInvalid(", showRangeError.group(1))
+
+
 if __name__ == "__main__":
     unittest.main()

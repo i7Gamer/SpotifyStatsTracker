@@ -72,13 +72,27 @@
 {# `disabled`, not merely hidden: a disabled control is not serialized, which is
    what keeps a stale custom range out of the request - and so out of the URL,
    since hx-replace-url writes back what was requested. updateIntervalFilter
-   keeps the two in step. #}
+   keeps the two in step.
+
+   role="alert" + aria-describedby + aria-invalid (FOLLOW-UP, 2026-09-02
+   review): the same treatment /history's #dateError got in c40dbc6, folded
+   into the shared static/js/htmx-filters.js (showRangeError/syncCustomRange)
+   instead of copied, so this partial - shared by the three Top pages - gets
+   it too. Without role="alert" a screen reader never announced the inverted-
+   range message when showRangeError filled it in; aria-describedby says which
+   controls the message is about; aria-invalid (set/removed by
+   syncDateAriaInvalid, driven by the same `problem` showRangeError reads) is
+   the other half, on the two inputs themselves. #}
 <div class="filter-group custom-dates" id="customDates" {% if not customActive %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
-    <input type="date" id="startDate" name="startDate" value="{{ customStart }}" {% if not customActive %}disabled{% endif %}>
+    <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
+           aria-describedby="dateError"
+           {% if not customActive %}disabled{% endif %}>
     <label for="endDate">To:</label>
-    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}" {% if not customActive %}disabled{% endif %}>
-    <span id="dateError" class="date-error"></span>
+    <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
+           aria-describedby="dateError"
+           {% if not customActive %}disabled{% endif %}>
+    <span id="dateError" class="date-error" role="alert"></span>
 </div>
 
 <div class="filter-group">

@@ -16,6 +16,8 @@ const {
   isNativeModifierClick,
   hidesTrendBuckets,
   syncFullPlaysFilter,
+  showRangeError,
+  syncCustomRange,
   failureUi,
   onSwapFailure,
   rememberFocusBeforeSwap,
@@ -212,6 +214,82 @@ run('every multi-day interval keeps it', () => {
   ['week', 'month', 'year', '5years', 'all time', 'custom', ''].forEach((interval) => {
     assert.strictEqual(hidesTrendBuckets(interval), false, interval);
   });
+});
+
+// --- showRangeError / syncCustomRange's aria-invalid half --------------------
+// FOLLOW-UP (2026-09-02 review): /history got role="alert" + aria-describedby
+// (templates/history.html) + aria-invalid (history-page.js's own
+// syncDateAriaInvalid, c40dbc6) for its #dateError. The three Top pages share
+// this file's showRangeError/syncCustomRange and templates/_page_card.html's
+// markup, so folding aria-invalid in HERE - rather than copying
+// syncDateAriaInvalid a second time - is what makes /top-songs, /top-artists
+// and /top-albums announce an inverted range too. history-page.js keeps its
+// own syncDateAriaInvalid call (unchanged): redundant now, not wrong - both
+// write the same value from the same `problem`, so they cannot disagree.
+
+function makeDateInput() {
+  const attrs = {};
+  return {
+    style: {},
+    setAttribute(name, val) { attrs[name] = val; },
+    removeAttribute(name) { delete attrs[name]; },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null; },
+  };
+}
+
+function installDateControls(intervalValue) {
+  const elements = {
+    interval: { value: intervalValue === undefined ? 'custom' : intervalValue },
+    startDate: makeDateInput(),
+    endDate: makeDateInput(),
+    dateError: { textContent: '', style: {} },
+    customDates: { style: {} },
+  };
+  global.document = { getElementById(id) { return elements[id] || null; } };
+  return elements;
+}
+
+run('an inverted range marks both date inputs aria-invalid', () => {
+  const els = installDateControls();
+
+  showRangeError(RANGE_INVERTED);
+
+  assert.strictEqual(els.startDate.getAttribute('aria-invalid'), 'true');
+  assert.strictEqual(els.endDate.getAttribute('aria-invalid'), 'true');
+});
+
+run('a valid range clears aria-invalid rather than setting it false', () => {
+  const els = installDateControls();
+  els.startDate.setAttribute('aria-invalid', 'true');
+  els.endDate.setAttribute('aria-invalid', 'true');
+
+  showRangeError(RANGE_OK);
+
+  assert.strictEqual(els.startDate.getAttribute('aria-invalid'), null);
+  assert.strictEqual(els.endDate.getAttribute('aria-invalid'), null);
+});
+
+run('an incomplete range (still typing) is not marked invalid', () => {
+  const els = installDateControls();
+
+  showRangeError(RANGE_INCOMPLETE);
+
+  assert.strictEqual(els.startDate.getAttribute('aria-invalid'), null);
+  assert.strictEqual(els.endDate.getAttribute('aria-invalid'), null);
+});
+
+run('syncCustomRange (the Time Period select path) carries the same aria-invalid sync', () => {
+  // This is the path /top-songs, /top-artists and /top-albums actually call
+  // (top-list.js's updateIntervalFilter) - showRangeError alone is not enough
+  // to prove the Top pages benefit; it has to run from here too.
+  const els = installDateControls('custom');
+  els.startDate.value = '2026-05-01';
+  els.endDate.value = '2026-01-01';   //< inverted
+
+  syncCustomRange('customDates');
+
+  assert.strictEqual(els.startDate.getAttribute('aria-invalid'), 'true');
+  assert.strictEqual(els.endDate.getAttribute('aria-invalid'), 'true');
 });
 
 // --- failureUi ---------------------------------------------------------------
