@@ -25,6 +25,7 @@ from config import (
     DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_ALLOWED_PATTERN, TOP_LIST_DEFAULT_WINDOW,
     SPOTIFY_AUTH_TIMEOUT_SECONDS, SPOTIFY_CALLBACK_URL_ENV_VAR,
 )
+from dashboard.date_ranges import SETTABLE_INTERVALS
 from Database.Spotify.cookies import parseCookieString
 from Database.lastfm import LastfmClient
 from services.email_worker import queue_email_notification
@@ -441,40 +442,53 @@ def register(app, dashboard):
                 #  updateUserSettings, which is what any future form that omits
                 #  this select should get - see its comment
                 default_top_list_window = request.form.get("default_top_list_window")
-                timezone = request.form.get("timezone")
-                if timezone == "":
-                    timezone = None
-                # An unchecked checkbox isn't submitted, so absence has to mean
-                # "off" - but both of these controls are gated on an admin
-                # switch (see profile.html), and reading absence as "off"
-                # unconditionally let a save from a form that never SHOWED the
-                # control clear what the user had stored. For hide_now_playing
-                # that silently reverted them to broadcasting their current
-                # track. Each control ships a hidden _present marker, so the
-                # form says which switches it was actually able to offer;
-                # without the marker the stored value is left alone.
-                current = db.repo.getUserSettings(username)
+                # Both selects only ever offer SETTABLE_INTERVALS' seven
+                # values (profile.html), so a miss here can only come from a
+                # hand-crafted POST - but honouring it would store an
+                # interval every _resolveIntervalParam absentDefault caller
+                # has to keep working for from then on (X3, 2026-09-02
+                # review). None (not submitted) is exempt: that is the
+                # "leave it alone" case the comment above already covers,
+                # not a value to validate.
+                if ((default_window is not None and default_window not in SETTABLE_INTERVALS)
+                        or (default_top_list_window is not None
+                            and default_top_list_window not in SETTABLE_INTERVALS)):
+                    error = "Invalid time window selected."
+                else:
+                    timezone = request.form.get("timezone")
+                    if timezone == "":
+                        timezone = None
+                    # An unchecked checkbox isn't submitted, so absence has to mean
+                    # "off" - but both of these controls are gated on an admin
+                    # switch (see profile.html), and reading absence as "off"
+                    # unconditionally let a save from a form that never SHOWED the
+                    # control clear what the user had stored. For hide_now_playing
+                    # that silently reverted them to broadcasting their current
+                    # track. Each control ships a hidden _present marker, so the
+                    # form says which switches it was actually able to offer;
+                    # without the marker the stored value is left alone.
+                    current = db.repo.getUserSettings(username)
 
-                def _checkboxValue(field):
-                    #< a submitted value is unambiguous with or without the
-                    #  marker; only ABSENCE needs to know whether the control
-                    #  was on the page at all
-                    if request.form.get(field) == "1":
-                        return True
-                    if request.form.get(f"{field}_present") != "1":
-                        return bool(current.get(field))
-                    return False
+                    def _checkboxValue(field):
+                        #< a submitted value is unambiguous with or without the
+                        #  marker; only ABSENCE needs to know whether the control
+                        #  was on the page at all
+                        if request.form.get(field) == "1":
+                            return True
+                        if request.form.get(f"{field}_present") != "1":
+                            return bool(current.get(field))
+                        return False
 
-                hide_tags_panel = _checkboxValue("hide_tags_panel")
-                hide_now_playing = _checkboxValue("hide_now_playing")
-                try:
-                    db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel,
-                                               hide_now_playing,
-                                               default_top_list_window=default_top_list_window)
-                    db.refreshSettings()
-                    success = "Preferences saved successfully!"
-                except Exception as e:
-                    error = f"Failed to save preferences: {str(e)}"
+                    hide_tags_panel = _checkboxValue("hide_tags_panel")
+                    hide_now_playing = _checkboxValue("hide_now_playing")
+                    try:
+                        db.repo.updateUserSettings(username, default_window, timezone, hide_tags_panel,
+                                                   hide_now_playing,
+                                                   default_top_list_window=default_top_list_window)
+                        db.refreshSettings()
+                        success = "Preferences saved successfully!"
+                    except Exception as e:
+                        error = f"Failed to save preferences: {str(e)}"
             elif action == "save_display_name":
                 flashFor = PROFILE_FLASH_DISPLAY_NAME
                 # Throttled like request_share: this name is visible to every

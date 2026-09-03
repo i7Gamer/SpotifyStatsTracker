@@ -100,6 +100,76 @@ class TestDefaultTimeWindows(ProfilePreferencesTestCase):
         self.assertEqual(settings["default_top_list_window"], "5years")
 
 
+class TestIntervalWindowValidation(ProfilePreferencesTestCase):
+    """save_preferences validates both window selects against
+    dashboard.date_ranges.SETTABLE_INTERVALS before writing anything - a
+    bogus value can only reach this form via a hand-crafted POST (the
+    template only ever offers the seven real options), but honouring it
+    would store an interval _resolveIntervalParam's absentDefault path
+    would then have to reason about forever (X3, 2026-09-02 review)."""
+
+    def test_a_bogus_dashboard_window_is_rejected(self):
+        client = self._loginAs("alice", "alice@example.com")
+        before = self.dash.repo.getUserSettings("alice")["default_dashboard_window"]
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "bogus",
+            "default_top_list_window": "year",
+            "timezone": "",
+        }, follow_redirects=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Invalid time window selected.", resp.data)
+        self.assertEqual(self.dash.repo.getUserSettings("alice")["default_dashboard_window"], before)
+
+    def test_a_bogus_top_list_window_is_rejected(self):
+        client = self._loginAs("alice", "alice@example.com")
+        before = self.dash.repo.getUserSettings("alice")["default_top_list_window"]
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "bogus",
+            "timezone": "",
+        }, follow_redirects=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Invalid time window selected.", resp.data)
+        self.assertEqual(self.dash.repo.getUserSettings("alice")["default_top_list_window"], before)
+
+    def test_neither_bogus_value_touches_the_other_setting(self):
+        """A rejected save must not write EITHER column - not the bogus one,
+        and not the valid one submitted alongside it."""
+        client = self._loginAs("alice", "alice@example.com")
+        beforeTopList = self.dash.repo.getUserSettings("alice")["default_top_list_window"]
+
+        client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "bogus",
+            "default_top_list_window": "year",
+            "timezone": "",
+        })
+
+        self.assertEqual(self.dash.repo.getUserSettings("alice")["default_top_list_window"], beforeTopList)
+
+    def test_two_valid_values_still_save(self):
+        """The validation must not reject what the form actually offers."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "year",
+            "timezone": "",
+        }, follow_redirects=True)
+
+        self.assertEqual(resp.status_code, 200)
+        settings = self.dash.repo.getUserSettings("alice")
+        self.assertEqual(settings["default_dashboard_window"], "week")
+        self.assertEqual(settings["default_top_list_window"], "year")
+
+
 class TestThemeInitialiserPlacement(ProfilePreferencesTestCase):
     """ProfilePage.navigate() swaps only the SIBLINGS between .profile-subnav
     and .profile-logout-row, and _runInlineScripts re-runs only the inline
