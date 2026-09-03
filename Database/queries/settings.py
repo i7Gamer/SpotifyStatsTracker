@@ -112,8 +112,11 @@ class SettingQueries:
         albums_count = conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
         # is_skip=0: instance-wide "plays" and listen time mean real plays,
         # matching every per-user stat (skips live in plays as is_skip=1 now).
-        plays_count = conn.execute("SELECT COUNT(*) FROM plays WHERE is_skip = 0").fetchone()[0]
-        total_time_ms = conn.execute("SELECT SUM(time_played) FROM plays WHERE is_skip = 0").fetchone()[0] or 0
+        # One statement for both: they were two identical scans of the whole
+        # instance's plays, which is the dominant cost of this page.
+        plays_count, total_time_ms = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(time_played), 0) FROM plays WHERE is_skip = 0"
+        ).fetchone()
 
         try:
             db_size = self.connectionManager.dbPath.stat().st_size

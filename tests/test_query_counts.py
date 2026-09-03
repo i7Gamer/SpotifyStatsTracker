@@ -244,6 +244,75 @@ class BucketedAggregateReuseTestCase(DatabaseTestCase):
         self.assertEqual(counter.count("FROM plays"), 1)
 
 
+class AdminOverviewScanCountTestCase(DatabaseTestCase):
+    """Two admin-page reads that asked the same question twice (2026-09-03
+    review, C-6 and C-10). Both are whole-table scans, and both answers were
+    already in hand."""
+
+    def _db(self):
+        tracks = {'t1': normalizeTrackForTest({'id': 't1', 'name': 'Song', 'artists': []})}
+        entries = [
+            {'id': 't1', 'playedAt': _ts(2026, 7, 1, 9), 'timePlayed': 1000},
+            {'id': 't1', 'playedAt': _ts(2026, 7, 2, 20), 'timePlayed': 2000},
+        ]
+        return self._makeDb(tracks, entries)
+
+    def test_the_instance_play_totals_come_from_one_scan(self):
+        """COUNT(*) and SUM(time_played) over the same `plays WHERE is_skip = 0`
+        - the dominant cost of the page, paid twice."""
+        db = self._db()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            stats = db.repo.getGlobalDatabaseStats()
+
+        self.assertEqual(counter.count('FROM plays'), 1)
+        self.assertEqual(stats['plays'], 2)
+        self.assertEqual(stats['total_time_ms'], 3000)
+
+    def test_an_empty_instance_still_reports_zero_rather_than_none(self):
+        """SUM over no rows is NULL; the display figure must stay a number."""
+        db = self._makeDb({}, [])
+
+        stats = db.repo.getGlobalDatabaseStats()
+
+        self.assertEqual(stats['plays'], 0)
+        self.assertEqual(stats['total_time_ms'], 0)
+
+    def test_catalog_coverage_asks_once_when_inherited_genres_are_off(self):
+        """With inherited off, `WHERE (0 OR g.inherited = 0)` IS the own-tags
+        query, so the second execute re-ran the first one verbatim."""
+        db = self._db()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            db.repo.getCatalogGenreCoverage(includeInherited=False)
+
+        #< two categories carry an inherited flag (tracks, albums); artists
+        #  have none and only ever ran one query
+        self.assertEqual(counter.count('track_genres'), 1)
+        self.assertEqual(counter.count('album_genres'), 1)
+
+    def test_it_still_asks_twice_when_inherited_genres_are_on(self):
+        """The negative control: with inherited ON the two questions differ,
+        and own_covered genuinely needs its own scan."""
+        db = self._db()
+
+        with _QueryCounter(db.repo._conn()) as counter:
+            db.repo.getCatalogGenreCoverage(includeInherited=True)
+
+        self.assertEqual(counter.count('track_genres'), 2)
+
+    def test_the_numbers_are_the_same_either_way(self):
+        """Reusing the result must not change the answer: with inherited off,
+        covered and own_covered are the same count by construction."""
+        db = self._db()
+
+        coverage = db.repo.getCatalogGenreCoverage(includeInherited=False)
+
+        for kind in ('song', 'album', 'artist'):
+            with self.subTest(kind=kind):
+                self.assertEqual(coverage[kind]['covered'], coverage[kind]['own_covered'])
+                self.assertEqual(coverage[kind]['percent'], coverage[kind]['own_percent'])
+
 class GenreTrendTransferTestCase(DatabaseTestCase):
     """The genre trend used to transfer one row per (play, genre): a play on a
     track carrying five tags shipped five rows, all bucketed in Python. SQL

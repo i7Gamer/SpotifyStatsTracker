@@ -771,7 +771,10 @@ class GenreQueries:
                     """,
                     (inherited,),
                 ).fetchone()[0]
-                own_covered = conn.execute(
+                # With inherited genres OFF the query above IS this one -
+                # `(0 OR g.inherited = 0)` is `g.inherited = 0` - so running it
+                # again asked the same whole-table question twice.
+                own_covered = covered if not inherited else conn.execute(
                     f"""
                     SELECT COUNT(DISTINCT e.id) FROM {table} e
                     JOIN {genreTable} g ON g.{idColumn} = e.id
