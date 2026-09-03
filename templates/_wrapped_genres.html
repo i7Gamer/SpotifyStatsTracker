@@ -17,7 +17,8 @@
       {{ genreMacros.genreBarList(topGenres) }}
       {{ genreMacros.lastfmAttribution(marginTop='1rem') }}
     {% else %}
-      <p class="empty-state">No genre data for {{ (username + "'s") if publicView else "your" }} {{ year }} plays yet.</p>
+      {#- named, not keyed - same rule as _genre_progress.html's ownerLabel #}
+      <p class="empty-state">No genre data for {{ ((username | displayName) + "'s") if publicView else "your" }} {{ year }} plays yet.</p>
     {% endif %}
   {% else %}
     {% with coverage = genreCoverage, lastfmConfigured = lastfmConfigured %}{% include "_genre_progress.html" %}{% endwith %}

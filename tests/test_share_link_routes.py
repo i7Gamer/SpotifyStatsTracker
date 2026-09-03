@@ -752,7 +752,9 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
 
-        self.assertIn("Add a Last.fm API key", body)
+        #< the public wording of that same branch: a visitor cannot add the
+        #  owner's key, so it states the gap instead of pitching (L4, below)
+        self.assertIn("has not connected a Last.fm API key", body)
         self.assertNotIn("No plays in this period yet.", body)
 
     def test_genre_locked_progress_shows_no_plays_for_the_owners_keyed_account(self):
@@ -766,6 +768,57 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
 
         self.assertIn("No plays in this period yet.", body)
         self.assertNotIn("Add a Last.fm API key", body)
+
+    def test_genre_locked_progress_names_the_owner_by_display_name(self):
+        """Same rule as the artist/album card lines above, and the hero: the
+        raw username is the owner's email local-part, and the public page names
+        people by what they go by. One render otherwise showed both spellings -
+        "Wonderland's 2026 Wrapped" in the hero and "enough of alice's listening
+        history" two cards down."""
+        token = self._createLink()
+        self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
+        self.dash.repo.setLastfmGenreBackfillEnabled(True)
+        db = self._makeDb()
+        db.getGenreCoverage.return_value = coverageDict(10, 10, 10)
+
+        body = self._getShared(token, db=db).data.decode()
+
+        self.assertIn("Wonderland&#39;s listening history", body)
+        self.assertNotIn("alice&#39;s listening history", body)
+
+    def test_the_keyless_pitch_never_links_a_visitor_to_the_owners_profile(self):
+        """sharedWrappedPage passes suppressDetailLinks=True for exactly this
+        rule, and this was the one internal link it did not cover: an anonymous
+        visitor was invited to "add a Last.fm API key on alice's profile" -
+        advice only the owner can act on, pointing at a login-gated page."""
+        token = self._createLink()
+        self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
+        self.dash.repo.setLastfmGenreBackfillEnabled(True)
+        db = self._makeDb()   #< no Last.fm key, so the pitch branch is the one taken
+
+        body = self._getShared(token, db=db).data.decode()
+
+        self.assertNotIn("/profile/connections", body)
+        #< still SAYS what is missing, just without acting as if the visitor
+        #  could fix it - and names the owner the way the rest of the page does
+        self.assertIn("Wonderland", body)
+        self.assertNotIn("alice&#39;s", body)
+
+    def test_the_empty_genre_card_names_the_owner_by_display_name(self):
+        """The third public-view branch that interpolated the raw key: the
+        unlocked-but-empty state of the Top Genres card itself."""
+        token = self._createLink()
+        self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
+        self.dash.repo.setLastfmGenreBackfillEnabled(True)
+        db = self._makeDb()
+        #< over the gate, so the card unlocks - but with no genres to show
+        db.getGenreCoverage.return_value = coverageDict(100, 100, 100)
+        db.getTopGenres.return_value = {}
+
+        body = self._getShared(token, db=db).data.decode()
+
+        self.assertIn("No genre data for Wonderland&#39;s", body)
+        self.assertNotIn("No genre data for alice&#39;s", body)
 
     def test_track_card_images_use_the_token_keyed_image_route(self):
         """_track_card.html's imageBase override must actually take effect on

@@ -12,9 +12,15 @@
    song plays (2026-09-02 review, UT-12). Optional for back-compat: a caller
    that omits it keeps today's behaviour (the API-key pitch on zero
    coverage) rather than crashing. #}
+{# The owner as they are NAMED, never as they are keyed. On the public share
+   page `username` is the raw account key (the email local-part get_or_create_user
+   mints), and every other naming site on the same render goes through
+   displayName - see _wrapped_hero.html and _track_card.html. Nothing here builds
+   an /img/ path, which is the one job the raw key still has. #}
+{% set ownerLabel = username | displayName %}
 <div class="genre-progress">
   <p style="font-size: 0.9rem; color: var(--muted, #aaa); margin-bottom: 1rem;">
-    Genre insights unlock once enough of {{ (username + "'s") if publicView else "your" }} listening history has genre data from Last.fm:
+    Genre insights unlock once enough of {{ (ownerLabel + "'s") if publicView else "your" }} listening history has genre data from Last.fm:
     more than {{ genreGateOverallMinPercent }}% overall and at least {{ genreGateCategoryMinPercent }}%
     each for songs, albums and artists.
   </p>
@@ -51,9 +57,19 @@
     {% else %}
     {#- Either genuinely unconfigured, or an old caller that hasn't been
         updated to pass lastfmConfigured yet - both keep today's pitch. #}
+    {%- if publicView %}
+    {#- Stated, not pitched: an anonymous visitor cannot add the owner's key,
+        and the profile link is login-gated. sharedWrappedPage already passes
+        suppressDetailLinks=True for this rule; this was the one internal link
+        it did not cover. #}
     <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
-      Add a Last.fm API key on {{ (username + "'s") if publicView else "your" }} <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
+      {{ ownerLabel }} has not connected a Last.fm API key yet, so there is no genre data.
     </p>
+    {%- else %}
+    <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin-top: 0.5rem;">
+      Add a Last.fm API key on your <a href="{{ url_for('profileConnectionsPage') }}" style="color: var(--accent);">profile</a> to start backfilling genre data.
+    </p>
+    {%- endif %}
     {% endif %}
   {% endif %}
   {% import "_genre_macros.html" as genreMacros %}

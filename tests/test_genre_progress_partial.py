@@ -47,7 +47,12 @@ def _renderGenreProgress(**context):
     env.globals["url_for"] = lambda *args, **kwargs: "#"
     env.globals["genreGateOverallMinPercent"] = GENRE_GATE_OVERALL_MIN_PERCENT
     env.globals["genreGateCategoryMinPercent"] = GENRE_GATE_CATEGORY_MIN_PERCENT
-    return env.get_template("_genre_progress.html").render(username="tester", publicView=False, **context)
+    #< app.py registers the real one against users.display_name, and it needs a
+    #  request context - stood in the same way url_for is. It deliberately does
+    #  NOT return its input: that is what makes "named, not keyed" observable.
+    env.filters["displayName"] = lambda username: ("Displayed(%s)" % username) if username else username
+    context = {"username": "tester", "publicView": False, **context}
+    return env.get_template("_genre_progress.html").render(**context)
 
 
 class GenreProgressLastfmConfiguredTestCase(unittest.TestCase):
@@ -61,6 +66,31 @@ class GenreProgressLastfmConfiguredTestCase(unittest.TestCase):
 
         self.assertIn("No plays in this period yet.", html)
         self.assertNotIn("Add a Last.fm API key", html)
+
+    def test_the_public_view_names_the_owner_through_the_display_name_filter(self):
+        """On the public share page `username` is the raw account key (the
+        owner's email local-part), and every other naming site on the same
+        render goes through displayName - one page showed both spellings."""
+        html = _renderGenreProgress(coverage=_coverage(songTotal=0), lastfmConfigured=False,
+                                    publicView=True)
+
+        self.assertIn("Displayed(tester)", html)
+        self.assertNotIn("tester&#39;s", html)
+
+    def test_the_public_view_states_the_missing_key_instead_of_pitching_it(self):
+        """An anonymous visitor cannot add the owner's key, and the profile
+        link the pitch carries is login-gated - the one internal link
+        sharedWrappedPage's suppressDetailLinks did not cover."""
+        html = _renderGenreProgress(coverage=_coverage(songTotal=0), lastfmConfigured=False,
+                                    publicView=True)
+
+        self.assertNotIn("Add a Last.fm API key", html)
+        self.assertIn("has not connected a Last.fm API key", html)
+
+    def test_the_owners_own_view_still_pitches_with_the_link(self):
+        html = _renderGenreProgress(coverage=_coverage(songTotal=0), lastfmConfigured=False)
+
+        self.assertIn("Add a Last.fm API key on your", html)
 
     def test_configured_with_plays_shows_neither_message(self):
         html = _renderGenreProgress(coverage=_coverage(songTotal=500), lastfmConfigured=True)
