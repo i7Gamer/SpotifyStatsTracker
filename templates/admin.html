@@ -635,7 +635,10 @@
 
       <article class="card admin-settings-card">
         <div class="card-header admin-card-header">
-          <h3>Email &amp; Notifications</h3>
+          {#- h2, like every other settings card header: an h3 here claimed a
+              level of nesting that is not there, breaking heading navigation.
+              style.css already covers both, so only the outline changes. -#}
+          <h2>Email &amp; Notifications</h2>
           <p>SMTP server credentials and instance-wide notification controls.</p>
         </div>
         <div class="admin-card-body">

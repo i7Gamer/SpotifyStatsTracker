@@ -59,6 +59,32 @@ class TestInlineStyleRatchet(unittest.TestCase):
                 self.assertEqual(_readFile(path).count('class="summary-value" style='), 0)
 
 
+class TestEveryCardHeaderIsTheSameHeadingLevel(unittest.TestCase):
+    """One settings card titled itself with an h3 among six h2 siblings, so
+    the admin page's heading outline claimed a level of nesting that is not
+    there - a real break for anyone navigating by heading (2026-09-03 review,
+    C-8). The stylesheet already covers both (.admin-card-header h2, ... h3),
+    so this is about the outline, not the look."""
+
+    def test_no_card_header_uses_a_lower_level(self):
+        soup = bs4.BeautifulSoup(_readFile(_ADMIN_PATH), 'html.parser')
+
+        levels = sorted({heading.name
+                        for header in soup.select('.admin-card-header')
+                        for heading in header.find_all(['h1', 'h2', 'h3', 'h4'])})
+
+        self.assertEqual(levels, ['h2'])
+
+    def test_the_scan_finds_the_headers_at_all(self):
+        """Guards the gate: a renamed class would empty the set, and an empty
+        set satisfies nothing useful."""
+        soup = bs4.BeautifulSoup(_readFile(_ADMIN_PATH), 'html.parser')
+
+        headers = soup.select('.admin-card-header')
+
+        self.assertGreaterEqual(len(headers), ADMIN_SETTINGS_CARD_COUNT)
+
+
 class TestTheRulesReachTheMarkup(unittest.TestCase):
     """Evaluated with soupsieve against the markup shape the templates emit,
     so a rule that exists but misses (a typo'd class, a lost descendant
