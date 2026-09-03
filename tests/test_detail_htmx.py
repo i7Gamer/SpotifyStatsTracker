@@ -423,9 +423,22 @@ class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
     /song/<id>?offset=99999999999999999999 (or the same ?page=) answered the
     play-log swap with a 500. The sibling ?limit= got its ceiling
     (MAX_DETAIL_HISTORY_PAGES) for exactly this footgun; these two were left
-    behind. Now the offset is clamped against the row count (an offset past the
-    end legitimately renders the empty "nothing more" batch) and the page goes
-    through _positivePageArg's digit cap before any arithmetic."""
+    behind.
+
+    The first fix (?offset= clamped to totalCount) traded that 500 for a
+    quieter bug (UT-2, 2026-09-02 review): totalCount is a row COUNT, not a
+    valid OFFSET into the rows, so clamping to it landed one past the last
+    row and rendered "No plays recorded yet." beside a card that says the
+    song has plays - ?page=999999 or ?page=3 of 2 on any song did this, not
+    only an absurd offset. /history and the artist/album views never had
+    this: dashboard/pagination.py's _calculatePagination clamps `page`
+    itself to the last page, not the offset it produces to the count.
+
+    Now the offset is clamped to the last BATCH boundary - the largest
+    multiple of PAGE_SIZE below totalCount, or 0 when there are no rows -
+    so an out-of-range page renders the final batch instead of nothing, and
+    the page goes through _positivePageArg's digit cap before any
+    arithmetic."""
 
     def _db(self):
         db = super()._db()
@@ -437,14 +450,22 @@ class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
         db.getEntriesFromNew.assert_called_once()
         return db.getEntriesFromNew.call_args.kwargs["startIndex"]
 
-    def test_an_absurd_offset_is_clamped_to_the_row_count(self):
+    def test_an_absurd_offset_is_clamped_to_the_last_batch_boundary(self):
+        from routes.charts import PAGE_SIZE
+
+        #< 2 full batches plus a partial third: the last batch starts at
+        #  2 * PAGE_SIZE, a value that differs from both 0 and totalCount, so
+        #  clamping to totalCount (the old bug) or to always-0 would both
+        #  fail this instead of passing by coincidence.
+        totalCount = 2 * PAGE_SIZE + 7
         for raw in ("99999999999999999999", "9223372036854775808"):
             with self.subTest(offset=raw):
                 db = self._db()
+                db.getEntriesCount.return_value = totalCount
                 resp = self._swap("/song/t1?offset=" + raw, HX_LIST_HEADERS, db=db)
 
                 self.assertEqual(resp.status_code, 200)
-                self.assertEqual(self._startIndex(db), 3)
+                self.assertEqual(self._startIndex(db), 2 * PAGE_SIZE)
 
     def test_an_absurd_page_starts_at_the_first_page(self):
         db = self._db()
@@ -465,3 +486,31 @@ class TestPlayLogPagingParamsAreBounded(DetailHtmxTestCase):
         db.getEntriesCount.return_value = 10 * PAGE_SIZE
         self._swap("/song/t1?page=3", HX_LIST_HEADERS, db=db)
         self.assertEqual(self._startIndex(db), 2 * PAGE_SIZE)
+
+    def test_an_out_of_range_page_renders_the_last_batch_not_the_empty_state(self):
+        """UT-2's actual symptom: ?page=999999 on a song WITH plays used to
+        show "No plays recorded yet." next to a card that says otherwise."""
+        from routes.charts import PAGE_SIZE
+
+        db = self._db()
+        db.getEntriesCount.return_value = 2 * PAGE_SIZE + 7
+        db.getEntriesFromNew.return_value = [_playEntry()]
+
+        for query in ("?page=999999", "?offset=99999"):
+            with self.subTest(query=query):
+                db.getEntriesFromNew.reset_mock()
+                body = self._swap("/song/t1" + query, HX_LIST_HEADERS, db=db).get_data(as_text=True)
+
+                self.assertEqual(self._startIndex(db), 2 * PAGE_SIZE)
+                self.assertNotIn("No plays recorded yet.", body)
+                self.assertIn('class="timeline-item', body)
+
+    def test_a_song_with_zero_plays_still_renders_the_empty_state(self):
+        db = self._db()
+        db.getEntriesCount.return_value = 0
+        db.getEntriesFromNew.return_value = []
+
+        body = self._swap("/song/t1?page=999999", HX_LIST_HEADERS, db=db).get_data(as_text=True)
+
+        self.assertEqual(self._startIndex(db), 0)
+        self.assertIn("No plays recorded yet.", body)

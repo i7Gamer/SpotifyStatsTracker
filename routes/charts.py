@@ -1245,12 +1245,20 @@ def register(app, dashboard):
                 limit = PAGE_SIZE
 
             totalCount = db.getEntriesCount(trackId=trackId, includeSkips=showSkips)
-            #< Clamped against the count rather than a fixed ceiling: an offset
-            #  past the end is a legitimate "nothing more" batch, whereas one
-            #  above 2**63-1 was an OverflowError out of sqlite3's bind and a
-            #  500 - the same footgun MAX_DETAIL_HISTORY_PAGES closed for
-            #  ?limit=, left open for the two parameters beside it.
-            offset = min(offset, totalCount)
+            #< An in-range offset (< totalCount) passes through untouched - it
+            #  already names a real row. Only an OUT-OF-RANGE one - past the
+            #  end, or above 2**63-1 (an OverflowError out of sqlite3's bind
+            #  and a 500, the same footgun MAX_DETAIL_HISTORY_PAGES closed for
+            #  ?limit=) - gets clamped, and it snaps to the LAST BATCH
+            #  boundary rather than to totalCount itself: totalCount is a
+            #  count, not a valid offset into the rows, so the previous fix
+            #  landed one row past the end and rendered the empty "nothing
+            #  more" batch for a song that has plays - ?page=999999 or
+            #  ?page=3 of 2 did this every time (UT-2, 2026-09-02 review).
+            #  The largest multiple of PAGE_SIZE below totalCount is where
+            #  the real last batch starts; 0 when there are no rows at all.
+            if offset >= totalCount:
+                offset = 0 if totalCount == 0 else ((totalCount - 1) // PAGE_SIZE) * PAGE_SIZE
             fetchEntries = db.getEntriesFromOld if oldestFirst else db.getEntriesFromNew
             plays = fetchEntries(count=limit, startIndex=offset,
                                  trackId=trackId, includeSkips=showSkips)
