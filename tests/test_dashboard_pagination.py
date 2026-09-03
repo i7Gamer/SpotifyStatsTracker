@@ -578,6 +578,63 @@ class TestTopSongsPagination(_ListRouteTestBase):
         self.assertIn(b"Page 3 of 3", resp.data)
 
 
+class TestTopListEmptyMessage(_ListRouteTestBase):
+    """The Top pages' emptyMessage (UT-11, 2026-09-02 review): a search, a
+    tag, or a narrowed interval turning up nothing says "No matches..."
+    instead of pointing at Import, which only makes sense for a genuinely
+    empty (unfiltered) library."""
+
+    def test_unfiltered_empty_list_shows_the_import_pitch(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db)
+
+        self.assertIn(b"Import some listening history first.", resp.data)
+        self.assertNotIn(b"No matches", resp.data)
+
+    def test_a_search_with_no_hits_names_the_search_text(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db, query="?q=zzzznotfound")
+
+        body = resp.get_data(as_text=True)
+        self.assertIn("No matches for", body)
+        self.assertIn("zzzznotfound", body)
+        self.assertNotIn("Import some listening history first.", body)
+
+    def test_a_narrowed_interval_with_no_hits_shows_the_generic_message(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db, query="?interval=week")
+
+        self.assertIn(b"No matches for this filter.", resp.data)
+        self.assertNotIn(b"Import some listening history first.", resp.data)
+
+    def test_a_tag_filter_with_no_hits_shows_the_generic_message(self):
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopArtists(dash, db, query="?tag=vibes")
+
+        self.assertIn(b"No matches for this filter.", resp.data)
+        self.assertNotIn(b"Import some listening history first.", resp.data)
+
+    def test_all_time_is_not_treated_as_narrowed(self):
+        """Top pages default to All Time - it must not itself count as a
+        narrowing, or the import pitch could never show on a genuinely
+        empty account."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        resp = self._getTopSongs(dash, db, query="?interval=all+time")
+
+        self.assertIn(b"Import some listening history first.", resp.data)
+        self.assertNotIn(b"No matches", resp.data)
+
+
 class TestSkipSortKeepsTheOtherFilters(_ListRouteTestBase):
     """The sort control shares its card with the search box, the tag dropdown
     and the full-plays checkbox. Picking Most Skipped changes the order of the
@@ -865,26 +922,45 @@ class TestHistoryConnectionEmptyState(_ListRouteTestBase):
     def test_connect_banner_does_not_hijack_a_no_match_search(self):
         """Searching for text with zero hits is a normal empty search result,
         not a 'you have no history at all' state - even for a disconnected
-        account that does have some imported history."""
+        account that does have some imported history. It names the search
+        text instead of the generic message once one is active (UT-11,
+        2026-09-02 review)."""
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
         db.searchEntriesCount.return_value = 0
 
         _, resultsHtml = self._getHistoryList(dash, db, query="?q=nonexistent")
 
-        self.assertIn("No history tracks found", resultsHtml)
+        self.assertIn('No matches for "nonexistent".', resultsHtml)
+        self.assertNotIn("No history tracks found", resultsHtml)
         self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
     def test_connect_banner_does_not_hijack_an_empty_custom_range(self):
         """A custom date range with no plays just means nothing happened in
-        that window, not that the account is disconnected."""
+        that window, not that the account is disconnected - and reads as a
+        filtered empty result now, not the generic message (UT-11,
+        2026-09-02 review)."""
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)
 
         _, resultsHtml = self._getHistoryList(
             dash, db, query="?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
 
-        self.assertIn("No history tracks found", resultsHtml)
+        self.assertIn("No matches for this filter.", resultsHtml)
+        self.assertNotIn("No history tracks found", resultsHtml)
+        self.assertNotIn("haven't connected Spotify yet", resultsHtml)
+
+    def test_connect_banner_does_not_hijack_an_empty_tag_filter(self):
+        """A tag with zero matching plays reads as a filtered empty result
+        too, not the account being disconnected (UT-11, 2026-09-02
+        review)."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=0)
+
+        _, resultsHtml = self._getHistoryList(dash, db, query="?tag=vibes")
+
+        self.assertIn("No matches for this filter.", resultsHtml)
+        self.assertNotIn("No history tracks found", resultsHtml)
         self.assertNotIn("haven't connected Spotify yet", resultsHtml)
 
 

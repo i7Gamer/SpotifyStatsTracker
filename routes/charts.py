@@ -374,6 +374,21 @@ def register(app, dashboard):
                 startIndex=startIndex, playedPreviously=playedPreviously))
     app.add_url_rule("/api/top-list-movement", "topListMovement", topListMovement, methods=["GET"])
 
+    def _narrowedEmptyMessage(searchQuery, tag, interval, importPitchMessage, default="all time"):
+        """The "nothing here" text a search, a tag, or a narrowed interval
+        deserves, versus a genuinely empty library's import pitch (UT-11,
+        2026-09-02 review): once any of the three is active, the visitor is
+        looking for something specific that simply isn't there - saying so
+        beats offering to import history that may already exist. Only the
+        search text is named; a bare tag or interval filter has no one
+        string worth quoting. Shared by _topListResults (the three Top
+        pages' `emptyMessage=...` literals) and historyPage's
+        _history_results.html, whose Jinja carries the identical rule for
+        the same reason."""
+        if searchQuery or tag or interval != default:
+            return f'No matches for "{searchQuery}".' if searchQuery else "No matches for this filter."
+        return importPitchMessage
+
     def _topListResults(section, endpoint, username, filters, items, statCards,
                          page, totalPages, totalCount, startIndex, emptyMessage,
                          dateRange=(None, None)):
@@ -387,7 +402,9 @@ def register(app, dashboard):
         # wrapper would land in the page as literal JSON text.
         return render_template(
             "_top_list_results.html", tracks=items, statCards=statCards, startIndex=startIndex,
-            section=section, username=username, emptyMessage=emptyMessage,
+            section=section, username=username,
+            emptyMessage=_narrowedEmptyMessage(
+                filters["searchQuery"], filters["tag"], filters["interval"], emptyMessage),
             movementUrl=_movementUrl(section, filters, page, dateRange, items), **pagination)
 
     def overviewPage():
@@ -836,6 +853,8 @@ def register(app, dashboard):
             tracks=tracks,
             startIndex=startIndex,
             interval=interval,
+            searchQuery=searchQuery,
+            tag=tag,
             is_authenticated=is_authenticated,
             username=username,
             **pagination,

@@ -4,10 +4,10 @@
 {# The play-history list + pagination strip, swapped as one unit into
    #historyResults - on first paint and again on every search/filter/page
    change (see routes/charts.py's historyPage HX-Request branch). Expects:
-   tracks, startIndex, interval, is_authenticated, plus everything
-   _pagination.html needs (page, totalPages, prevUrl, nextUrl, pageLinks,
-   showingStart, showingEnd, totalCount) - see dashboard/pagination.py's
-   _buildPaginationContext. #}
+   tracks, startIndex, interval, searchQuery, tag, is_authenticated, plus
+   everything _pagination.html needs (page, totalPages, prevUrl, nextUrl,
+   pageLinks, showingStart, showingEnd, totalCount) - see
+   dashboard/pagination.py's _buildPaginationContext. #}
 {# Heading navigation only: the cards are h3s under the shell's h1. #}
 <h2 class="visually-hidden">Plays</h2>
 <section class="track-list">
@@ -17,7 +17,14 @@
       {% set section = 'history' %}
       {% include '_track_card.html' %}
     {% endfor %}
-  {% elif not request.args.get('q', '') and interval != 'custom' and totalCount == 0 and not is_authenticated %}
+  {% elif searchQuery or tag or interval != 'all time' %}
+    {# A search/tag/narrowed-interval turned up nothing - a genuinely
+       different situation from an empty library, and the import pitch below
+       doesn't help someone who is looking for something specific (UT-11,
+       2026-09-02 review). Only the search text is named - a bare tag or
+       interval filter has no one string worth quoting. #}
+    <p class="empty-state">{% if searchQuery %}No matches for "{{ searchQuery }}".{% else %}No matches for this filter.{% endif %}</p>
+  {% elif totalCount == 0 and not is_authenticated %}
     <p class="empty-state">You haven't connected Spotify yet. <a href="{{ url_for('profileConnectionsPage') }}">Connect Spotify</a>, or <a href="{{ url_for('importPage') }}">import your listening history</a>, to get started.</p>
   {% else %}
     <p class="empty-state">No history tracks found. Go listen to some music or import your history from the import section.</p>
