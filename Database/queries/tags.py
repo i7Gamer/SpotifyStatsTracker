@@ -130,6 +130,14 @@ class TagQueries:
         # this returns the same set as the old DISTINCT-with-ORs. Each branch
         # rides an index (user_tags PK prefix, then tracks PK / idx_tracks_album
         # / idx_track_artists_artist). {tags} expands to one placeholder per tag.
+        #
+        # The artist branch joins tracks back in for the same reason
+        # getMatchingTrackIds' identical branch does, with the measurements to
+        # match: this database has 195 track_artists rows whose track_id is in
+        # no tracks row (a known integrity wart - see checkIntegrity), and
+        # without the join those ids reach the caller. A phantom id then
+        # narrows a plays aggregate to a track that does not exist, so the Top
+        # Songs "Total Plays" card could exceed the sum of its own rows.
         query = """
             SELECT t.id FROM tracks t
                 JOIN user_tags ut ON ut.entity_id = t.id
@@ -140,6 +148,7 @@ class TagQueries:
                 WHERE ut.username = ? AND ut.entity_type = 'album' AND ut.tag IN ({tags})
             UNION
             SELECT ta.track_id FROM track_artists ta
+                JOIN tracks t2 ON t2.id = ta.track_id
                 JOIN user_tags ut ON ut.entity_id = ta.artist_id
                 WHERE ut.username = ? AND ut.entity_type = 'artist' AND ut.tag IN ({tags})
         """

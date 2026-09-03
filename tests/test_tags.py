@@ -93,6 +93,45 @@ class TestTagQueries(unittest.TestCase):
         track_ids = self.repo.getTaggedTrackIds("alice", ["duet"], match_mode="any")
         self.assertEqual(track_ids, ["t1"])
 
+    def test_a_track_artists_row_with_no_track_does_not_leak_an_id(self):
+        """The artist arm read track_artists ALONE while its two siblings join
+        tracks, so a track_artists row whose track_id is in no tracks row
+        returned an id for a track that does not exist. getMatchingTrackIds
+        documents the identical arm needing that join, with measurements from
+        this database ("195 rows ... 7 extra ids for 'the' and 84 for 'a'");
+        the precedent was not carried over (2026-09-03 review, L10).
+
+        A phantom id reaching the caller narrows a plays aggregate to it, so
+        the Top Songs "Total Plays" card could exceed the sum of its own
+        rows."""
+        conn = self.repo._conn()
+        #< how the live rows got there: they pre-date the foreign key, and
+        #  checkIntegrity reports rather than deletes them
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, 0)",
+                     ("ghost", "art1"))
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        self.repo.addTag("alice", "favorite", "artist", "art1")
+
+        for mode in ("any", "all"):
+            with self.subTest(match_mode=mode):
+                ids = self.repo.getTaggedTrackIds("alice", ["favorite"], match_mode=mode)
+
+                self.assertEqual(ids, ["t1"])
+                self.assertNotIn("ghost", ids)
+
+    def test_a_real_track_credited_to_the_tagged_artist_is_still_returned(self):
+        """The negative control for the join: it must exclude only the rows
+        with no track behind them."""
+        self.repo.upsertTrack(makeTrack(trackId="t3", albumId="alb3", artistId="art1"))
+        self.repo.commit()
+        self.repo.addTag("alice", "favorite", "artist", "art1")
+
+        self.assertCountEqual(
+            self.repo.getTaggedTrackIds("alice", ["favorite"], match_mode="any"), ["t1", "t3"])
+
     def test_match_mode_all(self):
         self.repo.addTag("alice", "chill", "track", "t1")
         self.repo.addTag("alice", "workout", "track", "t1")
