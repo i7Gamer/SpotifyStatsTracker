@@ -990,6 +990,33 @@ class TestAdminEmailSettings(AdminRouteTestBase):
         from services.email_service import get_smtp_config
         self.assertFalse(get_smtp_config(dash.repo)["enabled"])
 
+    def test_enabling_notifications_with_empty_from_address_is_rejected_and_nothing_saved(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "email_notifications_enabled": "1",
+            "smtp_host": "smtp.example.com",
+            "smtp_from_email": "",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("error=", resp.headers["Location"])
+
+        from services.email_service import get_smtp_config
+        self.assertFalse(get_smtp_config(dash.repo)["enabled"])
+
+    def test_disabled_notifications_with_empty_from_address_saves(self):
+        dash = self._makeApp()
+        resp = self._post(dash, "/admin/email_settings", isAdmin=True, data={
+            "smtp_host": "smtp.example.com",
+            "smtp_from_email": "",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("error=", resp.headers["Location"])
+
+        from services.email_service import get_smtp_config
+        config = get_smtp_config(dash.repo)
+        self.assertFalse(config["enabled"])
+        self.assertEqual(config["from_email"], "")
+
     def test_invalid_submission_does_not_clobber_a_working_configuration(self):
         dash = self._makeApp()
         self._post(dash, "/admin/email_settings", isAdmin=True, data={

@@ -494,6 +494,9 @@ def register(app, dashboard):
         if enabled and not host.strip():
             return redirect(url_for("adminPage", tab="settings",
                                     error="Enabling notifications requires an SMTP host."))
+        if enabled and not from_email.strip():
+            return redirect(url_for("adminPage", tab="settings",
+                                    error="Enabling notifications requires a From address."))
         if not _isValidFromEmail(from_email.strip()):
             return redirect(url_for("adminPage", tab="settings",
                                     error="From address must be a valid email address."))
