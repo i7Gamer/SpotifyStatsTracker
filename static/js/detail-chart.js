@@ -39,6 +39,39 @@
     return pathname + (query ? '?' + query : '');
   }
 
+  //< the play log's swap target (see _detail_history_container.html) and the
+  //  controls inside it whose URL was built SERVER-SIDE, with the groupBy the
+  //  body was fetched with: the sort/skips toggles and the pagination strip
+  //  (boosted links) plus "Show more" (an hx-get button)
+  var HISTORY_RESULTS_ID = 'detailHistoryResults';
+  var PLAY_LOG_URL_SELECTOR = '[hx-boost] a[href], [hx-get]';
+
+  /* Point the play log's own controls at the bucket now selected.
+
+     #detailHistoryResults carries hx-replace-url="true", so the next
+     sort/skips/page swap wrote its stale href back over the address bar while
+     the select still read Month and the chart still showed monthly buckets -
+     and a later chart failure's Retry, which rebuilds from location.search,
+     then redrew with Auto under that same select.
+
+     Rewritten rather than included from the DOM (hx-include): htmx APPENDS
+     included values to a URL that already carries the parameter, and
+     request.args.get returns the FIRST occurrence - the stale half would win.
+     One pass is enough: the corrected URL is what the next swap requests, and
+     the controls it brings back are rendered from that request. */
+  function retargetPlayLogUrls(groupBy) {
+    var container = document.getElementById(HISTORY_RESULTS_ID);
+    if (!container || !container.querySelectorAll) return;
+    container.querySelectorAll(PLAY_LOG_URL_SELECTOR).forEach(function (control) {
+      var name = control.hasAttribute('hx-get') ? 'hx-get' : 'href';
+      var raw = control.getAttribute(name);
+      //< own paths only: a row's link out to Spotify is not ours to rewrite
+      if (!raw || raw.charAt(0) !== '/') return;
+      var parsed = new URL(raw, window.location.origin);
+      control.setAttribute(name, detailPageUrl(parsed.pathname, parsed.search, groupBy));
+    });
+  }
+
   function timeSeriesWrap() {
     var canvas = document.getElementById('timeSeriesChart');
     return canvas ? canvas.parentElement : null;
@@ -133,6 +166,7 @@
     document.querySelectorAll('form input[type="hidden"][name="groupBy"]').forEach(function (input) {
       input.value = groupBy;
     });
+    retargetPlayLogUrls(groupBy);
     loadDetailTimeSeries();
   }
 

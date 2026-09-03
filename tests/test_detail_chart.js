@@ -79,6 +79,16 @@ function makeClassList() {
   };
 }
 
+const PLAY_LOG_URL_SELECTOR = '[hx-boost] a[href], [hx-get]';
+
+function makeControl(attrName, value) {
+  return {
+    _attrs: { [attrName]: value },
+    hasAttribute(name) { return name in this._attrs; },
+    getAttribute(name) { return name in this._attrs ? this._attrs[name] : null; },
+    setAttribute(name, v) { this._attrs[name] = v; },
+  };
+}
 const INITIAL_SERIES = 'initial';
 const HIDDEN_GROUP_BY_SELECTOR = 'form input[type="hidden"][name="groupBy"]';
 
@@ -87,15 +97,24 @@ const HIDDEN_GROUP_BY_SELECTOR = 'form input[type="hidden"][name="groupBy"]';
  * inputs, and a fetch stub whose settlement the test controls. The stub's
  * replaceState updates window.location the way a browser's does, so the fetch
  * URL a case sees is the one the loader built AFTER the URL update. */
-function freshPage() {
+function freshPage(options) {
+  const playLogControls = (options && options.playLogControls) || null;
   const wrap = { classList: makeClassList() };
   const canvas = { parentElement: wrap };
   const groupBySelect = { value: '' };
   const hiddenInputs = [{ value: 'original' }, { value: 'original' }];
+  const playLogContainer = {
+    querySelectorAll(selector) {
+      return selector === PLAY_LOG_URL_SELECTOR ? playLogControls : [];
+    },
+  };
   const calls = { renders: 0, banners: [], cleared: [], replaced: [], pushed: [], errors: [] };
 
   function setLocation(url) {
     const parsed = new URL(url, 'http://localhost');
+    //< a real browser always has one, and the play-log retarget resolves
+    //  each control's relative URL against it
+    global.window.location.origin = parsed.origin;
     global.window.location.pathname = parsed.pathname;
     global.window.location.search = parsed.search;
     global.window.location.href = parsed.pathname + parsed.search;
@@ -117,6 +136,9 @@ function freshPage() {
     getElementById(id) {
       if (id === 'timeSeriesChart') return canvas;
       if (id === 'groupBy') return groupBySelect;
+      //< absent unless a case supplies one: the body is deferred, so a
+      //  bucket change before it lands finds no play log at all
+      if (id === 'detailHistoryResults' && playLogControls) return playLogContainer;
       return null;
     },
     querySelectorAll(selector) { return selector === HIDDEN_GROUP_BY_SELECTOR ? hiddenInputs : []; },
@@ -329,6 +351,51 @@ run('updateDetailGroupByFilter replaces the URL, syncs every hidden groupBy, the
                      'the fetch reads the URL the replaceState just wrote');
 });
 
+run('a bucket change retargets the play log so the next swap cannot revert it', () => {
+  /* The sort/skips/pagination links and "Show more" are built server-side
+   * with the groupBy the BODY was fetched with, and #detailHistoryResults
+   * carries hx-replace-url="true" - so the next swap wrote that stale value
+   * back over the address bar while the select still read Month
+   * (2026-09-03 review, M8). */
+  const sortToggle = makeControl('href', '/song/t1?sort=oldest');
+  const showMore = makeControl('hx-get', '/song/t1?offset=50&groupBy=day');
+  const page = freshPage({ playLogControls: [sortToggle, showMore] });
+
+  page.load('month');
+
+  assert.strictEqual(sortToggle.getAttribute('href'), '/song/t1?sort=oldest&groupBy=month');
+  assert.strictEqual(showMore.getAttribute('hx-get'), '/song/t1?offset=50&groupBy=month',
+                     'a URL that already carried a bucket is REPLACED, never appended to');
+});
+
+run('Auto takes the bucket out of the play log URLs too', () => {
+  //< the empty value is a real choice (let the server derive the span), and
+  //  detailPageUrl deletes the param for it - the links must follow
+  const sortToggle = makeControl('href', '/song/t1?sort=oldest&groupBy=month');
+  const page = freshPage({ playLogControls: [sortToggle] });
+
+  page.load('');
+
+  assert.strictEqual(sortToggle.getAttribute('href'), '/song/t1?sort=oldest');
+});
+
+run('a link that is not one of ours is left alone', () => {
+  const external = makeControl('href', 'https://open.spotify.com/track/t1');
+  const page = freshPage({ playLogControls: [external] });
+
+  page.load('month');
+
+  assert.strictEqual(external.getAttribute('href'), 'https://open.spotify.com/track/t1');
+});
+
+run('a page with no play log on screen still updates the chart', () => {
+  //< the body is deferred: a bucket change before it lands must not throw
+  const page = freshPage();
+
+  page.load('week');
+
+  assert.strictEqual(page.pendingFetches.length, 1);
+});
 (async () => {
   const only = process.argv[2] || '';
   const selected = tests.filter(([name]) => name.includes(only));
