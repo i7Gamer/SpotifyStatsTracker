@@ -148,6 +148,53 @@ class TestOverwriteDeletesCoveredRange(_OverwriteTestBase):
         self.assertEqual(self._playedAts(db), [nextYearMidnight])
 
 
+class TestOverwriteAtTheEndOfRepresentableTime(_OverwriteTestBase):
+    """A far-future played_at - a corrupt export; _plausibleStart is
+    deliberately a floor with no ceiling - put the delete's year loop on year
+    9999, whose segment end was computed as "the start of year 10000, less an
+    epsilon". datetime refuses that year, so the import died with "year must be
+    in 1..9999, not 10000": the transaction rolls back so nothing is lost, but
+    the message names nothing actionable and re-running never succeeds
+    (2026-09-03 review, L9).
+
+    The span's own end is the answer there anyway - nothing inside it can be
+    later - which is what the min() already picked for the last year."""
+
+    def test_a_year_9999_span_imports_instead_of_dying_on_year_10000(self):
+        db = self._makeDb({}, [
+            {"id": "old9999", "playedAt": _ts(9999, 6), "timePlayed": 60000},
+        ])
+        fileSpecs = {
+            "far future": ((_ts(9999, 2), _ts(9999, 11), {9999}),
+                           lambda: iter([_meta("new9999", _ts(9999, 3))])),
+        }
+
+        outcomes = self._runBatch(db, fileSpecs)
+
+        self.assertEqual(outcomes, ["imported"])
+        playedAts = self._playedAts(db)
+        self.assertNotIn(_ts(9999, 6), playedAts)   #< the covered year is still wiped
+        self.assertIn(_ts(9999, 3), playedAts)      #< and re-imported
+
+    def test_an_earlier_year_in_the_same_span_still_stops_at_its_own_boundary(self):
+        """The clamp must apply to the LAST representable year only - an
+        ordinary year in the same batch keeps segmenting on its own boundary,
+        so a play in an uncovered year between them still survives."""
+        db = self._makeDb({}, [
+            {"id": "keep9998", "playedAt": _ts(9998, 6), "timePlayed": 60000},
+            {"id": "wipe9999", "playedAt": _ts(9999, 6), "timePlayed": 60000},
+        ])
+        fileSpecs = {
+            "far future": ((_ts(9998, 2), _ts(9999, 11), {9999}), lambda: iter([])),
+        }
+
+        self._runBatch(db, fileSpecs)
+
+        playedAts = self._playedAts(db)
+        self.assertIn(_ts(9998, 6), playedAts)      #< 9998 is inside the span but uncovered
+        self.assertNotIn(_ts(9999, 6), playedAts)
+
+
 class TestOverwriteGating(_OverwriteTestBase):
     def test_overwrite_bypasses_the_already_imported_hash_gate(self):
         db = self._makeDb({}, [])

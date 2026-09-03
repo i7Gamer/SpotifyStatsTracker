@@ -1183,11 +1183,27 @@ class ImportMixin:
 
         for year in sorted(coveredYears):
             segmentStart = max(yearStartTs(year), minStart)
-            segmentEnd = min(yearStartTs(year + 1) - self.YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS, maxEnd)
+            segmentEnd = self._yearSegmentEnd(year, maxEnd, yearStartTs)
             if segmentStart > segmentEnd:
                 continue   #< a covered year the batch span does not actually reach
             years.update(range(usersYear(segmentStart), usersYear(segmentEnd) + 1))
         return years
+
+    def _yearSegmentEnd(self, year: int, maxEnd: float, yearStartTs) -> float:
+        """Where `year`'s slice of a batch span ends: the instant before the
+        next year begins, or the span's own end if that comes first.
+
+        Year 9999 has no year 10000 to subtract from - datetime refuses it -
+        and a far-future played_at reaches this (a corrupt export;
+        _plausibleStart is deliberately a floor with no ceiling). The overwrite
+        then died with "year must be in 1..9999, not 10000": the transaction
+        rolls back so nothing is lost, but the message names nothing actionable
+        and re-running never succeeds. maxEnd is the right answer there anyway -
+        nothing in the span can be later than it - and it is what the min()
+        below already picks for the span's last year."""
+        if year >= _dbmod.datetime.datetime.max.year:
+            return maxEnd
+        return min(yearStartTs(year + 1) - self.YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS, maxEnd)
 
     def _deletePlaysInCoveredRange(self, minStart, maxEnd, coveredYears) -> tuple[int, int, list[int]]:
         """Delete this user's plays and skips in each covered year's segment of
@@ -1217,7 +1233,7 @@ class ImportMixin:
                 skippedYears.append(year)
                 continue
             segmentStart = max(yearStartTs(year), minStart)
-            segmentEnd = min(yearStartTs(year + 1) - self.YEAR_SEGMENT_BOUNDARY_EPSILON_SECONDS, maxEnd)
+            segmentEnd = self._yearSegmentEnd(year, maxEnd, yearStartTs)
             deletedPlays += self.repo.deletePlaysInRange(self.user, segmentStart, segmentEnd)
             deletedSkips += self.repo.deleteSkipsInRange(self.user, segmentStart, segmentEnd)
 
