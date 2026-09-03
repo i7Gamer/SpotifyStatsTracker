@@ -144,4 +144,77 @@ run('choosing a category moves the pressed state with the class', () => {
   assert.strictEqual(dom.all.getAttribute('aria-pressed'), 'false');
 });
 
+// ------------------------------------------------------ the failure banner
+//
+// The Retry callback compare.js hands to AjaxStatus. Reached the way the page
+// reaches it - a transport error on document.body - so the wiring is covered
+// too, not just the function body.
+
+function loadCompareRetryDom(opts) {
+  const form = {
+    attrs: { 'hx-get': '/compare' },
+    getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; },
+  };
+  if (opts && opts.noHxGet) delete form.attrs['hx-get'];
+
+  const handlers = {};
+  const ajaxCalls = [];
+  let retry = null;
+
+  global.htmx = { ajax(method, url, options) { ajaxCalls.push({ method, url, options }); } };
+  global.window = {
+    //< the URL still carries the LAST SUCCESSFUL filters: hx-replace-url only
+    //  writes on success, and this is the state after one has failed
+    location: { pathname: '/compare', search: '?interval=year&with=bob' },
+    AjaxStatus: { showBanner(fn) { retry = fn; }, clearBanner() {} },
+  };
+  global.document = {
+    getElementById(id) {
+      return (id === 'compareFilters' && !(opts && opts.noForm)) ? form : null;
+    },
+    body: { addEventListener(type, fn) { handlers[type] = fn; } },
+    querySelectorAll() { return []; },
+    querySelector() { return null; },
+  };
+
+  delete require.cache[require.resolve('../static/js/compare.js')];
+  require('../static/js/compare.js');
+
+  handlers['htmx:responseError']({});
+  assert.strictEqual(typeof retry, 'function', 'a transport error must arm a Retry');
+  retry();
+
+  delete global.htmx; delete global.window; delete global.document;
+  return { form, ajaxCalls };
+}
+
+run('Retry asks the form endpoint, so the stale URL cannot double the params', () => {
+  // htmx APPENDS a source form's fields to the path it is given, so retrying
+  // against location.search sent ?interval=year&...&interval=month - and
+  // request.args.get takes the FIRST, so the view the user had left won.
+  const { form, ajaxCalls } = loadCompareRetryDom();
+
+  assert.strictEqual(ajaxCalls.length, 1);
+  assert.strictEqual(ajaxCalls[0].url, '/compare',
+    'the request must carry no query of its own');
+  assert.strictEqual(ajaxCalls[0].options.source, form,
+    'and the form must stay the single parameter provider');
+});
+
+run('Retry falls back to the bare path when the form declares no hx-get', () => {
+  const { form, ajaxCalls } = loadCompareRetryDom({ noHxGet: true });
+
+  assert.strictEqual(ajaxCalls[0].url, '/compare');
+  assert.strictEqual(ajaxCalls[0].options.source, form);
+});
+
+run('with no form at all the URL is the only filter source left, and is used', () => {
+  // Not a state a rendered compare page reaches - but with nothing to append,
+  // carrying the query is safe, and dropping it would retry an unfiltered view.
+  const { ajaxCalls } = loadCompareRetryDom({ noForm: true });
+
+  assert.strictEqual(ajaxCalls[0].url, '/compare?interval=year&with=bob');
+  assert.strictEqual(ajaxCalls[0].options.source, null);
+});
+
 console.log('All compare page tests passed.');

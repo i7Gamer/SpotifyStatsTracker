@@ -124,8 +124,20 @@ if (typeof document !== 'undefined') {
   // revoked mid-session: the route answers both with HX-Redirect, so the
   // browser navigates instead of this reporting a load failure.
   var reloadCompare = function () {
-    htmx.ajax('GET', window.location.pathname + window.location.search,
-              { source: byId(COMPARE_FORM_ID), target: 'body', swap: 'none' });
+    // The form is the ONLY parameter provider. htmx APPENDS a source form's
+    // fields to whatever path it is handed, so passing location.search as well
+    // produced ?interval=year&...&interval=month - and request.args.get returns
+    // the FIRST occurrence, so the stale half won. hx-replace-url writes the URL
+    // back only on success, which means that after a failed request the search
+    // string still holds the last SUCCESSFUL filters while the form holds the
+    // ones the user actually asked for: Retry reloaded the old view, succeeded,
+    // cleared the banner, and left the page contradicting its own controls.
+    var form = byId(COMPARE_FORM_ID);
+    //< no form is not a state a rendered compare page can reach; the URL is the
+    //  only filter source left, and carrying it is safe with nothing to append
+    var path = form ? (form.getAttribute('hx-get') || window.location.pathname)
+                    : window.location.pathname + window.location.search;
+    htmx.ajax('GET', path, { source: form, target: 'body', swap: 'none' });
   };
   var reportCompareFailure = function () {
     if (window.AjaxStatus) window.AjaxStatus.showBanner(reloadCompare);
