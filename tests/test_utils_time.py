@@ -232,6 +232,20 @@ class TestFormatTimeGap(unittest.TestCase):
             with self.subTest(days=days):
                 self.assertFalse(utilsModule.formatTimeGap(86400 * days).startswith("0 "))
 
+    def test_earlier_defaults_to_false_so_every_existing_caller_is_unchanged(self):
+        """earlier is a new, defaulted parameter - every positional call (the
+        whole suite above) must keep reading "later"."""
+        self.assertEqual(utilsModule.formatTimeGap(300), "5 mins later")
+        self.assertEqual(utilsModule.formatTimeGap(300, earlier=False), "5 mins later")
+
+    def test_earlier_true_swaps_the_trailing_word_at_every_tier(self):
+        self.assertEqual(utilsModule.formatTimeGap(30, earlier=True), "< 1 min earlier")
+        self.assertEqual(utilsModule.formatTimeGap(300, earlier=True), "5 mins earlier")
+        self.assertEqual(utilsModule.formatTimeGap(7200, earlier=True), "2 hours earlier")
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 5, earlier=True), "5 days earlier")
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 90, earlier=True), "3 months earlier")
+        self.assertEqual(utilsModule.formatTimeGap(86400 * 365 * 3, earlier=True), "3 years earlier")
+
 
 class TestUnparseableInputNeverRaises(unittest.TestCase):
     """timeToInt / convertToDatetime / dateToString / parseDatetime document

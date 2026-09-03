@@ -1593,13 +1593,14 @@ class TestAlbumHistoryTimeline(_DetailRouteTestBase):
     def test_the_timeline_carries_its_month_headers_and_gaps(self):
         """The two things the timeline adds over a bare list, and the reason
         _enrichSongTimelineEntries is the right enricher here rather than
-        _attachPlayTypes."""
+        _attachPlayTypes. The fixture is newest-first, so the second (older)
+        card's gap badge reads "earlier" (UT-14)."""
         threeHours = 10800
         body = self._body(1, self._plays((1784560000, 190000), (1784560000 - threeHours, 190000)))
 
         self.assertIn("timeline-date-header", body)
         self.assertIn("timeline-gap-badge", body)
-        self.assertIn("3 hours later", body)
+        self.assertIn("3 hours earlier", body)
 
     def test_the_htmx_list_swap_returns_the_timeline_too(self):
         """The sort/page controls re-swap only the list, so that response has to

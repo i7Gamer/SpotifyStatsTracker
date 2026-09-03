@@ -230,8 +230,8 @@ class ViewModelMixin:
             if i > 0:
                 current_ts = play.get("playedAt", 0)
                 previous_ts = plays[i - 1].get("playedAt", 0)
-                delta_sec = abs(float(current_ts) - float(previous_ts))
-                play["timePassedText"] = formatTimeGap(delta_sec)
+                delta_sec = float(current_ts) - float(previous_ts)
+                play["timePassedText"] = formatTimeGap(abs(delta_sec), earlier=(delta_sec < 0))
 
         return plays
 

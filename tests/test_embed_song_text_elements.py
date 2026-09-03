@@ -118,7 +118,10 @@ class TestEnrichSongTimelineEntries(AppTestCase):
         # The gap badge renders in the template directly above each play's card
         # (i.e. between the previous list entry and this one), so it must be
         # attached to the *later* list entry regardless of sort direction -
-        # otherwise it renders one card too high in the timeline.
+        # otherwise it renders one card too high in the timeline. In the
+        # default newest-first order the second card is chronologically
+        # BEFORE the one above it, so the badge must read "earlier" (UT-14:
+        # abs() used to strip the sign and this read "later" instead).
         dash = self._makeApp()
         # Newest first: 15:00, then 12:00 (3 hours difference)
         ts_newer = 1784560000       # 2026-07-20 15:06:40 UTC
@@ -132,7 +135,7 @@ class TestEnrichSongTimelineEntries(AppTestCase):
 
         self.assertIsNone(enriched[0].get("timePassedText"))
         self.assertIn("timePassedText", enriched[1])
-        self.assertEqual(enriched[1]["timePassedText"], "3 hours later")
+        self.assertEqual(enriched[1]["timePassedText"], "3 hours earlier")
 
     def test_time_passed_between_plays_oldest_first(self):
         # Same plays in ascending order - the gap badge must still land on the

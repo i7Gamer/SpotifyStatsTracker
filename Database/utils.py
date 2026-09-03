@@ -407,30 +407,35 @@ GAP_DAYS_PER_YEAR = 365    #  tiers - no calendar arithmetic, the label is appro
 # monotone across the seam (359d and 364d both read "11 months later").
 GAP_MAX_MONTHS_BELOW_A_YEAR = 11
 
-def formatTimeGap(seconds: float | int) -> str:
-    """Formats a time gap in seconds into a human-readable string for timeline connectors."""
+def formatTimeGap(seconds: float | int, earlier: bool = False) -> str:
+    """Formats a time gap in seconds into a human-readable string for timeline
+    connectors. `earlier` picks the trailing word ("earlier" vs the default
+    "later") - callers that already normalise the delta to an unsigned
+    magnitude decide the direction themselves and pass it here instead of
+    losing it to abs()."""
+    direction = "earlier" if earlier else "later"
     sec = max(0, int(seconds))
     if sec < 60:
-        return "< 1 min later"
-    
+        return f"< 1 min {direction}"
+
     minutes = sec // 60
     if minutes < 60:
-        return f"{minutes} min later" if minutes == 1 else f"{minutes} mins later"
-        
+        return f"{minutes} min {direction}" if minutes == 1 else f"{minutes} mins {direction}"
+
     hours = sec // 3600
     if hours < 24:
-        return f"{hours} hour later" if hours == 1 else f"{hours} hours later"
-        
+        return f"{hours} hour {direction}" if hours == 1 else f"{hours} hours {direction}"
+
     days = sec // SECONDS_PER_DAY
     if days < GAP_DAYS_PER_MONTH:
-        return f"{days} day later" if days == 1 else f"{days} days later"
+        return f"{days} day {direction}" if days == 1 else f"{days} days {direction}"
 
     if days < GAP_DAYS_PER_YEAR:
         months = min(sec // (SECONDS_PER_DAY * GAP_DAYS_PER_MONTH), GAP_MAX_MONTHS_BELOW_A_YEAR)
-        return f"{months} month later" if months == 1 else f"{months} months later"
+        return f"{months} month {direction}" if months == 1 else f"{months} months {direction}"
 
     years = sec // (SECONDS_PER_DAY * GAP_DAYS_PER_YEAR)
-    return f"{years} year later" if years == 1 else f"{years} years later"
+    return f"{years} year {direction}" if years == 1 else f"{years} years {direction}"
 
 def versionTuple(version: str) -> tuple[int, ...]:
     """Version components as ints, so < and > order them correctly - a plain
