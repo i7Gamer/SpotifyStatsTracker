@@ -35,6 +35,15 @@ except ModuleNotFoundError:
         sys.path.append(parentDir)
     from utils import parseError
 
+# The two folders the watcher creates INSIDE the watch folder as it files
+# processed uploads. Named rather than repeated so the skipped-folder notice in
+# watchFolder_blocking cannot start reporting the importer's own bookkeeping
+# back to the user if one is ever renamed.
+DONE_SUBDIR = "DONE"
+FAILED_SUBDIR = "FAILED"
+MANAGED_SUBDIRS = (DONE_SUBDIR, FAILED_SUBDIR)
+
+
 class Watchdog:  #< polls a folder and hands over files once their size stops changing
     def __init__(self):
         self.run = True   #< signalStop()/stop() clear it; the poll loop checks it every pass
@@ -99,6 +108,34 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
             return
         logger.info(f"Monitoring {pathToWatch} for new files (Polling)...")
         knownFiles = set()
+
+        #< names already reported, so the notice below is announced ONCE per
+        #  folder rather than every checkInterval for the life of the process -
+        #  the same bound _tryClaimAnnouncement puts on the failure log. A name
+        #  that goes away is forgotten, so a re-drop is announced again.
+        announcedDirectories = set()
+
+        def announceSkippedDirectories(entries):
+            """Say something about folders dropped into the watch folder.
+
+            Both scans filter with os.path.isfile, so a FOLDER of exports is
+            skipped - and was skipped in silence: nothing was imported and
+            nothing was said, which reads as the watcher being broken. The two
+            subdirectories the importer makes for itself are not the user's
+            doing and are never reported.
+
+            Takes the entries the caller already listed rather than listing
+            again: one os.listdir per poll is the shape every other reader of
+            this folder assumes."""
+            present = {name for name in entries
+                       if name not in MANAGED_SUBDIRS
+                       and os.path.isdir(os.path.join(pathToWatch, name))}
+            for name in sorted(present - announcedDirectories):
+                logger.warning(
+                    "Ignoring the folder %s in %s: only files are imported. Move the "
+                    "exports themselves into the watch folder.", name, pathToWatch)
+            announcedDirectories.clear()
+            announcedDirectories.update(present)
         try:
             if not os.path.exists(pathToWatch):   #< first run for this user
                 # exist_ok: the check and the create are two calls, and anything
@@ -108,7 +145,9 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
                 # for the life of the process. The post-condition wanted is "the
                 # folder exists"; who created it is not this thread's business.
                 os.makedirs(pathToWatch, exist_ok=True)   #< create the drop folder before the initial scan
-            knownFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
+            entries = os.listdir(pathToWatch)
+            knownFiles = {f for f in entries if os.path.isfile(os.path.join(pathToWatch, f))}
+            announceSkippedDirectories(entries)
             if callbackInitialFiles and knownFiles:
                 fullPaths = sorted(os.path.join(pathToWatch, f) for f in knownFiles)
                 for fullPath in fullPaths:
@@ -133,7 +172,9 @@ class Watchdog:  #< polls a folder and hands over files once their size stops ch
             if not self.run or self._stop_event.is_set():
                 break
             try:
-                currentFiles = {f for f in os.listdir(pathToWatch) if os.path.isfile(os.path.join(pathToWatch, f))}
+                entries = os.listdir(pathToWatch)
+                currentFiles = {f for f in entries if os.path.isfile(os.path.join(pathToWatch, f))}
+                announceSkippedDirectories(entries)
                 knownFiles &= currentFiles   #< forget deleted files so a later re-drop counts as new
 
                 newlySighted = set()
@@ -284,7 +325,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         if firstTime:
             logger.error(reason)
         try:
-            shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
+            shutil.move(path, self._destinationPath(path, subdirName=FAILED_SUBDIR))
             self._readAttempts.pop(path, None)
             self._failureAnnounced.pop(path, None)
         except Exception as moveError:
@@ -316,7 +357,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
         self._readAttempts[path] = (attempts, stamp)
         return attempts
 
-    def _destinationPath(self, path, subdirName="DONE"):
+    def _destinationPath(self, path, subdirName=DONE_SUBDIR):
         fileDirectory = os.path.dirname(path)
         fileName = os.path.basename(path)
         destinationDirectory = os.path.join(fileDirectory, subdirName)
@@ -467,7 +508,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
 
         for (path, _), outcome in zip(toImport, outcomes):
             fileName = os.path.basename(path)
-            subdirName = "FAILED" if outcome == "failed" else "DONE"
+            subdirName = FAILED_SUBDIR if outcome == "failed" else DONE_SUBDIR
             try:
                 if outcome == "failed":
                     # Visible in FAILED/ instead of celebrated in DONE/ - and
@@ -476,7 +517,7 @@ class AutoImporter:  #< drop-folder importer: Watchdog feeds _handleImport; file
                     logger.error(f"Import failed for {fileName} - moving to FAILED/. "
                                  "Check the file (it may be corrupt or not a Spotify/Musicolet export) "
                                  "and drop a fixed copy back into the watch folder.")
-                    shutil.move(path, self._destinationPath(path, subdirName="FAILED"))
+                    shutil.move(path, self._destinationPath(path, subdirName=FAILED_SUBDIR))
                 else:
                     logger.info(f"Successfully imported {fileName}")
                     shutil.move(path, self._destinationPath(path))

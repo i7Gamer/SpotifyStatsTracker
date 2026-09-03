@@ -8,7 +8,9 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
-from Database.Importers.AutoImporter import AutoImporter, Watchdog, WATCHDOG_THREAD_NAME_PREFIX
+from Database.Importers.AutoImporter import (
+    AutoImporter, Watchdog, WATCHDOG_THREAD_NAME_PREFIX, MANAGED_SUBDIRS,
+)
 
 
 def _fakeOpenByName(path, *args, **kwargs):
@@ -118,6 +120,88 @@ class TestAutoImporterLogging(unittest.TestCase):
         self.assertTrue(any("Successfully imported file.txt" in record for record in log_capture.output))
         self.assertTrue(any("Successfully moved file.txt to DONE/" in record for record in log_capture.output))
 
+
+class TestSkippedDirectoriesAreReported(unittest.TestCase):
+    """A FOLDER dropped into the watch folder is filtered out by both scans'
+    os.path.isfile - and was filtered out in silence, so someone who drops a
+    folder of exports sees nothing imported and nothing said, which reads as
+    the watcher being broken (2026-09-03 review, C-13).
+
+    Announced once per folder, not once per poll: this loop runs every
+    checkInterval for the life of the process."""
+
+    @staticmethod
+    def _isdir(path):
+        return not os.path.basename(path).endswith('.json')
+
+    @patch('Database.Importers.AutoImporter.os.path.exists')
+    @patch('Database.Importers.AutoImporter.os.makedirs')
+    @patch('Database.Importers.AutoImporter.os.listdir')
+    def test_a_dropped_folder_is_named_in_a_warning(self, mock_listdir, mock_makedirs, mock_exists):
+        mock_exists.return_value = True
+        mock_listdir.return_value = ['exports']
+
+        wd = Watchdog()
+        wd.run = False
+
+        with patch('Database.Importers.AutoImporter.os.path.isfile', return_value=False), \
+             patch('Database.Importers.AutoImporter.os.path.isdir', self._isdir), \
+             self.assertLogs('Database.Importers.AutoImporter', level='WARNING') as captured:
+            wd.watchFolder_blocking('/dummy/path', lambda x: None, callbackInitialFiles=True)
+
+        self.assertTrue(any('exports' in line and 'only files are imported' in line
+                            for line in captured.output), captured.output)
+
+    @patch('Database.Importers.AutoImporter.os.path.getsize')
+    @patch('Database.Importers.AutoImporter.os.path.exists')
+    @patch('Database.Importers.AutoImporter.os.makedirs')
+    @patch('Database.Importers.AutoImporter.os.listdir')
+    def test_the_same_folder_is_not_reported_on_every_poll(
+            self, mock_listdir, mock_makedirs, mock_exists, mock_getsize):
+        mock_exists.return_value = True
+        mock_getsize.return_value = 100
+        #< the folder sits there for every scan; a finite side_effect list
+        #  would run out and turn this into a spin instead of a poll count
+        mock_listdir.return_value = ['exports']
+
+        wd = Watchdog()
+        polls = {'n': 0}
+
+        def isdir(path):
+            polls['n'] += 1
+            if polls['n'] > 3:
+                wd.run = False
+            return TestSkippedDirectoriesAreReported._isdir(path)
+
+        with patch('Database.Importers.AutoImporter.os.path.isfile', return_value=False), \
+             patch('Database.Importers.AutoImporter.os.path.isdir', isdir), \
+             self.assertLogs('Database.Importers.AutoImporter', level='WARNING') as captured:
+            wd.watchFolder_blocking('/dummy/path', lambda x: None,
+                                    checkInterval=0.01, callbackInitialFiles=True)
+
+        notices = [line for line in captured.output if 'only files are imported' in line]
+        self.assertEqual(len(notices), 1, notices)
+
+    @patch('Database.Importers.AutoImporter.os.path.exists')
+    @patch('Database.Importers.AutoImporter.os.makedirs')
+    @patch('Database.Importers.AutoImporter.os.listdir')
+    def test_the_importers_own_subfolders_are_never_reported(
+            self, mock_listdir, mock_makedirs, mock_exists):
+        """DONE/ and FAILED/ live inside the watch folder and are the
+        watcher's own bookkeeping, not something the user dropped there."""
+        mock_exists.return_value = True
+        mock_listdir.return_value = list(MANAGED_SUBDIRS)
+
+        wd = Watchdog()
+        wd.run = False
+
+        with patch('Database.Importers.AutoImporter.os.path.isfile', return_value=False), \
+             patch('Database.Importers.AutoImporter.os.path.isdir', return_value=True), \
+             self.assertLogs('Database.Importers.AutoImporter', level='INFO') as captured:
+            wd.watchFolder_blocking('/dummy/path', lambda x: None, callbackInitialFiles=True)
+
+        self.assertFalse(any('only files are imported' in line for line in captured.output),
+                         captured.output)
 
 class TestWatchdogStartupResilience(unittest.TestCase):
     """The poll loop's per-iteration guard exists because a transient listdir
