@@ -296,6 +296,36 @@ class TestOutOfBandRegions(WrappedHtmxTestCase):
 
         self.assertEqual([badge.get_text(strip=True) for badge in current], ["2024"])
 
+    def test_every_year_badge_carries_an_id_derived_from_its_year(self):
+        """htmx restores keyboard focus after a swap by matching the focused
+        element up again BY ID, and that is the only mechanism covering this
+        nav: it rides along out of band, while HtmxFilters' focus-restore pair
+        only looks inside evt.detail.target - which for a badge click is
+        #wrappedResults. Without ids, switching year with the keyboard dropped
+        focus to <body> every time. _compare_user_badges.html already does this
+        and says why; these are the same control.
+
+        Keyed on the YEAR rather than the loop index so the id survives a year
+        entering or leaving availableYears between two renders."""
+        import bs4
+
+        badges = bs4.BeautifulSoup(self._fragment("?year=2024"), "html.parser")             .select("#wrappedYearBadges a")
+
+        self.assertTrue(badges, "the picker must render at least one badge")
+        self.assertEqual([badge.get("id") for badge in badges],
+                         ["wrappedYearBadge" + badge.get_text(strip=True) for badge in badges])
+
+    def test_the_badge_ids_are_the_same_on_the_full_page(self):
+        """The focused element has to be found by the id it ALREADY had, so the
+        first render and the swapped-in copy must agree."""
+        import bs4
+
+        for body, label in ((self._page("?year=2024"), "page"),
+                            (self._fragment("?year=2024"), "fragment")):
+            with self.subTest(render=label):
+                badges = bs4.BeautifulSoup(body, "html.parser").select("#wrappedYearBadges a")
+                self.assertIn("wrappedYearBadge2024", [badge.get("id") for badge in badges])
+
     def test_the_forms_hidden_year_field_follows_the_year(self):
         """A later change to Items per category serializes the form, so a
         stale year field would silently ask for the year the user just left

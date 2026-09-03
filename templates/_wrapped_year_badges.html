@@ -37,7 +37,15 @@
       hx-replace-url writes it to the address bar, so an empty param here ends
       up in every link people copy - the hand-written builder dropped it. -#}
   {% for y in availableYears %}
-    <a class="wrapped-year-badge{{ ' active' if y == year else '' }}"{% if y == year %} aria-current="page"{% endif %} href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
+    {#- The id is what lets htmx put keyboard focus back after this nav is
+        replaced: it matches the focused element up again by id, and that is the
+        ONLY mechanism reaching this control. The nav rides along out of band,
+        while the shared focus-restore pair in static/js/htmx-filters.js only
+        looks inside the swap target - #wrappedResults, which never contains a
+        badge. Same reason, same shape, as _compare_user_badges.html. Keyed on
+        the YEAR, not loop.index, so it survives a year entering or leaving
+        availableYears between two renders. -#}
+    <a class="wrapped-year-badge{{ ' active' if y == year else '' }}" id="wrappedYearBadge{{ y }}"{% if y == year %} aria-current="page"{% endif %} href="{{ url_for('sharedWrappedPage', token=token, year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) if publicView else url_for('wrappedPage', year=y, groupBy=groupBy or none, limit=limit, sortBy=sortBy) }}">{{ y }}</a>
   {% endfor %}
 </nav>
 {% endif %}
