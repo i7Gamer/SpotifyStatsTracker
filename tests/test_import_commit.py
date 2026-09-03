@@ -33,6 +33,10 @@ class TestImportHistoryCommit(DatabaseTestCase):
     def _mockImporter(self, generatorFactory, parsedCount=2):
         importer = MagicMock()
         importer._convertToList.return_value = ([{}] * parsedCount, "spotifyAcountExport")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.importHistory.return_value = generatorFactory()
         return importer
 
@@ -159,6 +163,10 @@ class TestImportHistoryCommit(DatabaseTestCase):
         files to DONE/ as successes and the web UI reported 'complete'."""
         importer = MagicMock()
         importer._convertToList.return_value = ([], "None")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
 
         with patch("Database.database.Importer", return_value=importer):
             with self.assertRaises(ValueError):
@@ -224,6 +232,10 @@ class TestImportHistoryCommit(DatabaseTestCase):
         which is not an error."""
         importer = MagicMock()
         importer._convertToList.return_value = ([], "emptyExport")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
 
         with patch("Database.database.Importer", return_value=importer):
             self.db.importHistory("[]")   #< must not raise
@@ -263,6 +275,10 @@ class TestImportHistoryBatch(DatabaseTestCase):
     def _mockImporter(self, generatorFactory, parsedCount=1):
         importer = MagicMock()
         importer._convertToList.return_value = ([{}] * parsedCount, "spotifyAcountExport")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.importHistory.return_value = generatorFactory()
         return importer
 
@@ -566,6 +582,10 @@ class TestAPlainImportInvalidatesLaterWrappedYears(DatabaseTestCase):
 
         importer = MagicMock()
         importer._convertToList.return_value = ([{}], "spotifyAcountExport")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.importHistory.return_value = gen()
         with patch("Database.database.Importer", return_value=importer):
             db.importHistory("raw export")
@@ -624,6 +644,10 @@ class TestAPlainImportInvalidatesLaterWrappedYears(DatabaseTestCase):
 
         importer = MagicMock()
         importer._convertToList.return_value = ([], "spotifyAcountExport")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.importHistory.return_value = gen()
         with patch("Database.database.Importer", return_value=importer):
             db.importHistory("raw export")

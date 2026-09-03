@@ -51,6 +51,10 @@ class _OverwriteTestBase(DatabaseTestCase):
 
         coverageResults = iter([fileSpecs[c][0] for c in fileSpecs])
         importer._convertToList.side_effect = convertToList
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.coverage.side_effect = coverage
         importer.importHistory.side_effect = [spec[1]() for spec in fileSpecs.values()]
         return importer
@@ -238,6 +242,10 @@ class TestOverwriteGating(_OverwriteTestBase):
             return [], "None"
 
         importer._convertToList.side_effect = convertToList
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.coverage.return_value = (_ts(2019, 2), _ts(2019, 11), {2019})
 
         with patch("Database.database.Importer", return_value=importer):

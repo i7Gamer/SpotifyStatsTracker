@@ -81,6 +81,54 @@ class TestMusicoletImport(unittest.TestCase):
         tracks = list(gen)
         self.assertEqual(len(tracks), 1)
 
+    def test_expected_entry_count_expands_musicolet_play_counts(self):
+        """The import progress bar counts PLAYS against a denominator that was
+        len(parsedHistory) - CSV ROWS. One Musicolet row carries a play count
+        and expands to that many plays, so the bar read "Fetched 20000 of
+        800" - 2500% (2026-09-03 review, L7). Every other format expands 1:1,
+        which is why the mismatch went unnoticed."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            '/music/a.mp3,A,Artist,Album,Artist,,Pop,2020,200000,3',
+            '/music/b.mp3,B,Artist,Album,Artist,,Pop,2020,200000,2',
+        )
+
+        self.assertEqual(importer.expectedEntryCount(rows, 'musicoletPremium'), 5)
+        self.assertEqual(len(rows), 2, 'the row count is the number it must NOT be')
+
+    def test_expected_entry_count_is_the_row_count_for_a_spotify_export(self):
+        importer = self._mockedImporter()
+        rows = [{'endTime': '2020-01-01 00:00', 'msPlayed': 1000,
+                 'trackName': 'A', 'artistName': 'B'}]
+
+        self.assertEqual(importer.expectedEntryCount(rows, 'spotifyAcountExport'), 1)
+
+    def test_expected_entry_count_is_never_less_than_what_is_yielded(self):
+        """The invariant the bar needs: the numerator counts yielded plays, so
+        the denominator has to be an upper bound on them. Drops only ever move
+        it the safe way."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows(
+            '/music/a.mp3,Song One,Artist One,Album One,Artist One,,Pop,2020,200000,3')
+
+        expected = importer.expectedEntryCount(rows, 'musicoletPremium')
+        yielded = len(list(importer.importMusicoletCSVExport(rows, known=[])))
+
+        self.assertLessEqual(yielded, expected)
+        self.assertEqual(expected, 3)
+
+    def test_expected_entry_count_does_not_touch_the_import_stats(self):
+        """coverage() already documents the rule: this runs the same expansion
+        staging will run, so sharing the import's stats dict would count every
+        dropped row twice."""
+        importer = self._mockedImporter()
+        rows = self._musicoletRows('/music/bad.mp3,Broken,Artist')   #< too few columns
+        stats = {}
+
+        importer.expectedEntryCount(rows, 'musicoletPremium')
+
+        self.assertEqual(stats, {})
+
     def _musicoletRows(self, *dataRows):
         """Rows as the importer really receives them - _convertToList strips the
         header before anything else sees them (splitlines()[1:]), and coverage()

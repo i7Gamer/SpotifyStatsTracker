@@ -702,6 +702,28 @@ class Importer:  #< one export file -> plays + track metadata, via cache, URI lo
     def importExtendedHistory(self, history, known=None, progressCallback=None, stats=None):
         yield from self._import(self._extendedEntryTuple, history, known, progressCallback, stats=stats)
 
+    def expectedEntryCount(self, parsedHistory, exportType) -> int:
+        """How many PLAYS importHistory will yield at most, which is not the
+        parsed file's length for every format.
+
+        One Musicolet CSV row carries an aggregate play count and expands to
+        that many plays (_expandMusicoletRows), so a caller using
+        len(parsedHistory) as a progress denominator counted plays against rows:
+        the import bar read "Fetched 20000 of 800". Every other format expands
+        1:1, which is why the mismatch went unnoticed.
+
+        An upper bound, not an exact figure - _parseHistory and _processPlay
+        drop entries below this - which is the same relationship len() already
+        had with the two Spotify formats, and the direction a progress
+        denominator needs.
+
+        No stats: this runs the same expansion staging will run, and passing the
+        import's dict would count every dropped row twice - the rule coverage()
+        below already follows for the same reason."""
+        if exportType != "musicoletPremium":
+            return len(parsedHistory)
+        return len(self._expandMusicoletRows(parsedHistory))
+
     def coverage(self, parsedHistory, exportType):
         """(minStart, maxEnd, coveredYears) across every entry (skip-length
         included) - the overwrite import deletes covered-year segments within

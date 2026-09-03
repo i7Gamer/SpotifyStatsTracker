@@ -37,6 +37,10 @@ class _ImportTestBase(DatabaseTestCase):
     def _mockImporter(self, generatorFactory, parsedCount=2):
         importer = MagicMock()
         importer._convertToList.return_value = ([{}] * parsedCount, "spotifyAcountExport")
+        #< the progress denominator _stageImportData asks the importer for:
+        #  a count of PLAYS, which is len(parsed) for every non-Musicolet
+        #  format (see Importer.expectedEntryCount)
+        importer.expectedEntryCount.side_effect = lambda parsed, exportType: len(parsed)
         importer.importHistory.return_value = generatorFactory()
         return importer
 

@@ -309,7 +309,12 @@ class ImportMixin:
         if not parsedHistory:
             return None
 
-        total = len(parsedHistory)
+        # Plays, not rows: one Musicolet CSV row carries a play COUNT and
+        # expands to that many plays, so the loop below - which counts what the
+        # importer yields - reported against a denominator it could exceed
+        # ("Fetched 20000 of 800"). Every other format expands 1:1 and this is
+        # still len(parsedHistory) there.
+        total = importer.expectedEntryCount(parsedHistory, exportType)
         reportProgress("running", 0, total, f"{progressPrefix}Starting import", error=hasPriorError)
 
         def progressCallback(status, current, totalSteps, message):
