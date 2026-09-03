@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from test_share_link_routes import (
     ShareLinkRoutesTestCase, PublicSharedWrappedTestCase, _ts,
 )
+from conftest import wrappedCachedRow
 
 #< what htmx puts on every request it makes
 HX_HEADERS = {"HX-Request": "true"}
@@ -93,7 +94,7 @@ class TestFragmentBranch(WrappedHtmxTestCase):
         self.assertIsNone(resp.get_json(silent=True))
 
     def test_the_fragment_is_the_year_scoped_content_itself(self):
-        self.db.getTopSongs.return_value = [_song("song1", "A Recorded Song")]
+        self.db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[_song("song1", "A Recorded Song")])
 
         body = self._fragment()
 
@@ -142,13 +143,12 @@ class TestFragmentBranch(WrappedHtmxTestCase):
         self.assertIn('id="%s"' % RESULTS_ID, resp.get_data(as_text=True))
 
     def test_the_fragment_honours_the_requested_year(self):
-        self.db.getTopSongs.return_value = [_song("song1", "A Recorded Song")]
+        self.db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[_song("song1", "A Recorded Song")])
 
         body = self._fragment("?year=2024")
 
         self.assertIn("2024", body)
-        kwargs = self.db.getTopSongs.call_args.kwargs
-        self.assertEqual(kwargs["startDate"].year, 2024)
+        self.db.repo.getCachedWrapped.assert_called_with(self.db.user, 2024)
 
 
 class TestStatsFilterPressedState(WrappedHtmxTestCase):
@@ -240,7 +240,7 @@ class TestShell(WrappedHtmxTestCase):
     def test_the_page_still_renders_its_data_on_the_first_get(self):
         """/wrapped is NOT a two-phase shell like /history - a plain GET is
         the whole recap. Nothing here may turn it into a placeholder."""
-        self.db.getTopSongs.return_value = [_song("song1", "A Recorded Song")]
+        self.db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[_song("song1", "A Recorded Song")])
 
         body = self._page()
 
@@ -516,7 +516,7 @@ class TestSharedWrappedHtmx(PublicSharedWrappedTestCase):
         swapped-in card falling back to it shows placeholder artwork."""
         token = self._createLink()
         db = self._makeDb()
-        db.getTopSongs.return_value = [_song("song1", "Song")]
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[_song("song1", "Song")])
 
         body = self._sharedFragment(token, db=db).get_data(as_text=True)
 

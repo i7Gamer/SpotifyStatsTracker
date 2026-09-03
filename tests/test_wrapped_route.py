@@ -15,6 +15,7 @@ import app as appModule
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
 import Database.utils as utilsModule
+from conftest import wrappedCachedRow
 
 
 def _ts(year, month=6, day=1, hour=12):
@@ -58,6 +59,12 @@ def _album(albumId, name, plays, firstListenedAt):
     }
 
 
+def _bucket(label, totalTimeListened=0, plays=0):
+    """A getListeningTimeSeries-shaped bucket - the cached time_series_*
+    columns' element shape (see Database.database.getListeningTimeSeries)."""
+    return {"label": label, "totalTimeListened": totalTimeListened, "plays": plays, "skips": 0}
+
+
 class _WrappedRouteTestBase(AppTestCase):
     """All tests fix the app's timezone to UTC (matching test_chart_stats.py) and
     freeze `now()` to 2026-07-11, so year math is deterministic."""
@@ -72,19 +79,16 @@ class _WrappedRouteTestBase(AppTestCase):
         nowPatcher.start()
         self.addCleanup(nowPatcher.stop)
 
-    def _makeDb(self, earliestPlayedAt=None):
+    def _makeDb(self, earliestPlayedAt=None, cachedRow=None):
+        """cachedRow feeds db.repo.getCachedWrapped - the only source
+        _buildWrappedContext reads lists/totals from since R6 (2026-09-02)
+        made the cache the only Wrapped path. Defaults to an all-empty row
+        (see wrappedCachedRow) when a test has nothing to seed."""
         db = MagicMock()
         db.getEntriesFromOld.return_value = (
             [{"id": "x", "playedAt": earliestPlayedAt, "timePlayed": 1}] if earliestPlayedAt is not None else []
         )
-        db.getTopSongs.return_value = []
-        db.getTopArtists.return_value = []
-        db.getTopAlbums.return_value = []
-        db.getPlayTotals.return_value = (0, 0)
-        db.getSongsStats.return_value = []
-        db.getArtistsStats.return_value = []
-        db.getAlbumsStats.return_value = []
-        db.getListeningTimeSeries.return_value = []
+        db.repo.getCachedWrapped.return_value = cachedRow if cachedRow is not None else wrappedCachedRow()
         return db
 
     def _getWrapped(self, dash, db, query="", headers=None):
@@ -105,15 +109,9 @@ class TestWrappedSwapCardsStayAuthenticated(_WrappedRouteTestBase):
 
     def test_swapped_list_html_keeps_the_username_image_route_and_detail_links(self):
         dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2023))
-        db.getSongsStats.return_value = [_song("song1", "Song", plays=5, firstListenedAt=_ts(2026, 3))]
-        db.getTopSongs.return_value = db.getSongsStats.return_value
-        db.getLongestStreak.return_value = 0
-        db.getPeakListeningTime.return_value = None
-        db.getSongsCount.return_value = 1
-        db.getArtistsCount.return_value = 0
-        db.getDiscoveredSongsCount.return_value = 0
-        db.getDiscoveredArtistsCount.return_value = 0
+        db = self._makeDb(earliestPlayedAt=_ts(2023),
+                          cachedRow=wrappedCachedRow(topSongs=[
+                              _song("song1", "Song", plays=5, firstListenedAt=_ts(2026, 3))]))
 
         body = self._getWrapped(dash, db, headers={"HX-Request": "true"}).get_data(as_text=True)
 
@@ -144,9 +142,7 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"2026", resp.data)
-        kwargs = db.getTopSongs.call_args.kwargs
-        self.assertEqual(kwargs["startDate"].year, 2026)
-        self.assertEqual(kwargs["endDate"].year, 2027)
+        db.repo.getCachedWrapped.assert_called_with(db.user, 2026)
 
     def test_badges_list_every_year_with_data_most_recent_first(self):
         dash = self._makeApp()
@@ -164,9 +160,7 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
 
         self._getWrapped(dash, db, query="?year=2024")
 
-        kwargs = db.getTopSongs.call_args.kwargs
-        self.assertEqual(kwargs["startDate"].year, 2024)
-        self.assertEqual(kwargs["endDate"].year, 2025)
+        db.repo.getCachedWrapped.assert_called_with(db.user, 2024)
 
     def test_out_of_range_year_falls_back_to_current_year(self):
         dash = self._makeApp()
@@ -175,8 +169,7 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
         resp = self._getWrapped(dash, db, query="?year=1999")
 
         self.assertEqual(resp.status_code, 200)
-        kwargs = db.getTopSongs.call_args.kwargs
-        self.assertEqual(kwargs["startDate"].year, 2026)
+        db.repo.getCachedWrapped.assert_called_with(db.user, 2026)
 
     def test_non_numeric_year_survives_and_falls_back(self):
         dash = self._makeApp()
@@ -185,8 +178,7 @@ class TestWrappedYearSelection(_WrappedRouteTestBase):
         resp = self._getWrapped(dash, db, query="?year=abc")
 
         self.assertEqual(resp.status_code, 200)
-        kwargs = db.getTopSongs.call_args.kwargs
-        self.assertEqual(kwargs["startDate"].year, 2026)
+        db.repo.getCachedWrapped.assert_called_with(db.user, 2026)
 
     def test_no_history_still_renders_current_year_only(self):
         dash = self._makeApp()
@@ -226,79 +218,95 @@ class TestWrappedSuccessErrorMessagesAreEscaped(_WrappedRouteTestBase):
 
 
 class TestWrappedTotals(_WrappedRouteTestBase):
-    def test_totals_come_from_get_play_totals(self):
+    def test_totals_come_from_the_cached_row(self):
         dash = self._makeApp()
-        db = self._makeDb()
-        db.getPlayTotals.return_value = (42, 999000)
+        db = self._makeDb(cachedRow=wrappedCachedRow(totalPlays=42, totalMs=999000))
 
         resp = self._getWrapped(dash, db)
 
         self.assertEqual(resp.status_code, 200)
-        db.getPlayTotals.assert_called_once()
         self.assertIn(b'<p class="summary-value">42</p>', resp.data)
 
-    def test_top_songs_artists_albums_are_capped_and_year_scoped(self):
+    def test_top_songs_artists_albums_are_capped_by_the_default_limit(self):
+        """The cached pool (up to 100 items) is sliced in Python by the
+        request's limit, not re-queried with a SQL LIMIT - built here as 15
+        items > WRAPPED_LIST_SIZE (10) so the default cap is visible in what
+        survives."""
         dash = self._makeApp()
-        db = self._makeDb()
+        songs = [_song(f"s{i}", f"Song {i}", plays=i, firstListenedAt=0) for i in range(1, 16)]
+        artists = [_artist(f"a{i}", f"Artist {i}", plays=i, firstListenedAt=0) for i in range(1, 16)]
+        albums = [_album(f"al{i}", f"Album {i}", plays=i, firstListenedAt=0) for i in range(1, 16)]
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=songs, topArtists=artists, topAlbums=albums))
 
-        self._getWrapped(dash, db)
+        resp = self._getWrapped(dash, db)
 
-        songKwargs = db.getTopSongs.call_args.kwargs
-        self.assertEqual(songKwargs["limit"], appModule.WRAPPED_LIST_SIZE)
-        albumKwargs = db.getTopAlbums.call_args.kwargs
-        self.assertEqual(albumKwargs["limit"], appModule.WRAPPED_LIST_SIZE)
-        artistKwargs = db.getTopArtists.call_args.kwargs
-        self.assertEqual(artistKwargs["startDate"].year, 2026)
-        # Artists must be capped via SQL LIMIT like songs/albums, not fetched
-        # unbounded and sliced in Python afterward.
-        self.assertEqual(artistKwargs["limit"], appModule.WRAPPED_LIST_SIZE)
+        body = resp.data.decode()
+        self.assertIn("Song 15", body)       #< highest play count, must survive the default cap
+        self.assertNotIn("Song 1<", body)    #< lowest play count, must be cut by the default cap
+        self.assertIn("Artist 15", body)
+        self.assertNotIn("Artist 1<", body)
+        self.assertIn("Album 15", body)
+        self.assertNotIn("Album 1<", body)
 
 
 class TestWrappedGroupBy(_WrappedRouteTestBase):
     def test_month_groupby_is_passed_through_and_selected(self):
         dash = self._makeApp()
-        db = self._makeDb()
+        db = self._makeDb(cachedRow=wrappedCachedRow(timeSeriesMonth=[_bucket("MONTH_BUCKET")]))
 
         resp = self._getWrapped(dash, db, query="?groupBy=month")
 
-        kwargs = db.getListeningTimeSeries.call_args.kwargs
-        self.assertEqual(kwargs["groupBy"], "month")
+        bootstrap = _wrappedBootstrap(resp.data.decode())
+        self.assertEqual(bootstrap["timeSeries"][0]["label"], "MONTH_BUCKET")
         self.assertIn(b'<option value="month" selected>Month</option>', resp.data)
 
     def test_invalid_groupby_falls_back_to_week(self):
         dash = self._makeApp()
-        db = self._makeDb()
+        db = self._makeDb(cachedRow=wrappedCachedRow(timeSeriesWeek=[_bucket("WEEK_BUCKET")]))
 
-        self._getWrapped(dash, db, query="?groupBy=nonsense")
+        resp = self._getWrapped(dash, db, query="?groupBy=nonsense")
 
-        kwargs = db.getListeningTimeSeries.call_args.kwargs
-        self.assertEqual(kwargs["groupBy"], "week")
+        bootstrap = _wrappedBootstrap(resp.data.decode())
+        self.assertEqual(bootstrap["timeSeries"][0]["label"], "WEEK_BUCKET")
 
 
 class TestWrappedLimit(_WrappedRouteTestBase):
     def test_limit_param_is_honored_across_top_lists_and_discoveries(self):
         dash = self._makeApp()
-        db = self._makeDb()
+        songs = [_song(f"s{i}", f"Song {i}", plays=i, firstListenedAt=0) for i in range(1, 30)]
+        artists = [_artist(f"a{i}", f"Artist {i}", plays=i, firstListenedAt=0) for i in range(1, 30)]
+        albums = [_album(f"al{i}", f"Album {i}", plays=i, firstListenedAt=0) for i in range(1, 30)]
+        discoveries = [_song(f"d{i}", f"Discovery {i}", plays=i, firstListenedAt=0) for i in range(1, 30)]
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=songs, topArtists=artists, topAlbums=albums,
+                                                      discoveredSongs=discoveries))
 
-        self._getWrapped(dash, db, query="?limit=25")
+        resp = self._getWrapped(dash, db, query="?limit=25")
 
-        self.assertEqual(db.getTopSongs.call_args.kwargs["limit"], 25)
-        self.assertEqual(db.getTopArtists.call_args.kwargs["limit"], 25)
-        self.assertEqual(db.getTopAlbums.call_args.kwargs["limit"], 25)
+        body = resp.data.decode()
+        self.assertIn("Song 29", body)
+        self.assertNotIn("Song 1<", body)
+        self.assertIn("Artist 29", body)
+        self.assertNotIn("Artist 1<", body)
+        self.assertIn("Album 29", body)
+        self.assertNotIn("Album 1<", body)
+        self.assertIn("Discovery 29", body)
+        self.assertNotIn("Discovery 1<", body)
 
     def test_invalid_limit_falls_back_to_default(self):
         dash = self._makeApp()
-        db = self._makeDb()
+        songs = [_song(f"s{i}", f"Song {i}", plays=i, firstListenedAt=0) for i in range(1, 16)]
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=songs))
 
-        self._getWrapped(dash, db, query="?limit=999")
+        resp = self._getWrapped(dash, db, query="?limit=999")
 
-        self.assertEqual(db.getTopSongs.call_args.kwargs["limit"], appModule.WRAPPED_LIST_SIZE)
+        body = resp.data.decode()
+        self.assertIn("Song 15", body)      #< within the default (WRAPPED_LIST_SIZE=10) cap
+        self.assertNotIn("Song 1<", body)   #< would only survive an (invalid) limit=999
 
     def test_discoveries_cap_follows_the_limit_param(self):
         dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
-        songs = [_song(f"s{i}", f"Discovery {i}", plays=i, firstListenedAt=_ts(2026, 3)) for i in range(1, 30)]
-        db.getSongsStats.return_value = songs
+        songs = [_song(f"s{i}", f"Discovery {i}", plays=i, firstListenedAt=0) for i in range(1, 30)]
+        db = self._makeDb(cachedRow=wrappedCachedRow(discoveredSongs=songs))
 
         resp = self._getWrapped(dash, db, query="?limit=25")
 
@@ -309,41 +317,58 @@ class TestWrappedLimit(_WrappedRouteTestBase):
 
 class TestWrappedSortBy(_WrappedRouteTestBase):
     def test_sort_by_param_is_passed_through_to_top_lists(self):
+        """sortBy re-sorts the cached pool in Python (see _resortByMetric) -
+        a low-play, long-duration item must be promoted ahead of a high-play,
+        short one under sortBy=totalTimeListened."""
         dash = self._makeApp()
-        db = self._makeDb()
+        manyPlaysShortTime = _song("many", "ManyPlaysShortTime", plays=10, firstListenedAt=0)
+        fewPlaysLongTime = _song("long", "FewPlaysLongTime", plays=2, firstListenedAt=0)
+        fewPlaysLongTime["totalTimeListened"] = 999999
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=[manyPlaysShortTime, fewPlaysLongTime]))
 
-        self._getWrapped(dash, db, query="?sortBy=totalTimeListened")
+        resp = self._getWrapped(dash, db, query="?sortBy=totalTimeListened")
 
-        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "totalTimeListened")
-        self.assertEqual(db.getTopArtists.call_args.kwargs["by"], "totalTimeListened")
-        self.assertEqual(db.getTopAlbums.call_args.kwargs["by"], "totalTimeListened")
+        body = resp.data.decode()
+        # Scoped to the results list itself: the export button (outside
+        # #wrappedResults) carries "ManyPlaysShortTime" in its data-topsong
+        # regardless of sortBy (it's always the plays-ranked item, see
+        # TestWrappedExportTopItems) - unscoped, that would appear before the
+        # sortBy-ordered list and break this ordering check.
+        resultsStart = body.index('id="wrappedResults"')
+        self.assertLess(body.index("FewPlaysLongTime", resultsStart), body.index("ManyPlaysShortTime", resultsStart))
 
     def test_default_sort_by_is_plays(self):
         dash = self._makeApp()
-        db = self._makeDb()
+        lowPlaysFirst = _song("low", "LowPlaysFirst", plays=1, firstListenedAt=0)
+        highPlaysSecond = _song("high", "HighPlaysSecond", plays=99, firstListenedAt=0)
+        # Cached pool deliberately NOT plays-sorted, to prove the default resorts it.
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=[lowPlaysFirst, highPlaysSecond]))
 
-        self._getWrapped(dash, db)
+        resp = self._getWrapped(dash, db)
 
-        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "plays")
+        body = resp.data.decode()
+        self.assertLess(body.index("HighPlaysSecond"), body.index("LowPlaysFirst"))
 
     def test_invalid_sort_by_falls_back_to_plays(self):
         dash = self._makeApp()
-        db = self._makeDb()
+        lowPlaysFirst = _song("low", "LowPlaysFirst", plays=1, firstListenedAt=0)
+        highPlaysSecond = _song("high", "HighPlaysSecond", plays=99, firstListenedAt=0)
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=[lowPlaysFirst, highPlaysSecond]))
 
-        self._getWrapped(dash, db, query="?sortBy=bogus")
+        resp = self._getWrapped(dash, db, query="?sortBy=bogus")
 
-        self.assertEqual(db.getTopSongs.call_args.kwargs["by"], "plays")
+        body = resp.data.decode()
+        self.assertLess(body.index("HighPlaysSecond"), body.index("LowPlaysFirst"))
 
     def test_discoveries_are_ranked_by_the_chosen_sort_by(self):
         """Discoveries default to most-played first, but a totalTimeListened
         sort must be able to promote a low-play, long-duration discovery
         ahead of a high-play, short one."""
         dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
-        manyShort = _song("many", "ManyShortPlays", plays=10, firstListenedAt=_ts(2026, 3))
-        fewLong = _song("long", "FewLongPlays", plays=2, firstListenedAt=_ts(2026, 3))
+        manyShort = _song("many", "ManyShortPlays", plays=10, firstListenedAt=0)
+        fewLong = _song("long", "FewLongPlays", plays=2, firstListenedAt=0)
         fewLong["totalTimeListened"] = 999999
-        db.getSongsStats.return_value = [manyShort, fewLong]
+        db = self._makeDb(cachedRow=wrappedCachedRow(discoveredSongs=[manyShort, fewLong]))
 
         resp = self._getWrapped(dash, db, query="?sortBy=totalTimeListened")
 
@@ -376,17 +401,15 @@ class TestWrappedExportTopItems(_WrappedRouteTestBase):
     sortBy happened to rank first in the on-screen list (that list is what
     topSongs[0]/topAlbums[0]/topArtists[0] used to feed the template with).
     A sortBy=name request whose alphabetically-first item is NOT the most
-    played pins the distinction."""
+    played pins the distinction. Since R6 (2026-09-02) the cached path
+    computes this by re-sorting the SAME cached pool by "plays" - no second
+    live query, unlike the deleted dynamic-calculation branch."""
 
     def test_export_top_song_is_most_played_not_sort_order_first(self):
         dash = self._makeApp()
-        db = self._makeDb()
         alphaFirst = _song("alpha", "Aardvark Song", plays=1, firstListenedAt=0)
         mostPlayed = _song("loud", "Zebra Anthem", plays=99, firstListenedAt=0)
-
-        def getTopSongs(**kwargs):
-            return [mostPlayed] if kwargs.get("by") == "plays" else [alphaFirst]
-        db.getTopSongs.side_effect = getTopSongs
+        db = self._makeDb(cachedRow=wrappedCachedRow(topSongs=[alphaFirst, mostPlayed]))
 
         resp = self._getWrapped(dash, db, query="?sortBy=name")
 
@@ -399,13 +422,9 @@ class TestWrappedExportTopItems(_WrappedRouteTestBase):
 
     def test_export_top_album_is_most_played_not_sort_order_first(self):
         dash = self._makeApp()
-        db = self._makeDb()
         alphaFirst = _album("alpha", "Aardvark Album", plays=1, firstListenedAt=0)
         mostPlayed = _album("loud", "Zebra Album", plays=99, firstListenedAt=0)
-
-        def getTopAlbums(**kwargs):
-            return [mostPlayed] if kwargs.get("by") == "plays" else [alphaFirst]
-        db.getTopAlbums.side_effect = getTopAlbums
+        db = self._makeDb(cachedRow=wrappedCachedRow(topAlbums=[alphaFirst, mostPlayed]))
 
         resp = self._getWrapped(dash, db, query="?sortBy=name")
 
@@ -416,26 +435,21 @@ class TestWrappedExportTopItems(_WrappedRouteTestBase):
     def test_export_top_song_matches_the_list_when_sort_by_is_plays(self):
         """No bug when sortBy is already plays (the default) - the on-screen
         top item and the exported one must agree, and this must not cost a
-        second db.getTopSongs call (call_args below stays the single real
-        call other TestWrappedSortBy/TestWrappedLimit tests rely on)."""
+        second cache read (the cached path derives it from the SAME pool)."""
         dash = self._makeApp()
-        db = self._makeDb()
-        db.getTopSongs.return_value = [_song("s1", "Only Song", plays=10, firstListenedAt=0)]
+        db = self._makeDb(cachedRow=wrappedCachedRow(
+            topSongs=[_song("s1", "Only Song", plays=10, firstListenedAt=0)]))
 
         resp = self._getWrapped(dash, db)
 
         self.assertIn('data-topsong="Only Song"', resp.data.decode())
-        db.getTopSongs.assert_called_once()
+        db.repo.getCachedWrapped.assert_called_once()
 
     def test_export_top_artist_is_most_played_not_sort_order_first(self):
         dash = self._makeApp()
-        db = self._makeDb()
         alphaFirst = _artist("alpha", "Aardvark Artist", plays=1, firstListenedAt=0)
         mostPlayed = _artist("loud", "Zebra Artist", plays=99, firstListenedAt=0)
-
-        def getTopArtists(**kwargs):
-            return [mostPlayed] if kwargs.get("by") == "plays" else [alphaFirst]
-        db.getTopArtists.side_effect = getTopArtists
+        db = self._makeDb(cachedRow=wrappedCachedRow(topArtists=[alphaFirst, mostPlayed]))
 
         resp = self._getWrapped(dash, db, query="?sortBy=name")
 
@@ -445,81 +459,64 @@ class TestWrappedExportTopItems(_WrappedRouteTestBase):
 
     def test_export_top_artist_matches_the_list_when_sort_by_is_plays(self):
         dash = self._makeApp()
-        db = self._makeDb()
-        db.getTopArtists.return_value = [_artist("a1", "Only Artist", plays=10, firstListenedAt=0)]
+        db = self._makeDb(cachedRow=wrappedCachedRow(
+            topArtists=[_artist("a1", "Only Artist", plays=10, firstListenedAt=0)]))
 
         resp = self._getWrapped(dash, db)
 
         self.assertIn('data-topartist="Only Artist"', resp.data.decode())
-        db.getTopArtists.assert_called_once()
+        db.repo.getCachedWrapped.assert_called_once()
 
 
 class TestWrappedDiscoveries(_WrappedRouteTestBase):
-    def test_only_items_first_listened_in_the_selected_year_are_discoveries(self):
+    """Which entries first-listened-in-year-X count as discoveries is decided
+    when the cache is WRITTEN (Database/workers/wrapped_worker.py's
+    _calculateAndSaveWrapped, via getSongsStats(firstListenedStart=...,
+    firstListenedEnd=...)), not by _buildWrappedContext - since R6
+    (2026-09-02) the cached path trusts discovered_*_list as already
+    year-scoped and only re-sorts/caps it (see test_wrapped_cache.py for the
+    cache-write-side year-filtering coverage). What is still this layer's
+    job, and what these tests cover, is that the cached discovery lists
+    render and are capped/sorted like the top lists."""
+
+    def test_discovered_songs_and_artists_from_the_cache_render(self):
         dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
-        db.getSongsStats.return_value = [
-            _song("new1", "New Song", plays=5, firstListenedAt=_ts(2026, 3)),
-            _song("old1", "Old Favorite", plays=20, firstListenedAt=_ts(2024, 1)),
-        ]
-        db.getArtistsStats.return_value = [
-            _artist("newA", "New Artist", plays=5, firstListenedAt=_ts(2026, 3)),
-            _artist("oldA", "Old Artist", plays=20, firstListenedAt=_ts(2024, 1)),
-        ]
+        db = self._makeDb(cachedRow=wrappedCachedRow(
+            discoveredSongs=[_song("new1", "New Song", plays=5, firstListenedAt=_ts(2026, 3))],
+            discoveredArtists=[_artist("newA", "New Artist", plays=5, firstListenedAt=_ts(2026, 3))],
+        ))
 
         resp = self._getWrapped(dash, db)
 
         self.assertIn(b"New Song", resp.data)
-        self.assertNotIn(b"Old Favorite", resp.data)
         self.assertIn(b"New Artist", resp.data)
-        self.assertNotIn(b"Old Artist", resp.data)
 
-    def test_discoveries_are_scoped_to_the_selected_year_not_current_year(self):
+    def test_discovered_albums_from_the_cache_render(self):
         dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
-        db.getSongsStats.return_value = [
-            _song("s2025", "Discovered 2025", plays=5, firstListenedAt=_ts(2025, 6)),
-            _song("s2026", "Discovered 2026", plays=5, firstListenedAt=_ts(2026, 3)),
-        ]
-
-        resp = self._getWrapped(dash, db, query="?year=2025")
-
-        self.assertIn(b"Discovered 2025", resp.data)
-        self.assertNotIn(b"Discovered 2026", resp.data)
-
-    def test_item_with_no_first_listened_at_is_never_a_discovery(self):
-        dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
-        db.getSongsStats.return_value = [_song("noDate", "Unknown Origin", plays=5, firstListenedAt=None)]
-
-        resp = self._getWrapped(dash, db)
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertNotIn(b"Unknown Origin", resp.data)
-
-    def test_only_albums_first_listened_in_the_selected_year_are_discoveries(self):
-        dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
-        db.getAlbumsStats.return_value = [
-            _album("newAlb", "New Album", plays=5, firstListenedAt=_ts(2026, 3)),
-            _album("oldAlb", "Old Album", plays=20, firstListenedAt=_ts(2024, 1)),
-        ]
+        db = self._makeDb(cachedRow=wrappedCachedRow(
+            discoveredAlbums=[_album("newAlb", "New Album", plays=5, firstListenedAt=_ts(2026, 3))]))
 
         resp = self._getWrapped(dash, db)
 
         self.assertIn(b"New Album", resp.data)
-        self.assertNotIn(b"Old Album", resp.data)
+
+    def test_an_empty_discoveries_list_renders_nothing(self):
+        dash = self._makeApp()
+        db = self._makeDb()   #< default cached row's discovered_*_list are all "[]"
+
+        resp = self._getWrapped(dash, db)
+
+        self.assertEqual(resp.status_code, 200)
 
     def test_discoveries_are_capped_and_sorted_by_plays(self):
         dash = self._makeApp()
-        db = self._makeDb(earliestPlayedAt=_ts(2024))
         songs = [_song(f"s{i}", f"Discovery {i}", plays=i, firstListenedAt=_ts(2026, 3)) for i in range(1, 15)]
-        db.getSongsStats.return_value = songs
+        db = self._makeDb(cachedRow=wrappedCachedRow(discoveredSongs=songs))
 
         resp = self._getWrapped(dash, db)
 
         body = resp.data.decode()
-        self.assertIn("Discovery 14", body)   #< highest play count, must survive the cap
+        self.assertIn("Discovery 14", body)     #< highest play count, must survive the cap
         self.assertNotIn("Discovery 1<", body)  #< lowest play count, must be cut by the cap
 
 

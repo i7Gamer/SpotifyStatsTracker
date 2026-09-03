@@ -17,6 +17,7 @@ from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_M
 from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
+from conftest import wrappedCachedRow
 
 #< what htmx puts on every request it makes; the /wrapped and /shared/<token>
 #  filter swaps are marked by it rather than by the old ?ajax=true
@@ -50,24 +51,12 @@ class ShareLinkRoutesTestCase(AppTestCase):
         db = MagicMock()
         db.tz = datetime.timezone.utc   #< profilePage()'s dateToString() needs a real tzinfo, not a MagicMock
         db.getEntriesFromOld.return_value = []
-        db.getTopSongs.return_value = []
-        db.getTopArtists.return_value = []
-        db.getTopAlbums.return_value = []
-        db.getPlayTotals.return_value = (0, 0)
-        db.getSongsStats.return_value = []
-        db.getArtistsStats.return_value = []
-        db.getAlbumsStats.return_value = []
-        db.getListeningTimeSeries.return_value = []
         db.getUserSpotifyCredentials.return_value = {}
-        # Only reached by an ajax type=all request (_buildWrappedContext's
-        # mock-db branch calls these directly) - every other test here only
-        # ever exercises the full-page render, which doesn't touch them.
-        db.getLongestStreak.return_value = 0
-        db.getPeakListeningTime.return_value = None
-        db.getSongsCount.return_value = 0
-        db.getArtistsCount.return_value = 0
-        db.getDiscoveredSongsCount.return_value = 0
-        db.getDiscoveredArtistsCount.return_value = 0
+        # _buildWrappedContext's only path since R6 (2026-09-02) reads
+        # everything from the cache row - set individual list/total kwargs
+        # (see wrappedCachedRow) rather than db.getTopSongs etc, which are
+        # never called by that path anymore.
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow()
         return db
 
     def _loginAs(self, username, email, db=None):
@@ -686,9 +675,9 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
     def test_track_card_you_played_line_uses_the_owners_username(self):
         token = self._createLink()
         db = self._makeDb()
-        db.getTopArtists.return_value = [
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topArtists=[
             {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
-        ]
+        ])
 
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
@@ -709,12 +698,13 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         token = self._createLink()   #< upserts alice first; the name needs the row
         self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
         db = self._makeDb()
-        db.getTopArtists.return_value = [
-            {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
-        ]
-        db.getTopAlbums.return_value = [
-            {"id": "al1", "name": "TestAlbum", "plays": 4, "totalTimeListened": 4000, "uniqueSongCount": 2}
-        ]
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(
+            topArtists=[
+                {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
+            ],
+            topAlbums=[
+                {"id": "al1", "name": "TestAlbum", "plays": 4, "totalTimeListened": 4000, "uniqueSongCount": 2}
+            ])
 
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
@@ -756,13 +746,13 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         session-authorization check)."""
         token = self._createLink()
         db = self._makeDb()
-        db.getTopSongs.return_value = [{
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[{
             "id": "song1", "name": "Song", "url": "u", "imageId": "img1", "duration": 0,
             "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
             "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "img1", "imageUrl": "",
                        "totalTracks": 1, "releaseDate": 0},
             "artists": [], "plays": 5, "totalTimeListened": 5000, "firstListenedAt": 0,
-        }]
+        }])
 
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
@@ -777,14 +767,14 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
         columns do (see _track_card.html's suppressDetailLinks)."""
         token = self._createLink()
         db = self._makeDb()
-        db.getTopSongs.return_value = [{
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[{
             "id": "song1", "name": "Song", "url": "https://open.spotify.com/track/song1",
             "imageId": "img1", "duration": 0, "explicit": False, "isrc": "",
             "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
             "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "img1", "imageUrl": "",
                        "totalTracks": 1, "releaseDate": 0},
             "artists": [], "plays": 5, "totalTimeListened": 5000, "firstListenedAt": 0,
-        }]
+        }])
 
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
@@ -795,11 +785,11 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
     def test_artist_cards_link_to_spotify_not_authenticated_detail_pages(self):
         token = self._createLink()
         db = self._makeDb()
-        db.getTopArtists.return_value = [{
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topArtists=[{
             "id": "a1", "name": "TestArtist", "url": "https://open.spotify.com/artist/a1",
             "imageId": "img1", "imageUrl": "", "plays": 5, "totalTimeListened": 5000,
             "uniqueSongCount": 3, "firstListenedAt": 0,
-        }]
+        }])
 
         resp = self._getShared(token, db=db)
         body = resp.data.decode()
@@ -965,9 +955,9 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
     def test_swapped_cards_name_the_owner_instead_of_saying_you(self):
         token = self._createLink(year=2026)
         db = self._makeDb()
-        db.getTopArtists.return_value = [
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topArtists=[
             {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
-        ]
+        ])
 
         body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
@@ -981,9 +971,9 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
         token = self._createLink(year=2026)   #< upserts alice first; the name needs the row
         self.assertTrue(self.dash.repo.setDisplayName("alice", "Wonderland"))
         db = self._makeDb()
-        db.getTopArtists.return_value = [
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topArtists=[
             {"id": "a1", "name": "TestArtist", "plays": 5, "totalTimeListened": 5000, "uniqueSongCount": 3}
-        ]
+        ])
 
         body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
@@ -1002,9 +992,9 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
     def test_year_tampering_is_ignored_for_a_single_year_link(self):
         token = self._createLink(year=2025)
         db = self._makeDb()
-        db.getTopSongs.return_value = [
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[
             {"id": "s1", "name": "OnlyIn2025", "plays": 1, "duration": 0, "artists": []}
-        ]
+        ])
 
         body = self._getSharedSwap(token, query="?year=2026", db=db).get_data(as_text=True)
 
@@ -1016,13 +1006,13 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
         back to /img/<owner>/... , which 404s without a session."""
         token = self._createLink(year=2026)
         db = self._makeDb()
-        db.getTopSongs.return_value = [{
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=[{
             "id": "song1", "name": "Song", "url": "u", "imageId": "img1", "duration": 0,
             "explicit": False, "isrc": "", "discNumber": 1, "trackNumber": 1, "releaseDate": 0,
             "album": {"id": "alb1", "name": "Album", "url": "u", "imageId": "img1", "imageUrl": "",
                        "totalTracks": 1, "releaseDate": 0},
             "artists": [], "plays": 5, "totalTimeListened": 5000, "firstListenedAt": 0,
-        }]
+        }])
 
         body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 
@@ -1032,11 +1022,11 @@ class TestSharedWrappedPageSwap(PublicSharedWrappedTestCase):
     def test_swapped_cards_link_to_spotify_not_authenticated_detail_pages(self):
         token = self._createLink(year=2026)
         db = self._makeDb()
-        db.getTopArtists.return_value = [{
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topArtists=[{
             "id": "a1", "name": "TestArtist", "url": "https://open.spotify.com/artist/a1",
             "imageId": "img1", "imageUrl": "", "plays": 5, "totalTimeListened": 5000,
             "uniqueSongCount": 3, "firstListenedAt": 0,
-        }]
+        }])
 
         body = self._getSharedSwap(token, db=db).get_data(as_text=True)
 

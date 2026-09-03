@@ -15,24 +15,11 @@ from app import SpotifyDashboardApp, WRAPPED_TOP_GENRES_LIMIT
 from _app_factory import AppTestCase
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
+from conftest import wrappedCachedRow
 
 
 def _ts(year, month=6, day=1, hour=12):
     return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc).timestamp()
-
-
-def _cachedWrappedRow():
-    """A user_wrapped row as getCachedWrapped returns it (all JSON columns)."""
-    return {
-        "total_plays": 10, "total_ms": 10000, "longest_streak": 2,
-        "peak_day": "2026-01-05", "peak_plays": 5,
-        "unique_songs": 3, "unique_artists": 2,
-        "discovered_songs": 1, "discovered_artists": 1,
-        "time_series_day": "[]", "time_series_week": "[]", "time_series_month": "[]",
-        "top_songs": "[]", "top_artists": "[]", "top_albums": "[]",
-        "discovered_songs_list": "[]", "discovered_artists_list": "[]",
-        "discovered_albums_list": "[]",
-    }
 
 
 class WrappedGenresTestBase(AppTestCase):
@@ -51,20 +38,10 @@ class WrappedGenresTestBase(AppTestCase):
         db.getEntriesFromOld.return_value = (
             [{"id": "x", "playedAt": earliestPlayedAt, "timePlayed": 1}] if earliestPlayedAt is not None else []
         )
-        db.getTopSongs.return_value = []
-        db.getTopArtists.return_value = []
-        db.getTopAlbums.return_value = []
-        db.getPlayTotals.return_value = (0, 0)
-        db.getSongsStats.return_value = []
-        db.getArtistsStats.return_value = []
-        db.getAlbumsStats.return_value = []
-        db.getListeningTimeSeries.return_value = []
-        db.getLongestStreak.return_value = 0
-        db.getPeakListeningTime.return_value = None
-        db.getSongsCount.return_value = 0
-        db.getArtistsCount.return_value = 0
-        db.getDiscoveredSongsCount.return_value = 0
-        db.getDiscoveredArtistsCount.return_value = 0
+        # _buildWrappedContext's only path since R6 (2026-09-02) reads
+        # everything from the cache row - db.getTopSongs etc are never
+        # called by it anymore.
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow()
         if coverage is not None:
             db.getGenreCoverage.return_value = coverage
         if distribution is not None:
@@ -156,11 +133,12 @@ class TestWrappedGenreCard(WrappedGenresTestBase):
 
     def test_cached_wrapped_path_still_computes_genres_live(self):
         """The genre card must never come from the user_wrapped cache - even
-        when the rest of the page renders from it."""
+        when the rest of the page renders from it. _makeDb's db.repo.
+        getCachedWrapped stub already puts every test in this file on the
+        cache path (see R6, 2026-09-02) - this test just names that fact."""
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(80, 60, 90),
                           distribution={"post rock": 7})
-        db.repo.getCachedWrapped.return_value = _cachedWrappedRow()
 
         resp = self._getWrapped(dash, db)
 

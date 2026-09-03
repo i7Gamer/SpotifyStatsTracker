@@ -6,6 +6,7 @@ or worse, pass while hammering open.spotify.com - so real socket connections
 are blocked for every test and raise instead.
 """
 import datetime
+import json
 import socket
 import tempfile
 import threading
@@ -269,6 +270,35 @@ def makeDashboardDbMock() -> MagicMock:
     db.getListeningCalendar.return_value = {
         "weeks": [], "monthLabels": [], "maxCount": 0, "activeDays": 0, "totalPlays": 0}
     return db
+
+
+def wrappedCachedRow(topSongs=None, topArtists=None, topAlbums=None,
+                     discoveredSongs=None, discoveredArtists=None, discoveredAlbums=None,
+                     timeSeriesDay=None, timeSeriesWeek=None, timeSeriesMonth=None,
+                     totalPlays=0, totalMs=0, longestStreak=0, peakDay=None, peakPlays=0,
+                     uniqueSongs=0, uniqueArtists=0, discoveredSongsCount=0, discoveredArtistsCount=0):
+    """A user_wrapped row exactly as Repository.getCachedWrapped returns it -
+    every list-shaped arg is JSON-encoded automatically. Since R6 (2026-09-02)
+    made the cache the only path dashboard._buildWrappedContext reads from,
+    this is what a MagicMock db's `db.repo.getCachedWrapped.return_value`
+    must be set to for any list/total to reach the rendered page - the old
+    per-field `db.getTopSongs.return_value = [...]` mocks are dead once that
+    branch is gone."""
+    return {
+        "total_plays": totalPlays, "total_ms": totalMs, "longest_streak": longestStreak,
+        "peak_day": peakDay, "peak_plays": peakPlays,
+        "unique_songs": uniqueSongs, "unique_artists": uniqueArtists,
+        "discovered_songs": discoveredSongsCount, "discovered_artists": discoveredArtistsCount,
+        "time_series_day": json.dumps(timeSeriesDay or []),
+        "time_series_week": json.dumps(timeSeriesWeek or []),
+        "time_series_month": json.dumps(timeSeriesMonth or []),
+        "top_songs": json.dumps(topSongs or []),
+        "top_artists": json.dumps(topArtists or []),
+        "top_albums": json.dumps(topAlbums or []),
+        "discovered_songs_list": json.dumps(discoveredSongs or []),
+        "discovered_artists_list": json.dumps(discoveredArtists or []),
+        "discovered_albums_list": json.dumps(discoveredAlbums or []),
+    }
 
 
 def makeDatabaseWithData(dbPath: Path, tracks: dict, entries: list, username: str = "testuser",

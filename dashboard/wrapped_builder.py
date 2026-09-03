@@ -15,11 +15,6 @@ from config import (
     WRAPPED_LIMIT_OPTIONS, WRAPPED_LIST_SIZE, WRAPPED_TOP_GENRES_LIMIT,
 )
 
-#< the export card shows exactly one top song/album (see
-#  templates/_wrapped_export_button.html), independent of the page's own
-#  list limit - the size of the dedicated plays-ranked fetch below.
-EXPORT_TOP_ITEM_COUNT = 1
-
 
 class WrappedBuilderMixin:
     """Wrapped page context builder, year/filter parsing, share-link panel args, and re-sort/discovery helpers."""
@@ -164,20 +159,6 @@ class WrappedBuilderMixin:
             ),
         )
 
-    def _discoveriesInYear(self, items: list, yearStart, yearEnd, limit: int, sortBy: str = "plays") -> list:
-        """Items (songs or artists) whose true, all-time first listen falls
-        within [yearStart, yearEnd) - not just their earliest play *within* that
-        range, which a date-scoped query would report instead. `items` must
-        therefore come from an unbounded (no date range) stats call. Sorted by
-        `sortBy`, most-played discovery first by default."""
-        yearStartTs, yearEndTs = yearStart.timestamp(), yearEnd.timestamp()
-        discovered = [
-            item for item in items
-            if item.get("firstListenedAt") is not None and yearStartTs <= item["firstListenedAt"] < yearEndTs
-        ]
-        discovered = self._resortByMetric(discovered, sortBy)
-        return discovered[:limit]
-
     def _buildWrappedContext(self, db, year: int, groupBy: str, limit: int, sortBy: str,
                              includeGenres: bool = True) -> dict:
         """Everything wrapped.html needs to render one year's Wrapped recap
@@ -215,166 +196,93 @@ class WrappedBuilderMixin:
                 topGenres = resolveGenreDistribution(db, yearStart, yearEnd,
                                                      WRAPPED_TOP_GENRES_LIMIT)
 
-        # 1. Fetch precalculated cached wrapped stats from database (unless db is a mock)
-        from unittest.mock import MagicMock
-        is_mock = isinstance(db, MagicMock) or (hasattr(db, "repo") and isinstance(db.repo, MagicMock))
-
-        cached = None
-        if not is_mock:
+        # 1. Fetch precalculated cached wrapped stats from database - the
+        # only path (R6, 2026-09-02): a real Database always has one, on
+        # demand if not already fresh.
+        cached = db.repo.getCachedWrapped(db.user, year)
+        if not cached:
+            # Cache miss: recalculate and cache on the fly
+            db.recalculateWrappedForYear(year)
             cached = db.repo.getCachedWrapped(db.user, year)
-            if not cached:
-                # Cache miss: recalculate and cache on the fly
-                db.recalculateWrappedForYear(year)
-                cached = db.repo.getCachedWrapped(db.user, year)
-            if cached is None:
-                # Still nothing after a recalculation means the year holds no
-                # plays at all - recalculateWrappedForYear returns early and
-                # removes the row for those. The year is still SELECTABLE
-                # (_computeAvailableYears offers a contiguous range), so leaving
-                # this None dropped a real database into the mocks-only branch
-                # below: ten unbounded queries per request, three of them with
-                # no date range whatsoever, and never cacheable because the
-                # worker deletes the row again on its next pass. An empty dict
-                # takes the empty-state defaults directly beneath instead.
-                cached = {}
+        if not cached:
+            # Still nothing after a recalculation means the year holds no
+            # plays at all - recalculateWrappedForYear returns early and
+            # removes the row for those. The year is still SELECTABLE
+            # (_computeAvailableYears offers a contiguous range), so an
+            # empty-state defaults dict takes over instead of a KeyError
+            # three lines down.
+            cached = {
+                "total_plays": 0,
+                "total_ms": 0,
+                "longest_streak": 0,
+                "peak_day": None,
+                "peak_plays": 0,
+                "unique_songs": 0,
+                "unique_artists": 0,
+                "discovered_songs": 0,
+                "discovered_artists": 0,
+                "time_series_day": "[]",
+                "time_series_week": "[]",
+                "time_series_month": "[]",
+                "top_songs": "[]",
+                "top_artists": "[]",
+                "top_albums": "[]",
+                "discovered_songs_list": "[]",
+                "discovered_artists_list": "[]",
+                "discovered_albums_list": "[]",
+            }
+
+        # 2. Extract values and parse lists
+        totalPlays = cached["total_plays"]
+        totalMs = cached["total_ms"]
+        longestStreak = cached["longest_streak"]
+        peakListeningTime = (cached["peak_day"], cached["peak_plays"]) if cached["peak_day"] else None
+        uniqueSongsCount = cached["unique_songs"]
+        uniqueArtistsCount = cached["unique_artists"]
+        discoveredSongsCount = cached["discovered_songs"]
+        discoveredArtistsCount = cached["discovered_artists"]
+
+        timeSeriesDay = json.loads(cached["time_series_day"])
+        timeSeriesWeek = json.loads(cached["time_series_week"])
+        timeSeriesMonth = json.loads(cached["time_series_month"])
+
+        topSongs = json.loads(cached["top_songs"])
+        topArtists = json.loads(cached["top_artists"])
+        topAlbums = json.loads(cached["top_albums"])
+
+        # The export button (see templates/_wrapped_export_button.html)
+        # always shows the most-PLAYED song/artist/album, independent of
+        # the page's own sortBy - captured here from the plays-ranked
+        # pool, before the sortBy re-sort below can reorder or [:limit]
+        # can cut it out of topSongs/topArtists/topAlbums entirely
+        # (2026-09-02 review, UT-5).
+        exportTopSong = self._resortByMetric(topSongs, "plays")[0] if topSongs else None
+        exportTopArtist = self._resortByMetric(topArtists, "plays")[0] if topArtists else None
+        exportTopAlbum = self._resortByMetric(topAlbums, "plays")[0] if topAlbums else None
+
+        discoveredSongs = json.loads(cached["discovered_songs_list"])
+        discoveredArtists = json.loads(cached["discovered_artists_list"])
+        discoveredAlbums = json.loads(cached["discovered_albums_list"])
+
+        # 3. Select timeseries grouping
+        if groupBy == "day":
+            timeSeries = timeSeriesDay
+        elif groupBy == "month":
+            timeSeries = timeSeriesMonth
         else:
-            # If db/repo is mock, check if getCachedWrapped was explicitly mocked to return a non-mock dict
-            try:
-                res = db.repo.getCachedWrapped(db.user, year)
-                if res and not isinstance(res, MagicMock):
-                    cached = res
-            except Exception:  # noqa: S110 - probing whether a mock db has a real cache;
-                pass           #  any failure just means "no cached wrapped"
+            timeSeries = timeSeriesWeek
 
-        if cached is not None:
-            # If still empty defaults needed
-            if not cached:
-                cached = {
-                    "total_plays": 0,
-                    "total_ms": 0,
-                    "longest_streak": 0,
-                    "peak_day": None,
-                    "peak_plays": 0,
-                    "unique_songs": 0,
-                    "unique_artists": 0,
-                    "discovered_songs": 0,
-                    "discovered_artists": 0,
-                    "time_series_day": "[]",
-                    "time_series_week": "[]",
-                    "time_series_month": "[]",
-                    "top_songs": "[]",
-                    "top_artists": "[]",
-                    "top_albums": "[]",
-                    "discovered_songs_list": "[]",
-                    "discovered_artists_list": "[]",
-                    "discovered_albums_list": "[]",
-                }
-
-            # 2. Extract values and parse lists
-            totalPlays = cached["total_plays"]
-            totalMs = cached["total_ms"]
-            longestStreak = cached["longest_streak"]
-            peakListeningTime = (cached["peak_day"], cached["peak_plays"]) if cached["peak_day"] else None
-            uniqueSongsCount = cached["unique_songs"]
-            uniqueArtistsCount = cached["unique_artists"]
-            discoveredSongsCount = cached["discovered_songs"]
-            discoveredArtistsCount = cached["discovered_artists"]
-
-            timeSeriesDay = json.loads(cached["time_series_day"])
-            timeSeriesWeek = json.loads(cached["time_series_week"])
-            timeSeriesMonth = json.loads(cached["time_series_month"])
-
-            topSongs = json.loads(cached["top_songs"])
-            topArtists = json.loads(cached["top_artists"])
-            topAlbums = json.loads(cached["top_albums"])
-
-            # The export button (see templates/_wrapped_export_button.html)
-            # always shows the most-PLAYED song/artist/album, independent of
-            # the page's own sortBy - captured here from the plays-ranked
-            # pool, before the sortBy re-sort below can reorder or [:limit]
-            # can cut it out of topSongs/topArtists/topAlbums entirely
-            # (2026-09-02 review, UT-5).
-            exportTopSong = self._resortByMetric(topSongs, "plays")[0] if topSongs else None
-            exportTopArtist = self._resortByMetric(topArtists, "plays")[0] if topArtists else None
-            exportTopAlbum = self._resortByMetric(topAlbums, "plays")[0] if topAlbums else None
-
-            discoveredSongs = json.loads(cached["discovered_songs_list"])
-            discoveredArtists = json.loads(cached["discovered_artists_list"])
-            discoveredAlbums = json.loads(cached["discovered_albums_list"])
-
-            # 3. Select timeseries grouping
-            if groupBy == "day":
-                timeSeries = timeSeriesDay
-            elif groupBy == "month":
-                timeSeries = timeSeriesMonth
-            else:
-                timeSeries = timeSeriesWeek
-
-            # 4. Re-sort the cached (up to 100-item) pools by the chosen
-            # metric, then slice to the requested limit. The cache itself
-            # is only ever stored plays-ranked, so membership stays
-            # whatever that plays-ranked capture included - only order/
-            # what survives the limit cut within it follows sortBy.
-            topSongs = self._resortByMetric(topSongs, sortBy)[:limit]
-            topArtists = self._resortByMetric(topArtists, sortBy)[:limit]
-            topAlbums = self._resortByMetric(topAlbums, sortBy)[:limit]
-            discoveredSongs = self._resortByMetric(discoveredSongs, sortBy)[:limit]
-            discoveredArtists = self._resortByMetric(discoveredArtists, sortBy)[:limit]
-            discoveredAlbums = self._resortByMetric(discoveredAlbums, sortBy)[:limit]
-        else:
-            # Dynamic calculations for mocks (unit tests compatibility)
-
-            # getTopSongs/getTopArtists/getTopAlbums push sorting AND the
-            # limit down into SQL (see Database.database.getTopSongs's
-            # docstring), so once sortBy != "plays" has limited the pool to
-            # the on-screen items, re-sorting it in Python can't recover the
-            # true most-played one - a dedicated plays-ranked, single-item
-            # fetch is the only way to get it (2026-09-02 review, UT-5).
-            # Skipped when sortBy is already "plays": the list below already
-            # starts with it.
-            if sortBy == "plays":
-                #< resolved from topSongs/topArtists/topAlbums once fetched, below
-                exportTopSong = exportTopArtist = exportTopAlbum = None
-            else:
-                exportTopSongPool = db.getTopSongs(startDate=yearStart, endDate=yearEnd,
-                                                   by="plays", limit=EXPORT_TOP_ITEM_COUNT)
-                exportTopArtistPool = db.getTopArtists(startDate=yearStart, endDate=yearEnd,
-                                                       by="plays", limit=EXPORT_TOP_ITEM_COUNT)
-                exportTopAlbumPool = db.getTopAlbums(startDate=yearStart, endDate=yearEnd,
-                                                     by="plays", limit=EXPORT_TOP_ITEM_COUNT)
-                exportTopSong = exportTopSongPool[0] if exportTopSongPool else None
-                exportTopArtist = exportTopArtistPool[0] if exportTopArtistPool else None
-                exportTopAlbum = exportTopAlbumPool[0] if exportTopAlbumPool else None
-
-            topSongs = db.getTopSongs(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
-            topArtists = db.getTopArtists(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
-            topAlbums = db.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=sortBy, limit=limit)
-            if sortBy == "plays":
-                # Already plays-ranked: topSongs/topArtists/topAlbums[0] IS
-                # the most-played item, so no separate fetch is needed.
-                exportTopSong = topSongs[0] if topSongs else None
-                exportTopArtist = topArtists[0] if topArtists else None
-                exportTopAlbum = topAlbums[0] if topAlbums else None
-            totalPlays, totalMs = db.getPlayTotals(yearStart, yearEnd)
-
-            discoveredSongs = self._discoveriesInYear(
-                db.getSongsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
-            )
-            discoveredArtists = self._discoveriesInYear(
-                db.getArtistsStats(), yearStart, yearEnd, limit, sortBy=sortBy
-            )
-            discoveredAlbums = self._discoveriesInYear(
-                db.getAlbumsStats(sortBy="plays"), yearStart, yearEnd, limit, sortBy=sortBy
-            )
-
-            timeSeries = db.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy=groupBy)
-
-            longestStreak = db.getLongestStreak(yearStart, yearEnd)
-            peakListeningTime = db.getPeakListeningTime(yearStart, yearEnd)
-            uniqueSongsCount = db.getSongsCount(yearStart, yearEnd)
-            uniqueArtistsCount = db.getArtistsCount(yearStart, yearEnd)
-            discoveredSongsCount = db.getDiscoveredSongsCount(yearStart, yearEnd)
-            discoveredArtistsCount = db.getDiscoveredArtistsCount(yearStart, yearEnd)
+        # 4. Re-sort the cached (up to 100-item) pools by the chosen
+        # metric, then slice to the requested limit. The cache itself
+        # is only ever stored plays-ranked, so membership stays
+        # whatever that plays-ranked capture included - only order/
+        # what survives the limit cut within it follows sortBy.
+        topSongs = self._resortByMetric(topSongs, sortBy)[:limit]
+        topArtists = self._resortByMetric(topArtists, sortBy)[:limit]
+        topAlbums = self._resortByMetric(topAlbums, sortBy)[:limit]
+        discoveredSongs = self._resortByMetric(discoveredSongs, sortBy)[:limit]
+        discoveredArtists = self._resortByMetric(discoveredArtists, sortBy)[:limit]
+        discoveredAlbums = self._resortByMetric(discoveredAlbums, sortBy)[:limit]
 
         # 5. Embed presentation elements
         timeSeries = self._embedTimeSeriesTextElements(timeSeries)

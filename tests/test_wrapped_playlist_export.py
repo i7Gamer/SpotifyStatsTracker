@@ -1,10 +1,8 @@
 """The Wrapped Top 100 playlist download - routes/tags.py's playlistExport()
 `year` branch, which reuses dashboard._buildWrappedContext (same cached
 top-100 pool wrapped.html itself renders from) instead of a tag filter.
-Fixture mirrors test_wrapped_route.py's MagicMock-db pattern exactly, since
-that's what makes _buildWrappedContext take its "dynamic calculation for
-mocks" branch (see dashboard/wrapped_builder.py) instead of hitting the
-sqlite-backed wrapped cache."""
+Fixture stubs db.repo.getCachedWrapped, the only source _buildWrappedContext
+reads from since R6 (2026-09-02) made the cache the only Wrapped path."""
 import datetime
 import sys
 import os
@@ -15,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from _app_factory import AppTestCase
 import Database.utils as utilsModule
+from conftest import wrappedCachedRow
 
 
 def _ts(year, month=6, day=1, hour=12):
@@ -51,14 +50,8 @@ class TestWrappedPlaylistExport(AppTestCase):
         db = MagicMock()
         # A play in 2026 so _computeAvailableYears includes it.
         db.getEntriesFromOld.return_value = [{"id": "x", "playedAt": _ts(2026), "timePlayed": 1}]
-        db.getTopSongs.return_value = songs or []
-        db.getTopArtists.return_value = []
-        db.getTopAlbums.return_value = []
-        db.getPlayTotals.return_value = (0, 0)
-        db.getSongsStats.return_value = []
-        db.getArtistsStats.return_value = []
-        db.getAlbumsStats.return_value = []
-        db.getListeningTimeSeries.return_value = []
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=songs or [])
+        db.getTaggedTracks.return_value = []   #< the tag-based export branch, unrelated to the year branch
         return db
 
     def _get(self, dash, db, query):
@@ -102,13 +95,21 @@ class TestWrappedPlaylistExport(AppTestCase):
         self.assertIn("Wrapped 2026 Top 100", resp.get_data(as_text=True))
 
     def test_requests_up_to_100_songs_regardless_of_wrapped_page_limit(self):
+        """The export hardcodes limit=WRAPPED_TOP_SONGS_EXPORT_LIMIT (100),
+        not the page's own default (WRAPPED_LIST_SIZE=10) - an 11-song
+        cached pool proves it: a 10-item cap would cut the lowest-played
+        song, a 100-item one would not."""
         dash = self._makeApp()
-        db = self._makeDb(songs=[_song("t1", "Wrapped Song One")])
+        songs = [_song(f"hi{i}", f"HighPlaySong{i}") for i in range(10)]
+        for i, song in enumerate(songs):
+            song["plays"] = 100 - i   #< ranks 1-10 by descending plays
+        lowest = _song("lo1", "LowestPlayedSong")
+        lowest["plays"] = 1   #< rank 11 - cut by a 10-item cap, kept by a 100-item one
+        db = self._makeDb(songs=songs + [lowest])
 
-        self._get(dash, db, "/playlist/export?year=2026&format=csv")
+        resp = self._get(dash, db, "/playlist/export?year=2026&format=csv")
 
-        self.assertEqual(db.getTopSongs.call_args.kwargs.get("limit"), 100)
-        self.assertEqual(db.getTopSongs.call_args.kwargs.get("by"), "plays")
+        self.assertIn("LowestPlayedSong", resp.get_data(as_text=True))
 
     def test_year_outside_available_years_is_rejected(self):
         dash = self._makeApp()
@@ -137,7 +138,7 @@ class TestWrappedPlaylistExport(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Tag Song", resp.get_data(as_text=True))
-        db.getTopSongs.assert_not_called()
+        db.repo.getCachedWrapped.assert_not_called()   #< the year/cache branch was never touched
 
 
 class TestWrappedDownloadButtonVisibility(AppTestCase):
@@ -161,14 +162,7 @@ class TestWrappedDownloadButtonVisibility(AppTestCase):
         db = MagicMock()
         db.tz = datetime.timezone.utc
         db.getEntriesFromOld.return_value = [{"id": "x", "playedAt": _ts(2026), "timePlayed": 1}]
-        db.getTopSongs.return_value = songs or []
-        db.getTopArtists.return_value = []
-        db.getTopAlbums.return_value = []
-        db.getPlayTotals.return_value = (0, 0)
-        db.getSongsStats.return_value = []
-        db.getArtistsStats.return_value = []
-        db.getAlbumsStats.return_value = []
-        db.getListeningTimeSeries.return_value = []
+        db.repo.getCachedWrapped.return_value = wrappedCachedRow(topSongs=songs or [])
         return db
 
     def _getWrapped(self, db, query=""):
