@@ -17,7 +17,13 @@
     <h1>Log in</h1>
     <p>Log in with your email and password to keep tracking your listening history.</p>
 
-    {% if error %}
+    {#- cookieError (set by routes/auth.py's login() on the cookie form's own
+        failures) says WHICH form the error belongs to: without it, every
+        error= render looked identical here, so this paragraph always showed
+        above the password form while the cookie <details> below stayed
+        collapsed - hiding the very form the error was about (2026-09-02
+        review, UT-21). #}
+    {% if error and not cookieError %}
       <p class="error">{{ error }}</p>
     {% endif %}
 
@@ -45,8 +51,12 @@
       <a href="{{ url_for('resetPassword') }}">Forgot your password?</a>
     </div>
 
-    <details class="cookie-login-fallback">
+    <details class="cookie-login-fallback"{% if cookieError %} open{% endif %}>
       <summary>Log in with cookies instead</summary>
+
+      {% if cookieError and error %}
+        <p class="error">{{ error }}</p>
+      {% endif %}
 
       <form class="login-form" method="post" action="{{ url_for('login') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>

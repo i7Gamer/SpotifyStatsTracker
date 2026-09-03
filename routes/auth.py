@@ -220,14 +220,19 @@ def register(app, dashboard):
         cookies = request.form.get("cookies", "")
 
         if not email or not cookies:
+            #< cookieError=True: this is the (collapsed) cookies form's own
+            #  failure, not the password form's - see login.html's `if
+            #  cookieError` branch, which opens the <details> and moves the
+            #  error inside it instead of leaving it above the password
+            #  fields that were never submitted (2026-09-02 review, UT-21).
             return render_template(
-                "login.html", email=email, next=nextUrl,
+                "login.html", email=email, next=nextUrl, cookieError=True,
                 error="Email and cookies are both required.")
 
         parsedCookies = _verifiedCookies(cookies, email)
         if parsedCookies is None:
             return render_template(
-                "login.html", email=email, next=nextUrl,
+                "login.html", email=email, next=nextUrl, cookieError=True,
                 error=COOKIE_OWNERSHIP_ERROR.format(email=email))
 
         session.clear()   #< a login is a user switch - see the password branch above
