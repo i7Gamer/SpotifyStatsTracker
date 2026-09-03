@@ -1439,8 +1439,12 @@ class TrackQueries:
             conn.execute("UPDATE track_merge_decisions SET carried_canonical_id=NULL "
                          "WHERE carried_canonical_id IS NOT NULL")
         if cur.rowcount or restored:
-            #< restores move the same frozen numbers as clears do
-            self.deleteAllWrapped()   #< the undo moves the same frozen numbers back
+            #< either arm moves numbers frozen inside cached Wrapped years: a
+            #  cleared merge splits a group, a restored one re-forms a different
+            #  one. `restored` is counted but NOT returned - the caller's message
+            #  says how many tracks were UNMERGED, and a restored track was moved
+            #  back into a merge rather than out of one.
+            self.deleteAllWrapped()
         return cur.rowcount
 
     def getMergeReviewCandidates(self) -> dict:
