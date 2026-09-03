@@ -33,9 +33,7 @@
    snapping back to the first accepted share. #}
 <input type="hidden" name="with" id="compareWithField" value="{{ withUsername }}" hx-swap-oob="outerHTML">
 
-{% if acceptedUsernames | length > 1 %}
-  {% with oob = true %}{% include '_compare_user_badges.html' %}{% endwith %}
-{% endif %}
+{% with oob = true %}{% include '_compare_user_badges.html' %}{% endwith %}
 
 {% with oob = true %}{% include '_compare_taste_match.html' %}{% endwith %}
 

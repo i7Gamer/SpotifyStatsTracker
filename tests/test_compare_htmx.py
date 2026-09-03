@@ -224,6 +224,54 @@ class TestOutOfBandRegions(CompareHtmxTestCase):
             self.assertIn(f'id="{regionId}"', shell, f"{regionId} is not in the shell")
             self.assertIn(regionId, declared, f"{regionId} is never swapped")
 
+    def test_the_picker_is_rendered_even_with_nobody_to_switch_to(self):
+        """The shell and the fragment are two different requests, and each used
+        to decide "picker or no picker" for itself. A share accepted between
+        them made the fragment emit an out-of-band element whose target the
+        shell had never rendered - htmx:oobErrorNoTarget, and the picker never
+        appeared until a full reload (2026-09-03 review, L6)."""
+        client = self._loginAs()   #< alice has exactly one accepted share
+
+        shell = client.get("/compare").get_data(as_text=True)
+        fragment = self._fragment(client=client)
+
+        self.assertIn('id="compareUserBadges"', shell)
+        self.assertIn('id="compareUserBadges"', fragment)
+
+    def test_a_lone_counterpart_hides_the_picker_rather_than_dropping_it(self):
+        """Hidden, not absent: there is nothing to pick, so it must not be on
+        screen or in the accessibility tree - but the swap still needs a
+        target."""
+        shell = self._shell()
+
+        nav = shell[shell.index('id="compareUserBadges"'):]
+        self.assertIn("hidden", nav[:nav.index(">")])
+
+    def test_a_second_counterpart_shows_it(self):
+        self._accept("alice", "carol")
+
+        shell = self._shell()
+
+        nav = shell[shell.index('id="compareUserBadges"'):]
+        self.assertNotIn("hidden", nav[:nav.index(">")])
+
+    def test_a_share_accepted_mid_session_makes_the_picker_appear(self):
+        """The case that broke: the shell was fetched while alice had one
+        share, carol was accepted, and the NEXT fragment has to be able to put
+        a working picker on that page."""
+        client = self._loginAs()
+        shell = client.get("/compare").get_data(as_text=True)
+        self.assertIn('id="compareUserBadges"', shell)   #< the target exists
+
+        self._accept("alice", "carol")
+        fragment = self._fragment(client=client)
+
+        nav = fragment[fragment.index('id="compareUserBadges"'):]
+        opening = nav[:nav.index(">")]
+        self.assertIn('hx-swap-oob="outerHTML"', opening)
+        self.assertNotIn("hidden", opening)
+        self.assertIn("with=carol", nav[:nav.index("</nav>")])
+
     def test_the_counterpart_name_labels_are_swapped_by_class_not_by_id(self):
         """The name appears in the hero and above all three of the counterpart's
         columns; they are not swap targets of their own, so one oob element

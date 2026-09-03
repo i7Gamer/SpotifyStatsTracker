@@ -3258,6 +3258,12 @@ input[type="checkbox"], input[type="radio"] {
   margin: 24px 0 32px;
 }
 
+/* display:flex above beats the [hidden] attribute's UA display:none. Compare's
+   counterpart picker is rendered on every response and hidden when there is
+   nobody to switch to, so that its out-of-band swap always has a target - see
+   _compare_user_badges.html. */
+.wrapped-year-badges[hidden] { display: none; }
+
 .wrapped-year-badge,
 .stats-filter-button {
   padding: 10px 20px;

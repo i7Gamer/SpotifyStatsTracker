@@ -14,9 +14,21 @@
    The per-badge id is what lets htmx put keyboard focus back where it was after
    replacing the nav: it matches the focused element up again by id.
 
+   ALWAYS rendered, hidden rather than omitted when there is nobody to switch
+   to. The shell and the fragment are two different requests, so deciding
+   "picker or no picker" separately in each let them disagree: a share accepted
+   between them made the fragment emit an out-of-band element whose target the
+   shell had never rendered - an htmx:oobErrorNoTarget, and the picker never
+   appeared at all until a full reload. The revoke direction left a stale nav on
+   screen for the same reason. Rendering it either way means the pairing cannot
+   come apart, and the hidden attribute follows whatever the LATEST response
+   says (style.css hides it explicitly - display:flex beats the UA's
+   [hidden]{display:none}).
+
    Expects: userBadges (from routes/compare.py), withUsername; `oob` only when
    included from _compare_results.html. #}
 <nav class="wrapped-year-badges" id="compareUserBadges" aria-label="Select user to compare with"
+     {% if userBadges | length < 2 %}hidden{% endif %}
      hx-boost="true"
      hx-swap="none"
      hx-sync="#compareFilters:replace"
