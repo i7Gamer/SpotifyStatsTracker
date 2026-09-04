@@ -1,7 +1,10 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{% from '_compare_macros.html' import detailCell, theirCell, coverLink %}
+{# `with context`: coverLink's covers (via coverImg) read placeholderImgDataUri
+   from the context processors - see _compare_macros.html's coverImg comment,
+   2026-09-04 review, P1. #}
+{% from '_compare_macros.html' import detailCell, theirCell, coverLink with context %}
 {# Two names per user, and they are not interchangeable: myLabel/theirLabel are
    what a person is CALLED (users.display_name, falling back to the username),
    while the bare username/withUsername stay the immutable key - coverLink's

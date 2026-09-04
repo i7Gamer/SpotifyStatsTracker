@@ -1,7 +1,10 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{% from '_compare_macros.html' import detailCell, coverLink %}
+{# `with context`: coverLink's covers (via coverImg) read placeholderImgDataUri
+   from the context processors - see _compare_macros.html's coverImg comment,
+   2026-09-04 review, P1. #}
+{% from '_compare_macros.html' import detailCell, coverLink with context %}
 {# Similarity cells run over the 200-deep sharedXPool (COMPARE_SHARED_POOL_SIZE),
    not the shallower 100-deep topXPool taste-match uses, so they can surface a
    common favorite neither displayed top ten shows. Items come from the

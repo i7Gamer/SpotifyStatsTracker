@@ -36,9 +36,18 @@
    username in the URL is only the session's authorization check, so it's
    always the VIEWER's - counterpart items included. alt="" on purpose: the
    item's name sits directly next to the image, so a named alt would only
-   double-announce it to screen readers. #}
+   double-announce it to screen readers.
+
+   A blank imageId (never fetched yet) means /img/.../.jpeg is a guaranteed
+   404 - same rule as _track_card.html's cover (2026-09-02 review, UT-13):
+   the src is the placeholder data URI directly rather than a request the
+   client-side onerror below would just repaint anyway. placeholderImgDataUri
+   comes from dashboard/context_processors.py's _injectPlaceholderImage; it
+   reaches this macro because every template that imports coverImg/coverLink
+   does so `with context` (see _compare_similarities.html and
+   _compare_stats_table.html) - 2026-09-04 review, P1. #}
 {% macro coverImg(item, username, kind) -%}
-  {%- if item -%}<img class="compare-cover" loading="lazy" alt="" src="/img/{{ username }}/{{ 'artists' if kind == 'artist' else 'tracks' }}/{{ item.imageId }}.jpeg" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />{%- endif -%}
+  {%- if item -%}<img class="compare-cover" loading="lazy" alt="" src="{{ ('/img/' ~ username ~ '/' ~ ('artists' if kind == 'artist' else 'tracks') ~ '/' ~ item.imageId ~ '.jpeg') if item.imageId else placeholderImgDataUri }}" onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />{%- endif -%}
 {%- endmacro %}
 
 {# Linked cover: mirrors the neighboring text cell's target - own items and
