@@ -242,7 +242,7 @@ class TestPlaceholderDataEncryptionKeyRefusesConstruction(unittest.TestCase):
         instead of at first encrypt/decrypt - same file, earlier."""
         self.assertFalse(secretStore.DEFAULT_KEY_PATH.exists())
 
-        dash = makeApp()
+        makeApp()
 
         self.assertTrue(secretStore.DEFAULT_KEY_PATH.exists())
         self.assertTrue(secretStore.DEFAULT_KEY_PATH.read_text(encoding="utf-8").strip())
