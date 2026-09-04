@@ -164,5 +164,63 @@ class TestRegisterRoute(AppTestCase):
         self.assertEqual(dash.repo.getUsernameForEmail("alice@example.com"), "alice")
 
 
+class TestCaseInsensitiveEmailAcrossAuthFlows(AppTestCase):
+    """A registered email must be recognized by every auth path regardless of
+    the case it's typed in later - getUsernameForEmail now folds case on the
+    stored side (COLLATE NOCASE). Before this fix, registering as
+    "Alice@example.com" and later logging in (password or cookies) as
+    "alice@example.com" read as an unknown email: password login failed,
+    and cookie login/refresh minted a second users row (a second listener on
+    the same Spotify account, no way to reach the original account's data)."""
+
+    def _register(self, dash, email, password=VALID_PASSWORD):
+        client = dash.app.test_client()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True), \
+             patch.object(dash, 'get_user_db'):
+            resp = client.post("/register", data={
+                "email": email, "password": password, "confirm_password": password,
+                "cookies": "sp_dc=abc"})
+        return resp, client
+
+    def test_password_login_with_different_case_resolves_the_same_account(self):
+        dash = self._makeApp()
+        self._register(dash, "Alice@example.com")
+        originalUsername = dash.repo.getUsernameForEmail("Alice@example.com")
+
+        with patch.object(dash, 'get_user_db'):
+            resp = dash.app.test_client().post("/login", data={
+                "email": "alice@example.com", "password": VALID_PASSWORD})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers["Location"].endswith("/"))
+        # No sibling account was minted for the lowercase spelling.
+        self.assertEqual(dash.repo.getUsernameForEmail("alice@example.com"), originalUsername)
+
+    def test_cookie_login_with_different_case_does_not_create_a_second_account(self):
+        dash = self._makeApp()
+        self._register(dash, "Alice@example.com")
+        originalUsername = dash.repo.getUsernameForEmail("Alice@example.com")
+
+        # get_or_create_user is what /login's cookies branch calls to resolve
+        # (or mint) the account for the submitted email - exercised directly
+        # here the same way tests/test_multi_user.py's
+        # test_get_or_create_user_still_suffixes_on_a_real_email_collision
+        # does, rather than re-mocking cookie ownership verification.
+        resolvedUsername = dash.get_or_create_user("alice@example.com")
+
+        self.assertEqual(resolvedUsername, originalUsername)
+        # The old bug's tell: a second, suffixed row for the same account.
+        self.assertFalse(dash.repo.usernameExists(f"{originalUsername}_1"))
+
+    def test_registering_the_same_email_in_a_different_case_is_refused(self):
+        dash = self._makeApp()
+        self._register(dash, "Alice@example.com")
+
+        resp, _ = self._register(dash, "alice@example.com")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"already exists", resp.data)
+
+
 if __name__ == "__main__":
     unittest.main()

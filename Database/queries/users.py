@@ -44,8 +44,21 @@ class UserQueries:
             )
 
     def getUsernameForEmail(self, email: str) -> str | None:
+        """Case-insensitive on the STORED side (`COLLATE NOCASE`), not on the
+        input: emails are written to the row as the user typed them at
+        register/login time, so `.lower()`-ing the input here would only
+        match rows that happen to already be lowercase - every existing
+        mixed-case account (e.g. an ADMIN_EMAIL set before this fix) would
+        silently stop resolving. NOCASE is ASCII-only folding, which is all
+        an email address needs.
+        Without this, the same person registering as "Alice@x" and later
+        logging in (or re-authenticating via cookies) as "alice@x" read as a
+        different, unknown email - get_or_create_user then minted a second
+        users row and a second live listener for the same Spotify account."""
         conn = self._conn()
-        row = conn.execute("SELECT username FROM users WHERE email=?", (email,)).fetchone()
+        row = conn.execute(
+            "SELECT username FROM users WHERE email=? COLLATE NOCASE", (email,)
+        ).fetchone()
         return row["username"] if row else None
 
     def usernameExists(self, username: str) -> bool:
@@ -62,17 +75,6 @@ class UserQueries:
         conn = self._conn()
         row = conn.execute("SELECT email FROM users WHERE username=?", (username,)).fetchone()
         return row["email"] if row else None
-
-    def getUsernameForEmailCaseInsensitive(self, email: str) -> str | None:
-        """getUsernameForEmail with case-insensitive matching - emails are
-        stored as typed at login, so an ADMIN_EMAIL differing only in case
-        must still resolve. ASCII-only folding (SQLite NOCASE), which is all
-        email addresses need."""
-        conn = self._conn()
-        row = conn.execute(
-            "SELECT username FROM users WHERE email=? COLLATE NOCASE", (email,)
-        ).fetchone()
-        return row["username"] if row else None
 
     # ---- Per-user: display name ------------------------------------------------
     # The editable label standing in for the immutable username key (see the

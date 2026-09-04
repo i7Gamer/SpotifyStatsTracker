@@ -2710,6 +2710,17 @@ class TestUsersAndCookies(RepositoryTestCase):
         self.repo.upsertUser("alice", "alice@example.com")
         self.assertEqual(self.repo.getUsernameForEmail("alice@example.com"), "alice")
 
+    def test_lookup_by_email_is_case_insensitive(self):
+        """The row is stored exactly as typed at registration - only the
+        lookup folds case (COLLATE NOCASE), so a later login/cookie-refresh
+        typed in a different case still resolves to the same account instead
+        of minting a second users row."""
+        self.repo.upsertUser("alice", "Alice@Example.com")
+
+        self.assertEqual(self.repo.getUsernameForEmail("alice@example.com"), "alice")
+        self.assertEqual(self.repo.getUsernameForEmail("ALICE@EXAMPLE.COM"), "alice")
+        self.assertEqual(self.repo.getUsernameForEmail("Alice@Example.com"), "alice")
+
     def test_unknown_email_returns_none(self):
         self.assertIsNone(self.repo.getUsernameForEmail("nobody@example.com"))
 

@@ -396,7 +396,11 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         the instance owner (migration 1.17.0 does the same for upgrades)."""
         adminEmail = os.environ.get(ADMIN_EMAIL_ENV_VAR, "").strip()
         if adminEmail:
-            username = self.repo.getUsernameForEmailCaseInsensitive(adminEmail)
+            # getUsernameForEmail is itself case-insensitive (COLLATE NOCASE)
+            # now, so ADMIN_EMAIL differing only in case from the stored
+            # email still resolves - no separate *CaseInsensitive method
+            # needed here any more.
+            username = self.repo.getUsernameForEmail(adminEmail)
             if not username:
                 logger.warning("%s=%s does not match any user - admin assignment unchanged",
                                ADMIN_EMAIL_ENV_VAR, adminEmail)
