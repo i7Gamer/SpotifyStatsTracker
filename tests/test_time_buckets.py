@@ -26,6 +26,12 @@ from services.time_buckets import (
 
 _UTC = datetime.timezone.utc
 _NY = ZoneInfo("America/New_York")
+#< Europe/Berlin: clocks spring forward 02:00->03:00 CET->CEST on
+#  2026-03-29 (that local hour never happens) and fall back 03:00->02:00
+#  CEST->CET on 2026-10-25 (that local hour happens twice) - hand-verified
+#  against the zoneinfo data itself (utcoffset()/fold), independent of the
+#  bucketing code under test.
+_BERLIN = ZoneInfo("Europe/Berlin")
 
 
 def _row(ts, totalTimeListened=1000, plays=1, skips=0, **extra):
@@ -265,6 +271,110 @@ class TestBuildTimeSeries(unittest.TestCase):
 
         self.assertEqual(resultUtc[0]["label"], "2026-07-22")
         self.assertEqual(resultNy[0]["label"], "2026-07-22")
+
+
+class TestBuildTimeSeriesHourAcrossDST(unittest.TestCase):
+    """2026-09-04 review, F-C-3: the "hour" gap-fill used to advance the
+    cursor by a naive `timedelta(hours=1)` on a zoneinfo-aware datetime,
+    which only ever touches the naive wall-clock fields. On the two
+    Europe/Berlin DST-transition days that walked straight over the local
+    hour that never happened (spring-forward: a permanently-empty phantom
+    "02:00" bar) and separately visited the doubled local hour only once,
+    under whichever of its two instants the naive walk happened to land on
+    (fall-back). Fixed by stepping a real elapsed hour via a UTC round-trip
+    and deduping a repeated label (see buildTimeSeries's "hour" branch and
+    the loop below it)."""
+
+    def test_an_ordinary_day_still_yields_24_sequential_hour_buckets(self):
+        """Control: a day with no DST transition, on the same tz the
+        transition tests use, must be completely unaffected by the fix."""
+        start = datetime.datetime(2026, 7, 15, 0, 0, tzinfo=_BERLIN)
+        end = datetime.datetime(2026, 7, 16, 0, 0, tzinfo=_BERLIN)
+        ts = datetime.datetime(2026, 7, 15, 9, 30, tzinfo=_BERLIN).timestamp()
+
+        result = buildTimeSeries([_row(ts, plays=3)], _BERLIN, "hour",
+                                 startDate=start, endDate=end)
+
+        self.assertEqual(
+            [b["label"] for b in result],
+            [f"2026-07-15 {h:02d}:00" for h in range(24)])
+        self.assertEqual(sum(b["plays"] for b in result), 3)
+
+    def test_spring_forward_day_has_23_hour_buckets_and_no_phantom_hour(self):
+        """2026-03-29: Europe/Berlin clocks jump 02:00 -> 03:00 CEST. That
+        local hour never happens, so it must never be emitted - not as an
+        always-empty bar."""
+        start = datetime.datetime(2026, 3, 29, 0, 0, tzinfo=_BERLIN)
+        end = datetime.datetime(2026, 3, 30, 0, 0, tzinfo=_BERLIN)
+        #< a real play either side of the gap, so the walk has data to carry
+        ts1 = datetime.datetime(2026, 3, 29, 1, 30, tzinfo=_BERLIN).timestamp()
+        ts2 = datetime.datetime(2026, 3, 29, 3, 30, tzinfo=_BERLIN).timestamp()
+
+        result = buildTimeSeries([_row(ts1, plays=1), _row(ts2, plays=1)],
+                                 _BERLIN, "hour", startDate=start, endDate=end)
+
+        labels = [b["label"] for b in result]
+        self.assertEqual(len(labels), 23)
+        self.assertNotIn("2026-03-29 02:00", labels)
+        self.assertEqual(labels[:4],
+                         ["2026-03-29 00:00", "2026-03-29 01:00",
+                          "2026-03-29 03:00", "2026-03-29 04:00"])
+        self.assertEqual(sum(b["plays"] for b in result), 2)
+
+    def test_fall_back_day_has_24_hour_buckets_and_merges_the_doubled_hour(self):
+        """2026-10-25: Europe/Berlin clocks fall back 03:00 -> 02:00, so local
+        02:00-03:00 happens twice (fold=0, the earlier/CEST instant; fold=1,
+        the later/CET one). Both must count in ONE "02:00" bucket - nothing
+        lost, same as the day already reads today - not spill into a 25th
+        bucket the rest of the chart's "24 hours" assumption doesn't expect."""
+        start = datetime.datetime(2026, 10, 25, 0, 0, tzinfo=_BERLIN)
+        end = datetime.datetime(2026, 10, 26, 0, 0, tzinfo=_BERLIN)
+        earlyInstant = datetime.datetime(2026, 10, 25, 2, 30, fold=0, tzinfo=_BERLIN).timestamp()
+        lateInstant = datetime.datetime(2026, 10, 25, 2, 30, fold=1, tzinfo=_BERLIN).timestamp()
+        self.assertNotEqual(earlyInstant, lateInstant, "the two folds must be distinct real instants")
+
+        result = buildTimeSeries([_row(earlyInstant, plays=1), _row(lateInstant, plays=1)],
+                                 _BERLIN, "hour", startDate=start, endDate=end)
+
+        labels = [b["label"] for b in result]
+        self.assertEqual(len(labels), 24)
+        self.assertEqual(labels, [f"2026-10-25 {h:02d}:00" for h in range(24)])
+        twoAmBucket = result[labels.index("2026-10-25 02:00")]
+        self.assertEqual(twoAmBucket["plays"], 2, "both real hours must land in the one bucket")
+
+    def test_the_day_groupby_is_untouched_by_the_dst_walk_fix(self):
+        """Control: "day" buckets by calendar date (dateToString/startOfDay),
+        a code path this fix does not touch - must keep emitting exactly one
+        label per calendar day straddling the spring-forward transition."""
+        start = datetime.datetime(2026, 3, 28, 0, 0, tzinfo=_BERLIN)
+        end = datetime.datetime(2026, 3, 31, 0, 0, tzinfo=_BERLIN)
+        ts = datetime.datetime(2026, 3, 29, 1, 30, tzinfo=_BERLIN).timestamp()
+
+        result = buildTimeSeries([_row(ts, plays=1)], _BERLIN, "day",
+                                 startDate=start, endDate=end)
+
+        self.assertEqual([b["label"] for b in result],
+                         ["2026-03-28", "2026-03-29", "2026-03-30"])
+
+    def test_the_week_groupby_is_untouched_by_the_dst_walk_fix(self):
+        """Control: 2026-03-29 is a Sunday, the last day of the week of
+        2026-03-23 (Monday) - the fold-back week's Monday label must still
+        come out unaffected by the transition inside it."""
+        ts = datetime.datetime(2026, 3, 29, 1, 30, tzinfo=_BERLIN).timestamp()
+
+        result = buildTimeSeries([_row(ts, plays=1)], _BERLIN, "week")
+
+        self.assertEqual([b["label"] for b in result], ["2026-03-23"])
+
+    def test_the_month_groupby_is_untouched_by_the_dst_walk_fix(self):
+        """Control: a play on the spring-forward day and one the following
+        month must still produce exactly the two calendar-month buckets."""
+        ts1 = datetime.datetime(2026, 3, 29, 1, 30, tzinfo=_BERLIN).timestamp()
+        ts2 = datetime.datetime(2026, 4, 5, 12, 0, tzinfo=_BERLIN).timestamp()
+
+        result = buildTimeSeries([_row(ts1, plays=1), _row(ts2, plays=1)], _BERLIN, "month")
+
+        self.assertEqual([b["label"] for b in result], ["2026-03", "2026-04"])
 
 
 class TestTimeSeriesMinBucketDaysTable(unittest.TestCase):

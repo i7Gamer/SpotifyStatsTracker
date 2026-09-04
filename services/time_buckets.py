@@ -137,7 +137,22 @@ def buildTimeSeries(rows, tz, groupBy: str = "day",
         minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["week"]
     elif groupBy == "hour":
         align = lambda d: d.replace(minute=0, second=0, microsecond=0)
-        advance = lambda d: d + datetime.timedelta(hours=1)
+        # A plain `d + timedelta(hours=1)` only touches the naive fields of a
+        # zoneinfo-aware datetime - it never asks "is this wall-clock hour
+        # real". On the two DST-transition days that walks straight over the
+        # local hour that never happened (Europe/Berlin spring-forward:
+        # 02:00 skips to 03:00, so the naive walk still labels a bucket
+        # "02:00" that no play can ever land in) and, on fall-back, revisits
+        # the same wall-clock "02:00" label without ever reaching its second,
+        # later instant (fold=1) as a step of its own. Advancing via a UTC
+        # round-trip instead steps by a real elapsed hour, so the local wall
+        # time that comes out already reflects whatever the clock actually
+        # did at that boundary - the phantom hour is never produced, and the
+        # doubled one naturally re-lands on the same label (deduped below,
+        # rather than emitted as a second bucket) with both hours' rows
+        # already merged into it by the `buckets` dict above (keyed the same
+        # way, off the row's real bucketStartTs).
+        advance = lambda d: (d.astimezone(datetime.timezone.utc) + datetime.timedelta(hours=1)).astimezone(tz)
         minBucketDays = TIME_SERIES_MIN_BUCKET_DAYS["hour"]
     elif groupBy == "month":
         # A fixed timedelta step doesn't work here since months vary in
@@ -171,6 +186,12 @@ def buildTimeSeries(rows, tz, groupBy: str = "day",
     result = []
     while cursor < rangeEnd:
         key = bucketKey(cursor, groupBy, tz)
-        result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0, "skips": 0}))
+        # Only "hour" can ever repeat the PREVIOUS label: fall-back's UTC-real
+        # advance (above) steps through both instants of the doubled local
+        # hour, and both stringify to the same "HH:00" key. Every other
+        # groupBy's keys are already strictly increasing, so this is a no-op
+        # for them - not a second DST rule to keep in sync with the one above.
+        if not result or key != result[-1]["label"]:
+            result.append(buckets.get(key, {"label": key, "totalTimeListened": 0, "plays": 0, "skips": 0}))
         cursor = advance(cursor)
     return result
