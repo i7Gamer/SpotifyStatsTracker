@@ -170,6 +170,78 @@ class TestIntervalWindowValidation(ProfilePreferencesTestCase):
         self.assertEqual(settings["default_top_list_window"], "year")
 
 
+class TestTimezoneValidation(ProfilePreferencesTestCase):
+    """save_preferences stored `timezone` as received - a bad value (only
+    reachable via a hand-crafted POST; profile.html's <select> offers 14 fixed
+    names) was "saved successfully" while Database.refreshSettings's
+    `except Exception` swallowed the ZoneInfo construction failure and fell
+    back to the instance zone, silently. Same standard as the neighbouring
+    SETTABLE_INTERVALS guard (X3, 2026-09-02 review): reject before writing
+    anything, next to that check (2026-09-04 review, F-A-3)."""
+
+    def test_an_unconstructable_timezone_is_rejected(self):
+        client = self._loginAs("alice", "alice@example.com")
+        before = self.dash.repo.getUserSettings("alice")["timezone"]
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "year",
+            "timezone": "Mars/Olympus",
+        }, follow_redirects=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Invalid timezone.", resp.data)
+        self.assertEqual(self.dash.repo.getUserSettings("alice")["timezone"], before)
+
+    def test_an_unconstructable_timezone_drops_no_wrapped_cache(self):
+        """updateUserSettings drops every cached Wrapped year when timezone
+        actually changes (see its comment) - a rejected save must never reach
+        that write, or a crafted POST could invalidate every user's Wrapped
+        cache for nothing."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        with patch.object(self.dash.repo, "deleteAllUserWrapped") as mocked:
+            client.post("/profile", data={
+                "action": "save_preferences",
+                "default_dashboard_window": "week",
+                "default_top_list_window": "year",
+                "timezone": "Mars/Olympus",
+            }, follow_redirects=True)
+
+        mocked.assert_not_called()
+
+    def test_a_valid_timezone_still_saves(self):
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "year",
+            "timezone": "Europe/Berlin",
+        }, follow_redirects=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Invalid timezone.", resp.data)
+        self.assertEqual(self.dash.repo.getUserSettings("alice")["timezone"], "Europe/Berlin")
+
+    def test_an_empty_timezone_still_means_leave_it_unset(self):
+        """"" -> None is the existing, deliberate meaning (see the route) -
+        the new guard must not treat an empty string as unconstructable."""
+        client = self._loginAs("alice", "alice@example.com")
+
+        resp = client.post("/profile", data={
+            "action": "save_preferences",
+            "default_dashboard_window": "week",
+            "default_top_list_window": "year",
+            "timezone": "",
+        }, follow_redirects=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(b"Invalid timezone.", resp.data)
+        self.assertIsNone(self.dash.repo.getUserSettings("alice")["timezone"])
+
+
 class TestThemeInitialiserPlacement(ProfilePreferencesTestCase):
     """ProfilePage.navigate() swaps only the SIBLINGS between .profile-subnav
     and .profile-logout-row, and _runInlineScripts re-runs only the inline

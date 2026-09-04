@@ -15,6 +15,7 @@ import re
 import secrets
 import logging
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import render_template, redirect, request, url_for, session, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -83,6 +84,20 @@ def _passwordPolicyError(password: str) -> str | None:
     if not any(c.isdigit() or not c.isalnum() for c in password):
         return "Password must contain at least one number or special character."
     return None
+
+
+def _isConstructableTimezone(timezone: str) -> bool:
+    """Whether `timezone` is a name ZoneInfo can actually build.
+
+    Only the malformed/unknown case matters here - Database.refreshSettings
+    already catches the SAME construction failure at read time (see its
+    comment), but silently, so the write side must refuse it instead of
+    storing a value that only fails later with no signal to the user."""
+    try:
+        ZoneInfo(timezone)
+        return True
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
 
 
 def register(app, dashboard):
@@ -455,14 +470,28 @@ def register(app, dashboard):
                 # review). None (not submitted) is exempt: that is the
                 # "leave it alone" case the comment above already covers,
                 # not a value to validate.
+                timezone = request.form.get("timezone")
+                if timezone == "":
+                    #< empty has always meant "no override, use the instance
+                    #  zone" - not a value to validate against ZoneInfo below
+                    timezone = None
                 if ((default_window is not None and default_window not in SETTABLE_INTERVALS)
                         or (default_top_list_window is not None
                             and default_top_list_window not in SETTABLE_INTERVALS)):
                     error = "Invalid time window selected."
+                elif timezone is not None and not _isConstructableTimezone(timezone):
+                    # profile.html's <select> only ever offers 14 fixed names, so
+                    # a miss here is a hand-crafted POST too (same standard as
+                    # the interval guard above). Database.refreshSettings wraps
+                    # its own ZoneInfo(...) construction in a bare
+                    # `except Exception` and falls back to the instance zone -
+                    # without this guard the bad value was stored, "saved
+                    # successfully" was shown, and every tz-derived figure
+                    # (streaks, heatmap, Wrapped, on-this-day) silently used the
+                    # instance zone instead with no signal to the user
+                    # (2026-09-04 review, F-A-3).
+                    error = "Invalid timezone."
                 else:
-                    timezone = request.form.get("timezone")
-                    if timezone == "":
-                        timezone = None
                     # An unchecked checkbox isn't submitted, so absence has to mean
                     # "off" - but both of these controls are gated on an admin
                     # switch (see profile.html), and reading absence as "off"
