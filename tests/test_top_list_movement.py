@@ -279,6 +279,17 @@ class TestWhenThereIsNothingToCompare(MovementTestCase):
 
         self.assertIn("rank-move", body)
 
+    def test_a_non_decimal_unicode_digit_page_is_refused_not_a_500(self):
+        """'²' (superscript two) is str.isdigit()-true but int()-rejected.
+        _movementPage used isdigit(), so this reached the unguarded int() and
+        500'd; isdecimal() is exactly what int() accepts, so it is refused
+        the same way an out-of-range page is (see the test above), not
+        crashed."""
+        resp = self._rawMovement(page="²")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(as_text=True).strip(), "")
+
 
 class TestTheFiltersReachBothWindows(MovementTestCase):
     def test_a_search_narrows_the_previous_period_too(self):

@@ -158,6 +158,23 @@ class TestHistoryPagination(_ListRouteTestBase):
 
                 self.assertEqual(resp.status_code, 200)
 
+    def test_a_non_decimal_unicode_digit_page_is_junk_not_a_crash(self):
+        """?page= reached _positivePageArg as text, which answered by calling
+        int() on anything str.isdigit() called True on. '²' (superscript
+        two) is isdigit()-true but int()-rejected - a 500 on the shell of
+        /history and of all three Top pages alike, from a URL anyone can type.
+        isdecimal() is exactly what int() accepts, so it replaces isdigit()
+        here (and in _movementPage, see tests/test_top_list_movement.py)."""
+        dash = self._makeApp()
+        db = self._makeDb(entryCount=120)
+        nonDecimalDigit = "?page=²"
+
+        for path in ("/history", "/top-songs"):
+            with self.subTest(path=path):
+                resp = self._getPath(dash, db, f"{path}{nonDecimalDigit}")
+
+                self.assertEqual(resp.status_code, 200)
+
     def test_without_search_handles_empty_database(self):
         dash = self._makeApp()
         db = self._makeDb(entryCount=0)

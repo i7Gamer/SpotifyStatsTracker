@@ -96,9 +96,14 @@ def _positivePageArg():
 
     The length check comes before int(): CPython refuses to convert a string of
     more than 4300 digits, so `isdigit() and int(raw)` was an unhandled
-    ValueError - a 500 on four shells, from a URL anyone can type."""
+    ValueError - a 500 on four shells, from a URL anyone can type.
+
+    isdecimal(), not isdigit(): isdigit() is also true for characters like
+    '²' (superscript two) or '①' (circled one) that int() refuses - the same
+    unhandled ValueError, just from a shorter string. isdecimal() is exactly
+    what int() accepts."""
     raw = request.args.get("page", "")
-    if not raw.isdigit() or len(raw) > _MAX_PAGE_DIGITS:
+    if not raw.isdecimal() or len(raw) > _MAX_PAGE_DIGITS:
         return ""
     return raw if int(raw) > 0 else ""
 
@@ -332,11 +337,14 @@ def register(app, dashboard):
         - it decides what rank each entry is judged at - and there is no count
         to clamp against, so an impossible page is refused rather than guessed
         at: honouring it would render "Down 49,999,899" on an entry that never
-        moved."""
+        moved.
+
+        isdecimal(), not isdigit(): see _positivePageArg - '²'/'①' are
+        isdigit()-true and int()-rejected."""
         raw = request.args.get("page", "")
         if not raw:
             return 1
-        if not raw.isdigit() or len(raw) > len(str(MOVEMENT_MAX_PAGE)):
+        if not raw.isdecimal() or len(raw) > len(str(MOVEMENT_MAX_PAGE)):
             return None   #< digits counted before int(), which refuses >4300 of them
         page = int(raw)
         return page if 0 < page <= MOVEMENT_MAX_PAGE else None
