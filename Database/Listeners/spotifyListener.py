@@ -1845,8 +1845,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                     except Exception:  # noqa: S110 - closing an already-closed socket during
                         pass           #  shutdown; there is nothing left to act on
 
-            # Give the keep_alive thread a moment to detect the closed connection
-            # and exit gracefully before we join it
+            # The sleep gives the keep_alive thread (patches.py's
+            # patched_keep_alive, started as manager.keep_alive_thread) a
+            # moment to notice the now-closed socket and exit on its own -
+            # it already saw signalStop() set manager._deliberate_close
+            # above, which is what makes it exit instead of reconnecting.
+            # The join right below is NOT of that thread: it's
+            # lastPlayedManager.thread, spotapi's separate LastPlayed POLL
+            # thread. keep_alive_thread is deliberately never joined here -
+            # a third join would blow the per-user shutdown budget
+            # (LISTENER_JOINS_PER_USER, see tests/test_compose_shutdown_budget.py)
+            # - 2026-09-04 review, C12.
             time.sleep(0.1)
             thread = getattr(lastPlayedManager, "thread", None)
             if thread is not None and thread.is_alive():
