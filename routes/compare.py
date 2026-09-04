@@ -89,11 +89,16 @@ def register(app, dashboard):
         if not email:
             return dashboard.unauthenticatedResponse()
 
-        # Mirrors /overview's cookies_json guard: get_user_db starts a
-        # live listener, which needs stored cookies - a share counterpart
-        # without them (only creatable by seeding user_shares directly;
-        # the UI can't accept a share while logged out) must be skipped,
-        # not crash the page.
+        # Mirrors /overview's cookies_json guard historically: get_user_db
+        # used to start a live listener for the counterpart, which needed
+        # stored cookies. The counterpart now comes from
+        # dashboard._getReadOnlyUserDb (see below), which never starts a
+        # listener and so no longer needs cookies to build a usable
+        # instance - this filter doesn't prevent a crash any more. Kept
+        # anyway: a share counterpart with no cookies is only creatable by
+        # seeding user_shares directly (the UI can't accept a share while
+        # logged out), so this excludes that test/edge-case row rather than
+        # a real production account (2026-09-04 review, C1).
         acceptedUsernames = [
             u for u in dashboard.repo.getAcceptedShareUsernames(username)
             if dashboard.repo.getUserCookies(u) is not None
@@ -121,8 +126,16 @@ def register(app, dashboard):
             # whether an unrelated username exists at all.
             withUsername = acceptedUsernames[0]
 
-        otherEmail = dashboard.repo.getEmailForUsername(withUsername)
-        otherDb = dashboard.get_user_db(withUsername, otherEmail)
+        # Never get_user_db for another user from a request thread (see
+        # dashboard/user_registry.py's getFriendsNowPlaying for the same
+        # rule, and memory project_friends_now_playing_2026_07_25): that
+        # accessor can start a live Spotify login for whoever it's given,
+        # so calling it for the COUNTERPART would fire off THEIR listener
+        # from a thread that isn't theirs. _getReadOnlyUserDb never starts
+        # one, and hands back the same cached instance get_user_db would
+        # have if the counterpart is already active in this process (see
+        # dashboard/user_registry.py:200-203) - 2026-09-04 review, C1.
+        otherDb = dashboard._getReadOnlyUserDb(withUsername)
 
         # Same default-window setting the dashboard route reads - "all
         # time" is that setting's own stored spelling, but Compare's own
@@ -414,7 +427,9 @@ def register(app, dashboard):
             #< same fallback rule as comparePage: ?with= is untrusted input and
             #  must never select data the session user has no mutual share with
             withUsername = acceptedUsernames[0]
-        otherDb = dashboard.get_user_db(withUsername, dashboard.repo.getEmailForUsername(withUsername))
+        #< same rule as comparePage: never get_user_db for another user from
+        #  a request thread - see the comment there (2026-09-04 review, C1)
+        otherDb = dashboard._getReadOnlyUserDb(withUsername)
 
         settings = dashboard.repo.getUserSettings(username)
         defaultWindow = settings.get("default_dashboard_window", "day")

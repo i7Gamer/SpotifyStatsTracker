@@ -94,6 +94,12 @@ class TestCompareRoute(AppTestCase):
         patch.object(self.dash, 'is_user_logged_in', return_value=True).start()
         patch.object(self.dash, 'get_username_for_email', return_value=username).start()
         self.get_user_db_mock = patch.object(self.dash, 'get_user_db', side_effect=lambda u, e: self.dbs[u]).start()
+        # The counterpart's db comes from _getReadOnlyUserDb, not get_user_db
+        # (2026-09-04 review, C1 - see routes/compare.py's comparePage) -
+        # stubbed the same way so every existing self.dbs[...] assertion
+        # below still resolves against the right MagicMock.
+        self.get_readonly_user_db_mock = patch.object(
+            self.dash, '_getReadOnlyUserDb', side_effect=lambda u: self.dbs[u]).start()
         self.addCleanup(patch.stopall)
 
         client = self.dash.app.test_client()
@@ -279,17 +285,49 @@ class TestCompareRoute(AppTestCase):
     def test_counterpart_without_cookies_is_not_loaded(self):
         """A share row can point at a user with no stored cookies (only
         creatable by seeding the DB - the UI can't accept a share while
-        logged out). get_user_db would start a live listener against that
-        empty session and crash, so such counterparts must be skipped
-        entirely, mirroring /overview's cookies_json guard."""
+        logged out). Historically get_user_db would start a live listener
+        against that empty session and crash; the counterpart now comes from
+        _getReadOnlyUserDb, which no longer needs cookies (2026-09-04 review,
+        C1), but such counterparts are still skipped entirely - they're a
+        test/edge-case row, not a real production account (see the comment
+        on acceptedUsernames in routes/compare.py)."""
         self._accept("alice", "dave")   #< dave has no cookies (see setUp)
         client = self._loginAs("alice")
 
         resp = client.get("/compare")
 
         self.assertEqual(resp.status_code, 200)   #< the empty state, not a crash
-        calledUsernames = [call.args[0] for call in self.get_user_db_mock.call_args_list]
+        calledUsernames = [call.args[0] for call in self.get_readonly_user_db_mock.call_args_list]
         self.assertNotIn("dave", calledUsernames)
+
+    def test_compare_counterpart_db_comes_from_the_readonly_accessor(self):
+        """C1, 2026-09-04 review: comparePage used to fetch the counterpart's
+        Database via get_user_db(withUsername, otherEmail) - the SAME
+        accessor get_current_user_or_redirect() uses to activate the SESSION
+        user's own db (a live Spotify login on first use). Calling it again
+        for someone ELSE from this request thread would fire off THEIR
+        listener from a thread that isn't theirs (never get_user_db for
+        another user from a request thread - see memory
+        project_friends_now_playing_2026_07_25). _getReadOnlyUserDb never
+        starts a listener, so the page must use that instead - proven here by
+        making get_user_db raise for anyone but the session user and
+        asserting the page still renders."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        def _onlyForSessionUser(fetchedUsername, email):
+            if fetchedUsername != "alice":
+                raise AssertionError(
+                    f"get_user_db must not be called for counterpart {fetchedUsername!r}")
+            return self.dbs[fetchedUsername]
+        self.get_user_db_mock.side_effect = _onlyForSessionUser
+
+        shellResp = client.get("/compare")
+        ajaxResp, _ = self._ajax(client, "/compare")
+
+        self.assertEqual(shellResp.status_code, 200)
+        self.assertEqual(ajaxResp.status_code, 200)
+        self.dbs["bob"].getPlayTotals.assert_called()
 
     def test_counterpart_without_cookies_is_excluded_from_the_picker(self):
         self._accept("alice", "bob")

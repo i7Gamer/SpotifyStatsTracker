@@ -187,7 +187,13 @@ class TestCompareArtistOverflow(AppTestCase):
         shareId = self.dash.repo.getPendingIncomingShares("bob")[0]["id"]
         self.dash.repo.respondToShareRequest(shareId, "bob", accept=True)
         self.dbs = {u: self._makeStubDb() for u in ("alice", "bob")}
-
+        # The counterpart's db comes from _getReadOnlyUserDb, not get_user_db
+        # (2026-09-04 review, C1 - see routes/compare.py's comparePage);
+        # AppTestCase._loginAs only stubs get_user_db, so without this an
+        # unmocked _getReadOnlyUserDb would construct a REAL Database for
+        # the counterpart instead of handing back self.dbs[...].
+        patch.object(self.dash, '_getReadOnlyUserDb', side_effect=lambda u: self.dbs[u]).start()
+        self.addCleanup(patch.stopall)
 
     def test_all_three_render_contexts_collapse(self):
         client = self._loginAs("alice")

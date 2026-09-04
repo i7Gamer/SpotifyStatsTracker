@@ -34,6 +34,13 @@ class BlendExportTestCase(AppTestCase):
             db.tz = None
             db.getTopSongs.return_value = []
             self.dbs[username] = db
+        # The counterpart's db comes from _getReadOnlyUserDb, not get_user_db
+        # (2026-09-04 review, C1 - see routes/compare.py's compareBlendExport);
+        # AppTestCase._loginAs only stubs get_user_db, so without this an
+        # unmocked _getReadOnlyUserDb would construct a REAL Database for
+        # the counterpart instead of handing back self.dbs[...].
+        patch.object(self.dash, '_getReadOnlyUserDb', side_effect=lambda u: self.dbs[u]).start()
+        self.addCleanup(patch.stopall)
 
     def _accept(self, requester, recipient):
         self.dash.repo.createShareRequest(requester, recipient)
