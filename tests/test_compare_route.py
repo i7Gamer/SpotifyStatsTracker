@@ -509,9 +509,9 @@ class TestCompareRoute(AppTestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_custom_date_range_query_params_narrow_the_query(self):
-        """_getDateRange prioritizes startDate/endDate over the interval
-        string whenever both are present - comparePage already threads them
-        through, the UI just needed the option to set them."""
+        """_getDateRange applies startDate/endDate under interval=custom -
+        comparePage already threads them through, the UI just needed the
+        option to set them."""
         self._accept("alice", "bob")
         client = self._loginAs("alice")
 
@@ -531,6 +531,24 @@ class TestCompareRoute(AppTestCase):
         self.assertIn(b'value="2026-01-01"', resp.data)
         self.assertIn(b'value="2026-01-31"', resp.data)
         self.assertIn(b'<option value="custom" selected>Custom Date Range</option>', resp.data)
+
+    def test_named_interval_with_stray_dates_does_not_select_custom(self):
+        """The dates only apply under interval=custom (_getDateRange), so a
+        stale or hand-edited URL carrying both under a named interval must
+        show that interval - not a second `selected` option (the browser
+        picks the LAST, showing Custom over Last Year's data) with the date
+        inputs enabled, which would flip the next request to the custom range.
+        Same defect shape the Top pages' _page_card.html had."""
+        self._accept("alice", "bob")
+        client = self._loginAs("alice")
+
+        resp = client.get("/compare?interval=year&startDate=2026-01-01&endDate=2026-01-31")
+
+        self.assertIn(b'<option value="year" selected>Last Year</option>', resp.data)
+        self.assertNotIn(b'<option value="custom" selected>', resp.data)
+        intervalSelect = resp.data.split(b'<select id="interval"', 1)[1].split(b"</select>", 1)[0]
+        self.assertEqual(intervalSelect.count(b" selected>"), 1)
+        self.assertIn(b'id="startDate" name="startDate" value="2026-01-01"\n           aria-describedby="dateError"\n           disabled>', resp.data)
 
     def test_custom_date_inputs_are_hidden_by_default(self):
         self._accept("alice", "bob")

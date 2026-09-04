@@ -90,7 +90,12 @@
       <option value="month" {% if interval == 'month' %}selected{% endif %}>Last Month</option>
       <option value="year" {% if interval == 'year' %}selected{% endif %}>Last Year</option>
       <option value="5years" {% if interval == '5years' %}selected{% endif %}>Last 5 Years</option>
-      <option value="custom" {% if customStart and customEnd %}selected{% endif %}>Custom Date Range</option>
+      {# Keyed on the interval, not on "both dates present": the dates only
+         apply under interval=custom (dashboard._getDateRange), so a stale URL
+         carrying both under a named interval must not add a second `selected`
+         (the browser shows the LAST one - Custom over that interval's data)
+         nor enable the inputs, which would switch the next request over. #}
+      <option value="custom" {% if interval == 'custom' %}selected{% endif %}>Custom Date Range</option>
     </select>
   </div>
 
@@ -102,15 +107,15 @@
      date input fires `change` as each segment is completed, so an unthrottled
      one would query on a half-edited year. An inverted or half-entered range is
      vetoed outright - see compare.js's htmx:configRequest listener. #}
-  <div class="filter-group custom-dates" id="compareCustomDates" {% if not (customStart and customEnd) %}style="display: none;"{% endif %}>
+  <div class="filter-group custom-dates" id="compareCustomDates" {% if interval != 'custom' %}style="display: none;"{% endif %}>
     <label for="startDate">From:</label>
     <input type="date" id="startDate" name="startDate" value="{{ customStart }}"
            aria-describedby="dateError"
-           {% if not (customStart and customEnd) %}disabled{% endif %}>
+           {% if interval != 'custom' %}disabled{% endif %}>
     <label for="endDate">To:</label>
     <input type="date" id="endDate" name="endDate" value="{{ customEnd }}"
            aria-describedby="dateError"
-           {% if not (customStart and customEnd) %}disabled{% endif %}>
+           {% if interval != 'custom' %}disabled{% endif %}>
     <span id="dateError" class="date-error" role="alert"></span>
   </div>
 
