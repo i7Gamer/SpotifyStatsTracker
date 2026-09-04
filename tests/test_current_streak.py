@@ -200,14 +200,23 @@ class TestStreakLongerThanTheLookbackWindow(DatabaseTestCase):
     someone listened, and froze the dashboard's next-milestone bar at ~40%
     forever. The window now widens when the streak reaches its edge."""
 
-    def _dbWithConsecutiveDays(self, dayCount, lastDay):
+    # Plays seed earlier in the day than _now()'s default hour (12): the old
+    # window-start (`nowLocal - timedelta(days=lookbackDays)`) matched the
+    # play's own clock time when both used the same hour, which pinned
+    # nothing - the boundary-day play landed exactly ON the (buggy) window
+    # start instead of testing whether an EARLIER-in-the-day play falls
+    # outside it. See TestStreakWindowStartIsLocalMidnight below for the
+    # regression test that exercises the actual clock-time trap.
+    SEED_HOUR = 6
+
+    def _dbWithConsecutiveDays(self, dayCount, lastDay, hour=SEED_HOUR):
         tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": []}}
         entries = []
         for offset in range(dayCount):
             day = lastDay - datetime.timedelta(days=offset)
             entries.append({
                 "id": "t1",
-                "playedAt": datetime.datetime(day.year, day.month, day.day, 12,
+                "playedAt": datetime.datetime(day.year, day.month, day.day, hour,
                                                tzinfo=datetime.timezone.utc).timestamp(),
                 "timePlayed": 1000,
             })
@@ -245,6 +254,59 @@ class TestStreakLongerThanTheLookbackWindow(DatabaseTestCase):
         result = db.getCurrentStreak(now=_now(2026, 1, 10))
 
         self.assertGreaterEqual(result["days"], topThreshold)
+
+
+class TestStreakWindowStartIsLocalMidnight(DatabaseTestCase):
+    """The lookback window used to start at `now`'s exact clock time N days
+    back (`nowLocal - timedelta(days=lookbackDays)`) instead of local
+    midnight of the boundary day. A play earlier in that day than `now`'s
+    clock time then fell OUTSIDE the fetched window, so _streakFillsWindow
+    never saw the run reach the window's edge, the loop never widened, and
+    the reported streak silently capped at CURRENT_STREAK_LOOKBACK_DAYS even
+    though the real streak went back further."""
+
+    def _dbWithConsecutiveDays(self, dayCount, lastDay, hour):
+        tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": []}}
+        entries = []
+        for offset in range(dayCount):
+            day = lastDay - datetime.timedelta(days=offset)
+            entries.append({
+                "id": "t1",
+                "playedAt": datetime.datetime(day.year, day.month, day.day, hour,
+                                               tzinfo=datetime.timezone.utc).timestamp(),
+                "timePlayed": 1000,
+            })
+        db = self._makeDb(tracks, entries)
+        db.tz = datetime.timezone.utc
+        return db
+
+    def test_plays_earlier_than_nows_clock_time_are_not_capped(self):
+        from Database.database import CURRENT_STREAK_LOOKBACK_DAYS
+
+        dayCount = CURRENT_STREAK_LOOKBACK_DAYS + 50   # 450: past the initial window
+        lastDay = datetime.date(2026, 1, 10)
+        # Every play at 08:00 local; asked at 18:00 local - the boundary
+        # day's play is earlier in the day than `now`'s clock time, which is
+        # exactly what the old window-start excluded.
+        db = self._dbWithConsecutiveDays(dayCount, lastDay, hour=8)
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10, hour=18))
+
+        self.assertEqual(result["days"], dayCount)
+
+    def test_plays_later_than_nows_clock_time_control(self):
+        from Database.database import CURRENT_STREAK_LOOKBACK_DAYS
+
+        dayCount = CURRENT_STREAK_LOOKBACK_DAYS + 50
+        lastDay = datetime.date(2026, 1, 10)
+        # Control: plays at 20:00, asked at 18:00 - later in the day than
+        # `now`'s clock time, so even the old buggy window-start included
+        # the boundary day. This must stay 450 both before and after the fix.
+        db = self._dbWithConsecutiveDays(dayCount, lastDay, hour=20)
+
+        result = db.getCurrentStreak(now=_now(2026, 1, 10, hour=18))
+
+        self.assertEqual(result["days"], dayCount)
 
 
 if __name__ == "__main__":

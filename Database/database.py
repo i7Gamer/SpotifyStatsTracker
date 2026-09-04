@@ -1480,11 +1480,11 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         nowLocal = now.astimezone(self.tz) if now is not None else datetime.datetime.now(tz=self.tz)
         today = nowLocal.date()
         lookbackDays = CURRENT_STREAK_LOOKBACK_DAYS
-        startTs = (nowLocal - datetime.timedelta(days=lookbackDays)).timestamp()
+        startTs = self._lookbackWindowStartTs(today, lookbackDays)
         play_dates = self._getPlayDateSet(startTs, None)
         while self._streakFillsWindow(today, play_dates, lookbackDays):
             lookbackDays *= 2
-            startTs = (nowLocal - datetime.timedelta(days=lookbackDays)).timestamp()
+            startTs = self._lookbackWindowStartTs(today, lookbackDays)
             play_dates = self._getPlayDateSet(startTs, None)
 
         yesterday = today - datetime.timedelta(days=1)
@@ -1502,6 +1502,19 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
             days += 1
             cursor -= datetime.timedelta(days=1)
         return {"days": days, "activeToday": activeToday}
+
+    def _lookbackWindowStartTs(self, today: datetime.date, lookbackDays: int) -> float:
+        """Local midnight of the day `lookbackDays` before `today`, as a
+        timestamp. Deliberately NOT `nowLocal - timedelta(days=lookbackDays)`:
+        that anchors the window to `now`'s clock time, so a play earlier in
+        the boundary day than `now`'s clock time (e.g. an 08:00 play when
+        asked at 18:00) fell OUTSIDE the fetched window. _streakFillsWindow
+        then read the run as ending inside the window instead of at its edge,
+        the loop never widened, and the streak silently capped at
+        CURRENT_STREAK_LOOKBACK_DAYS regardless of how far it actually went
+        back."""
+        boundaryDay = today - datetime.timedelta(days=lookbackDays)
+        return datetime.datetime.combine(boundaryDay, datetime.time.min, tzinfo=self.tz).timestamp()
 
     @staticmethod
     def _streakFillsWindow(today: datetime.date, playDates: set, lookbackDays: int) -> bool:
