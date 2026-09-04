@@ -157,6 +157,8 @@ The cover and artist image files themselves live beside it in `Database/Data/Med
       # - BACKUP_DIR=/backups        #< where snapshots go; default is Backups/ beside the database
 ```
 
+`BACKUP_RETENTION_COUNT=0` also skips the one-off safety snapshot normally taken right before a version upgrade migrates the database - so if you rely on that instead of an external backup, take a manual snapshot from `/admin` before upgrading.
+
 By default these snapshots live on the same disk as the database, so they protect against corruption and accidental deletion but not against losing the disk - one failure takes the database and every snapshot of it together.
 
 `BACKUP_DIR` is how you fix that without any scripting of your own: point it at a path on another disk, or at a mount of somewhere off the machine entirely (a NAS, an SMB/NFS share, a cloud-storage mount). Mount that location into the container and name it here:

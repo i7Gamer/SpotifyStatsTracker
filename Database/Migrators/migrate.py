@@ -8,8 +8,18 @@ except ModuleNotFoundError:
     from base import resolveRuntimeDir, BaseMigrator
     import dbversion
 
+import logging
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+
+# configureLogging() (Database/logging_config.py) always runs before
+# migrateIfNeeded() - it's the first line of SpotifyDashboardApp.__init__ - so
+# this reaches a configured handler in the one place that matters. dev.py's
+# standalone migrator run and this module's own print() calls predate that
+# guarantee and are left as-is; only the new skip-notice below needs an
+# actual log level (a test asserts on it), so nothing else in this file was
+# converted.
+logger = logging.getLogger(__name__)
 
 # The oldest database version with a surviving migrator. Everything below it
 # is the JSON-file era (history.json/entries.json/tracks.json): those six
@@ -107,22 +117,41 @@ def _snapshotBeforeMigrating(runtimeDir: Path) -> None:
     Best-effort: a database that doesn't exist yet (pre-1.7.0, JSON-history
     era, or a fresh install) has nothing to snapshot, and a failed snapshot
     must never block startup - migrating with no extra safety net is still
-    better than refusing to start at all."""
+    better than refusing to start at all.
+
+    Skipped entirely when the operator has disabled backups
+    (BACKUP_RETENTION_COUNT=0 or BACKUP_INTERVAL_HOURS=0, i.e.
+    BackupWorker.isEnabled() is False): before this check, retention 0 still
+    left the SCHEDULED backup worker inert (see isEnabled/_rotate) while this
+    one-off call kept writing a full, unrotated copy of the database into
+    Backups/ on every minor upgrade - unbounded growth for exactly the
+    operator who said "no automatic backups" (F-B-3, 2026-09-04 review).
+    Honoring the same switch here removes that operator's last automatic
+    recovery point for a migration gone wrong; the README says to take a
+    manual snapshot from /admin first if that matters to them."""
     dbPath = runtimeDir / "spotify_stats.db"
     if not dbPath.exists():
         return
     try:
-        from Database.backup import BackupWorker
+        from Database.backup import BackupWorker, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR
     except ModuleNotFoundError:
-        from backup import BackupWorker
+        from backup import BackupWorker, BACKUP_INTERVAL_ENV_VAR, BACKUP_RETENTION_ENV_VAR
+    # No backupDir on purpose: the operator's BACKUP_DIR governs this
+    # snapshot exactly like the scheduled ones - off-disk protection matters
+    # most at the riskiest write of the boot. The trade is that a BACKUP_DIR
+    # mount that is down at boot costs this snapshot (caught below, startup
+    # continues), which the beside-the-db default never risked.
+    # test_migration_chain pins this call shape.
+    worker = BackupWorker(dbPath=dbPath)
+    if not worker.isEnabled():
+        logger.info(
+            "Skipping pre-migration snapshot: backups are disabled (%s=%s, %s=%s).",
+            BACKUP_INTERVAL_ENV_VAR, worker.intervalHours,
+            BACKUP_RETENTION_ENV_VAR, worker.retentionCount,
+        )
+        return
     try:
-        # No backupDir on purpose: the operator's BACKUP_DIR governs this
-        # snapshot exactly like the scheduled ones - off-disk protection
-        # matters most at the riskiest write of the boot. The trade is that a
-        # BACKUP_DIR mount that is down at boot costs this snapshot (caught
-        # below, startup continues), which the beside-the-db default never
-        # risked. test_migration_chain pins this call shape.
-        BackupWorker(dbPath=dbPath).runBackup()
+        worker.runBackup()
     except Exception as e:
         print(f"Pre-migration snapshot failed (continuing without it): {e}")
 

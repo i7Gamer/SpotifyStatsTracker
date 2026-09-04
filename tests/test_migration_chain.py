@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import Database.backup as backupModule
 import Database.Migrators.base as migratorBase
 import Database.Migrators.migrate as migrateModule
 from Database.Migrators import dbversion
@@ -318,6 +319,59 @@ class TestPreMigrationSnapshot(MigrationChainTestCase):
             self._runChain()
 
         mockSnapshot.assert_not_called()
+
+
+class TestPreMigrationSnapshotSkippedWhenBackupsAreDisabled(MigrationChainTestCase):
+    """F-B-3 (2026-09-04 review, LOW/DEBT): retentionCount=0 already disables
+    the SCHEDULED backup worker (BackupWorker.isEnabled()), but this one-off
+    snapshot ran regardless - every minor upgrade wrote a full, unrotated copy
+    of the database into Backups/ for an operator who set retention 0
+    specifically because they back up externally (~105 MB per upgrade,
+    ~2/month lately, on the live instance's measured DB size). Honoring
+    isEnabled() here removes that one recovery point for such an operator;
+    the README now says to take a manual snapshot from /admin first if
+    wanted.
+
+    A REAL BackupWorker, not a MagicMock, on purpose: the existing
+    TestPreMigrationSnapshot tests patch Database.backup.BackupWorker with a
+    MagicMock, whose isEnabled() is truthy by construction - it would not
+    have caught this fix's default going the wrong way (isEnabled() reading
+    False when it shouldn't, or vice versa)."""
+
+    def _envWithBackupsConfigured(self, *, retentionCount: int, intervalHours: int = 24):
+        # BACKUP_DIR cleared too: an unset value means "beside the database"
+        # (see BackupWorker._configuredBackupDir), and this test must not
+        # inherit whatever the host happens to have set.
+        return {
+            backupModule.BACKUP_RETENTION_ENV_VAR: str(retentionCount),
+            backupModule.BACKUP_INTERVAL_ENV_VAR: str(intervalHours),
+            backupModule.BACKUP_DIR_ENV_VAR: "",
+        }
+
+    def test_no_snapshot_file_appears_and_the_skip_is_logged(self):
+        self._seedDatabase()
+        backupDir = self.dbPath.parent / backupModule.BACKUP_DIR_NAME
+
+        with patch.dict(os.environ, self._envWithBackupsConfigured(retentionCount=0)), \
+             self.assertLogs(migrateModule.logger, level="INFO") as logs:
+            migrateModule._snapshotBeforeMigrating(self.runtimeDir)
+
+        self.assertFalse(backupDir.exists(), "a snapshot was written despite retention=0")
+        skipMessages = [m for m in logs.output if "Skipping pre-migration snapshot" in m]
+        self.assertEqual(len(skipMessages), 1, logs.output)
+        self.assertIn(backupModule.BACKUP_INTERVAL_ENV_VAR, skipMessages[0])
+        self.assertIn(backupModule.BACKUP_RETENTION_ENV_VAR, skipMessages[0])
+
+    def test_a_real_snapshot_is_still_written_when_backups_are_enabled(self):
+        self._seedDatabase()
+        backupDir = self.dbPath.parent / backupModule.BACKUP_DIR_NAME
+
+        with patch.dict(os.environ, self._envWithBackupsConfigured(retentionCount=7)):
+            migrateModule._snapshotBeforeMigrating(self.runtimeDir)
+
+        self.assertTrue(backupDir.exists())
+        snapshots = [p for p in backupDir.iterdir() if p.is_file()]
+        self.assertEqual(len(snapshots), 1, snapshots)
 
 
 class TestTheRealRuntimeDirectoryIsNeverTouched(MigrationChainTestCase):
