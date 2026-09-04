@@ -185,6 +185,12 @@ class _ImportRunState:
         self.pendingImageTracks: dict[str, dict] = {}  #< tracks awaiting saveImagesFromTrack() once a
                                                    #  deferred-commit batch actually commits (same reason
                                                    #  as correctedYears - image-claiming self-commits too)
+        self.retryableDroppedTotal: int = 0       #< sum of RETRYABLE_DROP_STAT_KEYS across every file this
+                                                   #  run has actually committed, so a multi-file append
+                                                   #  batch can name the count on its own final progress
+                                                   #  line - the per-file line _applyImportData writes is
+                                                   #  overwritten in import_progress by the next file's, and
+                                                   #  by the batch's own summary after the last one
 
     def isOwnWrite(self, trackId: str, play: dict) -> bool:
         return play["id"] in self.claimedRowIds or (trackId, play["played_at"]) in self.insertedPlayKeys

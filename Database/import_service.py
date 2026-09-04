@@ -729,6 +729,19 @@ class ImportMixin:
                         _dbmod.convertToDatetime(earliestTouchedTimestamp, tz=self.tz).year)
                 self._invalidateWrappedFromEarliestOf(touchedYears, "Import")
 
+                # Only reached once this file's write has actually committed
+                # (an exception above jumps straight to the except below and
+                # never gets here), so a file whose commit itself fails is
+                # never double-counted here and again on a later re-import.
+                # A multi-file append batch (_importHistoryBatchLocked) sums
+                # this across every file for its own final progress line,
+                # which otherwise overwrites this per-file line in
+                # import_progress before the user's browser ever polls it -
+                # the overwrite batch never reaches this branch with a
+                # nonzero count (_guardStagedDrops aborts it first), so this
+                # accumulator stays 0 there.
+                runState.retryableDroppedTotal += retryableDropped
+
             droppedNoTrack = importStats.get("droppedNoTrack", 0)
             summary = (f"{insertedCount} new, {updatedCount} corrected, {enrichedCount} enriched, "
                        f"{skipsSavedCount} skips saved")
@@ -879,7 +892,18 @@ class ImportMixin:
         else:
             status, message = "complete", (f"Imported {succeededCount}/{total} files "
                                            f"({skippedCount} skipped, {failedCount} failed{failureNote})")
-        self.writeProgress(status, total, total, message + unreadableNote,
+        # runState.retryableDroppedTotal is the sum _applyImportData added per
+        # committed file (see its comment there). This line is the ONLY one
+        # import_progress still holds once the batch has finished - every
+        # per-file "Import complete: ..." line naming its own drops (66c4a3a)
+        # is overwritten in turn by the next file's line and finally by this
+        # one, so a drop that never reaches here never reaches the /import
+        # page at all. Zero for an all-skipped/all-failed batch, since a
+        # skipped file never runs _applyImportData and a failed one raised
+        # before its accumulation point.
+        retryableNote = (f" {runState.retryableDroppedTotal} could not be looked up "
+                         "(re-import the affected file(s) to retry them)." if runState.retryableDroppedTotal else "")
+        self.writeProgress(status, total, total, message + unreadableNote + retryableNote,
                            error=bool(failedCount or unreadableFileCount))
         return outcomes
 

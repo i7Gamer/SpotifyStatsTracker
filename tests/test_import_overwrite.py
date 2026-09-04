@@ -806,6 +806,31 @@ class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
         self.assertEqual(outcomes, ["skipped"])
         self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019)])
 
+    def test_batch_final_line_also_reports_retryable_drops(self):
+        """66c4a3a put the retryable-drop count on the PER-FILE completion
+        line (see test_a_retryable_drop_leaves_the_file_unmarked...), but
+        _importHistoryBatchLocked writes its own final "Imported N/M files"
+        line after every file - see _runAppendBatchCapturingMessages's
+        docstring: that line overwrites the per-file one in import_progress.
+        So the count landed somewhere the /import page never renders. What
+        the user's browser actually polls is db.readProgress() once the
+        batch has finished, which must name the drop too."""
+        db = self._seededDb()
+        content = "file 2019"
+        importer = self._mockImporter(self._fileSpecs())
+
+        def importHistoryDroppingOne(*args, stats=None, **kwargs):
+            stats["droppedTransient"] = 1   #< the lookup for a second play failed
+            return iter([_meta("new19", _ts(2019, 3))])
+
+        importer.importHistory.side_effect = importHistoryDroppingOne
+        with patch("Database.database.Importer", return_value=importer):
+            outcomes = db.importHistoryBatch([content], overwriteRange=False)
+
+        self.assertEqual(outcomes, ["imported"])
+        finalMessage = db.readProgress()["message"]
+        self.assertIn("1 could not be looked up", finalMessage)
+        self.assertIn("re-import", finalMessage)
 
 
 class TestOverwriteAbortsOnAnUnreadableUpload(_OverwriteTestBase):
