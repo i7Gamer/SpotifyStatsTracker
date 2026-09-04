@@ -28,7 +28,7 @@ from services.deploy_state import deployMismatch, sourceFingerprint
 from services.email_worker import EMAIL_WORKER
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
-from Database.secret_store import readOrCreateKeyFile, FLASK_SECRET_KEY_ENV_VAR
+from Database.secret_store import readOrCreateKeyFile, FLASK_SECRET_KEY_ENV_VAR, keyFingerprint
 from Database.Listeners.spotifyListener import _suppress_signal_in_thread
 from Database.Spotify.recentlyPlayed import setPushListenerEnabledHook as patch_push_listener_hook
 from Database.logging_config import configureLogging
@@ -191,6 +191,20 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             self.app.wsgi_app = ProxyFix(self.app.wsgi_app, x_for=proxyHops, x_proto=proxyHops, x_host=proxyHops)
         self.baseDir = Path(__file__).resolve().parent
         self.app.secret_key = self._get_or_create_secret_key()
+        # Evaluate the data-encryption key material now too, right after the
+        # Flask signing key above and OUTSIDE any try/except - the only other
+        # boot-time touch is _logIntegrityProbe's countSecretsUnderAnotherKey
+        # probe below, which is wrapped in `except Exception: logger.debug(...)`
+        # so it can't be trusted to refuse anything. Without this call, a
+        # DATA_ENCRYPTION_KEY placeholder or an emptied
+        # secrets/data_encryption_key.txt let the app boot clean, health-check
+        # green, and 500 on every login/page instead of refusing to start
+        # (F-B-1, 2026-09-04 review). Accepted side effect: with neither key
+        # env var set, this now MINTS secrets/data_encryption_key.txt here
+        # instead of at first encrypt/decrypt - same file, just earlier - and
+        # an EMPTY key file refuses boot instead of silently being accepted
+        # later (see readOrCreateKeyFile's emptyFileError).
+        keyFingerprint()
         self.app.permanent_session_lifetime = timedelta(days=PERMANENT_SESSION_LIFETIME_DAYS)
         # Session cookie hardening. HttpOnly (Flask's default) keeps JS off the
         # cookie; SameSite=Lax stops it riding cross-site POSTs. Secure is gated

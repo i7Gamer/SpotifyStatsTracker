@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from app import (SpotifyDashboardApp, PLACEHOLDER_FLASK_SECRET_KEY,
                  SECRETS_DIR_NAME, FLASK_SECRET_KEY_FILENAME)
+import Database.secret_store as secretStore
 from Database.secret_store import FLASK_SECRET_KEY_ENV_VAR, KEY_FILE_MODE
 from _app_factory import makeApp
 
@@ -187,6 +188,64 @@ class TestPlaceholderSecretKeyRefused(unittest.TestCase):
 
     def test_real_key_is_returned(self):
         self.assertEqual(self._call("a-real-random-value"), "a-real-random-value")
+
+
+class TestPlaceholderDataEncryptionKeyRefusesConstruction(unittest.TestCase):
+    """F-B-1 (2026-09-04 review): _keyMaterial's placeholder/empty-file guards
+    (Database/secret_store.py) used to be reached only lazily - the sole
+    boot-time caller was _logIntegrityProbe's countSecretsUnderAnotherKey
+    probe, itself wrapped in `except Exception: logger.debug(...)` - so the
+    app booted clean, health-checked green, and 500'd on every login instead
+    of refusing to start. SpotifyDashboardApp.__init__ now calls
+    keyFingerprint() right after _get_or_create_secret_key(), outside any
+    try/except, so this refuses exactly like TestPlaceholderSecretKeyRefused's
+    Flask-key guard above.
+
+    Deliberately NOT _app_factory.makeApp(): it patches Path.exists to always
+    return False for the duration of construction, which would make an
+    EXISTING (possibly empty) key file indistinguishable from a missing one -
+    exactly the distinction these tests exercise. _get_or_create_secret_key and
+    migrateIfNeeded are patched here instead, the same two _app_factory always
+    patches, so this never touches the real secrets/flask key file or a real
+    database."""
+
+    def _construct(self):
+        with patch("app.SpotifyDashboardApp._get_or_create_secret_key", return_value="test-secret-key"), \
+             patch("app.migrateIfNeeded"):
+            return SpotifyDashboardApp()
+
+    def test_the_shipped_placeholder_refuses_construction(self):
+        with patch.dict(os.environ, {secretStore.ENCRYPTION_KEY_ENV_VAR:
+                                      secretStore.PLACEHOLDER_DATA_ENCRYPTION_KEY}):
+            with self.assertRaises(RuntimeError) as caught:
+                self._construct()
+        # The message names the env var and says "placeholder" - not the
+        # placeholder string itself, same as the real RuntimeError text.
+        self.assertIn(secretStore.ENCRYPTION_KEY_ENV_VAR, str(caught.exception))
+        self.assertIn("placeholder", str(caught.exception))
+
+    def test_an_empty_key_file_refuses_construction(self):
+        # conftest's _isolateEncryptionKey redirects DEFAULT_KEY_PATH at a
+        # per-test tmp path and delenvs both key env vars, so writing an empty
+        # file there (rather than the real secrets/data_encryption_key.txt)
+        # reproduces "a database restored without its matching key file".
+        secretStore.DEFAULT_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        secretStore.DEFAULT_KEY_PATH.write_text("", encoding="utf-8")
+
+        with self.assertRaises(RuntimeError) as caught:
+            self._construct()
+        self.assertIn("Restore it from a backup", str(caught.exception))
+
+    def test_normal_construction_still_works_and_mints_the_key_file(self):
+        """The accepted regression risk: with neither env var set and no key
+        file yet, the data-encryption key is now minted at construction
+        instead of at first encrypt/decrypt - same file, earlier."""
+        self.assertFalse(secretStore.DEFAULT_KEY_PATH.exists())
+
+        dash = makeApp()
+
+        self.assertTrue(secretStore.DEFAULT_KEY_PATH.exists())
+        self.assertTrue(secretStore.DEFAULT_KEY_PATH.read_text(encoding="utf-8").strip())
 
 
 class TestFlaskSecretKeyFile(unittest.TestCase):

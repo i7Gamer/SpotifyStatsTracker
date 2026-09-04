@@ -55,9 +55,14 @@ FLASK_SECRET_KEY_ENV_VAR = "FLASK_SECRET_KEY"
 # every stored session and API secret under a string published in this repo -
 # and since this encryption only ever protects a database file that has LEFT
 # the host, a publicly-known key means it protects nothing at all. _keyMaterial
-# refuses to start on this exact value, the same way app.py's
-# _get_or_create_secret_key refuses on PLACEHOLDER_FLASK_SECRET_KEY (config.py);
-# that guard existed from the start and this half was simply never written.
+# refuses to start on this exact value; app.py's __init__ calls
+# keyFingerprint() (which resolves through _keyMaterial) right after
+# _get_or_create_secret_key() - its own guard against
+# PLACEHOLDER_FLASK_SECRET_KEY (config.py) - so both placeholders now refuse
+# construction the same way. That call was added 2026-09-04 (F-B-1): before
+# it, this guard was reachable only through a boot-time probe swallowed by
+# `except Exception: logger.debug(...)`, so the refusal never actually
+# stopped the app from starting.
 #
 # Kept here rather than beside its twin in config.py because this module owns
 # every other key-resolution name (both env vars above, DEFAULT_KEY_PATH) and
