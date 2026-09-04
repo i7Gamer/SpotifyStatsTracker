@@ -1077,7 +1077,16 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             #< the same helper every diagnostic gate reads, so Flask's debug mode
             #  and the app's verbose logging can never disagree about one value
             debug = flaskDebugEnabled()
-            self.app.run(host="0.0.0.0", debug=debug, port=DEFAULT_PORT, use_reloader=False)#, threaded=False)
+            # use_debugger=False on purpose (F-B-2, 2026-09-04 review): Flask's
+            # own app.run() does `options.setdefault("use_debugger", self.debug)`,
+            # so debug=True alone also switched on the interactive Werkzeug
+            # console on 0.0.0.0 - reachable to anyone on the LAN, guarded only
+            # by a PIN whose derivation is a known target. FLASK_DEBUG is
+            # documented (README, docker-compose.yml) as a logging knob, not as
+            # "expose a code-execution console"; debug= still drives
+            # flaskDebugEnabled()'s shared logging gate.
+            self.app.run(host="0.0.0.0", debug=debug, use_debugger=False,
+                         port=DEFAULT_PORT, use_reloader=False)#, threaded=False)
         finally:
             self.shutdown()
 

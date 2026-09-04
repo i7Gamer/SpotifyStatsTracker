@@ -303,5 +303,56 @@ class TestFlaskSecretKeyFile(unittest.TestCase):
         self.assertEqual(self.keyFile.stat().st_mode & 0o777, KEY_FILE_MODE)
 
 
+class TestDevRunDisablesTheInteractiveDebugger(unittest.TestCase):
+    """F-B-2 (2026-09-04 review, LOW): Flask's own app.run() does
+    `options.setdefault("use_debugger", self.debug)`, so
+    self.app.run(debug=debug, ...) - with no use_debugger of its own - also
+    flips on the interactive Werkzeug debugger whenever FLASK_DEBUG=1.
+    README/docker-compose document FLASK_DEBUG as a logging knob ("enable
+    when reporting an issue"), not as "expose a code-execution console to
+    the LAN" - which is what an unhandled exception under `python app.py`
+    would do, guarded only by a PIN whose MAC+machine-id derivation is a
+    well-known target. use_debugger=False keeps debug= driving
+    flaskDebugEnabled()'s shared logging gate while pinning the debugger
+    off; the shipped path (wsgi.py/waitress, the live start.bat) never
+    reaches app.run() at all, so this only protects the README's
+    "Local Development" entry point.
+
+    Every worker-start seam is stubbed the way
+    test_app_worker_lifecycle.py's _appWithStubbedWorkers does, since
+    run() calls startWorkers() before app.run() - this test cares only
+    about the kwargs app.run() is called with, never about a real
+    server or real background threads."""
+
+    def _runWithStubs(self, env):
+        with patch("app.SpotifyDashboardApp._get_or_create_secret_key", return_value="test-secret-key"), \
+             patch("app.migrateIfNeeded"), \
+             patch("app.Path.exists", return_value=False), \
+             patch("app.BackupWorker.start"), \
+             patch("app.EMAIL_WORKER"), \
+             patch("app.SpotifyDashboardApp.startVersionCheck_thread"), \
+             patch("app.SpotifyDashboardApp.checkLogin_thread"), \
+             patch.dict(os.environ, env):
+            dashboard = SpotifyDashboardApp()
+            with patch.object(dashboard.app, "run") as mockRun:
+                dashboard.run()
+        return mockRun
+
+    def test_flask_debug_enabled_does_not_enable_the_interactive_debugger(self):
+        mockRun = self._runWithStubs({"FLASK_DEBUG": "1"})
+
+        mockRun.assert_called_once()
+        kwargs = mockRun.call_args.kwargs
+        self.assertTrue(kwargs["debug"])          #< still drives the shared logging gate
+        self.assertFalse(kwargs["use_debugger"])  #< the Werkzeug console must stay off
+
+    def test_flask_debug_disabled_leaves_the_debugger_off_too(self):
+        mockRun = self._runWithStubs({"FLASK_DEBUG": "0"})
+
+        kwargs = mockRun.call_args.kwargs
+        self.assertFalse(kwargs["debug"])
+        self.assertFalse(kwargs["use_debugger"])
+
+
 if __name__ == "__main__":
     unittest.main()
