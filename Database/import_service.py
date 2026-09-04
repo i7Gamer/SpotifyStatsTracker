@@ -383,20 +383,21 @@ class ImportMixin:
 
         return stagedTracks, stagedPlays, total, importStats
 
-    def _applySkipEntry(self, track_id, played_at, time_played, extras, runState) -> int:
-        """Sub-5s events (entry["isSkip"], the fixed import floor) never
-        claim or correct a real play row - they match only against
-        other skips. plays' UNIQUE constraint alone wasn't enough: the
-        live listener records the same physical event, and the two
-        sources' played_at can differ by seconds (Spotify's
+    def _claimNearbySkip(self, track_id, played_at, runState) -> bool:
+        """Claim the nearest existing skip row (is_skip=1) of this track
+        within SKIP_NEAR_TIME_TOLERANCE_SECONDS of played_at, if there is
+        one - the one physical event the live listener already recorded
+        for this entry. plays' UNIQUE constraint alone wasn't enough: the
+        two sources' played_at can differ by seconds (Spotify's
         start-vs-end ambiguity), so one skip landed twice and inflated
         skip counts.
 
-        The apply loop's per-entry dispatch calls this and always
-        `continue`s afterward - this branch fully owns the entry once
-        isSkip fires. Returns 1 when a new skip play was inserted, 0 when
-        an existing nearby skip was claimed instead (so the caller's
-        skipsSavedCount only counts genuine new rows)."""
+        Returns True when a row was claimed (the entry is already
+        recorded; insert nothing), False when there is nothing to claim.
+        Shared by the two callers that store an entry as a skip: the
+        sub-floor skip path (_applySkipEntry) and the real-play path once
+        it has found nothing to correct - see the dispatch comment in
+        _applyImportData for why they are two paths at all."""
         nearbySkips = [
             skip for skip in self.repo.getSkipsNearTime(
                 self.user, track_id, played_at, SKIP_NEAR_TIME_TOLERANCE_SECONDS)
@@ -405,16 +406,31 @@ class ImportMixin:
             # into one (same rule as the real-play path's near-time match).
             if not runState.isOwnWrite(track_id, skip)
         ]
-        if nearbySkips:
-            # Claim it, exactly as the real-play path does. An
-            # unclaimed match stayed a candidate for every LATER
-            # entry too, so a second genuine skip inside the same
-            # 10s window matched the same row and was dropped as a
-            # duplicate - silently, and counted by nothing. Nearest
-            # first, so which entry pairs with which row does not
-            # depend on the order the query returned them in.
-            closest = min(nearbySkips, key=lambda skip: abs(skip["played_at"] - played_at))
-            runState.claimedRowIds.add(closest["id"])
+        if not nearbySkips:
+            return False
+        # Claim it, exactly as the real-play path does. An
+        # unclaimed match stayed a candidate for every LATER
+        # entry too, so a second genuine skip inside the same
+        # 10s window matched the same row and was dropped as a
+        # duplicate - silently, and counted by nothing. Nearest
+        # first, so which entry pairs with which row does not
+        # depend on the order the query returned them in.
+        closest = min(nearbySkips, key=lambda skip: abs(skip["played_at"] - played_at))
+        runState.claimedRowIds.add(closest["id"])
+        return True
+
+    def _applySkipEntry(self, track_id, played_at, time_played, extras, runState) -> int:
+        """Sub-5s events (entry["isSkip"], the fixed import floor) never
+        claim or correct a real play row - they match only against
+        other skips (see _claimNearbySkip for why matching against
+        skips is needed at all).
+
+        The apply loop's per-entry dispatch calls this and always
+        `continue`s afterward - this branch fully owns the entry once
+        isSkip fires. Returns 1 when a new skip play was inserted, 0 when
+        an existing nearby skip was claimed instead (so the caller's
+        skipsSavedCount only counts genuine new rows)."""
+        if self._claimNearbySkip(track_id, played_at, runState):
             return 0
         if self.repo.insertPlay(self.user, track_id, played_at, time_played,
                                 created_reason=f"history_import (user: {self.user})",
@@ -585,8 +601,17 @@ class ImportMixin:
                 # the floor that the classifier calls a skip (a high admin
                 # threshold) still goes to the real-play path, because it may
                 # legitimately be a correction of an existing longer play, and
-                # this path cannot correct. See _applySkipEntry for why a
-                # sub-5s event never claims or corrects a real play row.
+                # this path cannot correct. That path's matcher only sees real
+                # plays, though, so when the listener already recorded the
+                # same event - classified is_skip=1 under the same threshold -
+                # there is nothing to correct and the twin was invisible: a
+                # second skip row landed seconds away, and every 5-30s abandon
+                # the listener caught counted twice after the yearly export.
+                # So the real-play path claims a nearby skip row too, but only
+                # AFTER it has found nothing to correct (see the insert below):
+                # a correction of a longer play still wins first. See
+                # _applySkipEntry for why a sub-5s event never claims or
+                # corrects a real play row.
                 if entry.get("isSkip") and isSkip:
                     skipsSavedCount += self._applySkipEntry(track_id, played_at, time_played,
                                                             entry.get("importExtras"), runState)
@@ -642,8 +667,21 @@ class ImportMixin:
                             )
                         continue
 
-                # If no matches, proceed to insert as usual, with the is_skip
-                # computed above from the batch threshold + this track's duration.
+                # No real play to correct. An entry the classifier calls a skip
+                # is stored as one, so before inserting it, look for the skip
+                # row the listener may already hold for this same event - the
+                # matcher above filters is_skip=0 and cannot see it (see the
+                # dispatch comment). Same claim-the-nearest rule and tolerance
+                # as the sub-floor skip path; a claimed twin is the entry
+                # already recorded, and counts as nothing new. This is the
+                # real-play path's own tight second look, not a widening of
+                # the matcher: the duration-wide window above would swallow a
+                # genuine second abandon of the same track later in a session.
+                if isSkip and self._claimNearbySkip(track_id, played_at, runState):
+                    continue
+
+                # Otherwise insert as usual, with the is_skip computed above
+                # from the batch threshold + this track's duration.
                 if self.repo.insertPlay(self.user, track_id, played_at, time_played, played_from,
                                         created_reason=f"history_import (user: {self.user})",
                                         extras=entry.get("importExtras"), is_skip=isSkip):
