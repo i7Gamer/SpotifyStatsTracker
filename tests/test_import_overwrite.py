@@ -730,6 +730,82 @@ class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
         self.assertEqual(outcomes, ["imported"])
         self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019)])   #< ordered by played_at
 
+    def _runAppendBatchCapturingMessages(self, db, importer, content):
+        """One append-mode batch of `content` through `importer`, returning
+        (outcomes, every progress message written). The batch's own summary
+        line overwrites the per-file completion line in import_progress, so
+        the completion line is only observable on the way past."""
+        capturedMessages = []
+        originalWriteProgress = db.writeProgress
+
+        def captureWriteProgress(status, current=0, total=0, message="", error=False):
+            capturedMessages.append(message)
+            originalWriteProgress(status, current, total, message, error)
+
+        db.writeProgress = captureWriteProgress
+        try:
+            with patch("Database.database.Importer", return_value=importer):
+                outcomes = db.importHistoryBatch([content], overwriteRange=False)
+        finally:
+            db.writeProgress = originalWriteProgress
+        return outcomes, capturedMessages
+
+    def test_a_retryable_drop_leaves_the_file_unmarked_so_a_reimport_retries_it(self):
+        """The test above and the importer's own drop comment both promise
+        that "a later re-import picks it up". It could not: the apply phase
+        recorded the file's content hash regardless of the drop counters, and
+        the append batch answers a known hash with "skipped" before the
+        importer is even built - so the recovery the log line tells the user
+        to try was refused as "already imported", and the dropped plays were
+        gone for good unless the user edited the file or ran an overwrite.
+
+        The hash's job is to stop a COMPLETE import repeating. A file with
+        retryable drops is not one, so it stays unmarked and re-imports in
+        full; the plays that did land dedup against themselves."""
+        db = self._seededDb()
+        content = "file 2019"
+
+        droppingImporter = self._mockImporter(self._fileSpecs())
+
+        def importHistoryDroppingOne(*args, stats=None, **kwargs):
+            stats["droppedTransient"] = 1   #< the lookup for a second play failed
+            return iter([_meta("new19", _ts(2019, 3))])
+
+        droppingImporter.importHistory.side_effect = importHistoryDroppingOne
+        firstOutcomes, firstMessages = self._runAppendBatchCapturingMessages(db, droppingImporter, content)
+
+        healthyImporter = self._mockImporter(self._fileSpecs())
+        healthyImporter.importHistory.side_effect = lambda *args, stats=None, **kwargs: iter([
+            _meta("new19", _ts(2019, 3)),       #< already landed: dedups
+            _meta("retried19", _ts(2019, 5)),   #< the play the outage dropped
+        ])
+        secondOutcomes, _ = self._runAppendBatchCapturingMessages(db, healthyImporter, content)
+
+        self.assertEqual(firstOutcomes, ["imported"])
+        self.assertEqual(secondOutcomes, ["imported"])   #< not "skipped"
+        self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019, 5), _ts(2019)])
+        completionLines = [m for m in firstMessages if "Import complete" in m]
+        self.assertEqual(len(completionLines), 1)
+        #< the drop is named, with the count, and the user is told what retries it
+        self.assertIn("1 could not be looked up", completionLines[0])
+        self.assertIn("re-import", completionLines[0])
+
+    def test_a_clean_append_import_is_still_hash_marked(self):
+        """The other half of the rule: no retryable drop, and the second run
+        of the same file is refused as before."""
+        db = self._seededDb()
+        content = "file 2019"
+
+        outcomes = None
+        for _ in range(2):
+            importer = self._mockImporter(self._fileSpecs())
+            importer.importHistory.side_effect = lambda *args, stats=None, **kwargs: iter(
+                [_meta("new19", _ts(2019, 3))])
+            outcomes, _messages = self._runAppendBatchCapturingMessages(db, importer, content)
+
+        self.assertEqual(outcomes, ["skipped"])
+        self.assertEqual(self._playedAts(db), [_ts(2019, 3), _ts(2019)])
+
 
 
 class TestOverwriteAbortsOnAnUnreadableUpload(_OverwriteTestBase):

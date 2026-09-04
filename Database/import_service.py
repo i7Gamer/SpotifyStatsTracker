@@ -30,7 +30,9 @@ from Database.utils import flaskDebugEnabled
 # Drop counters (see StreamingHistoryImporter._processPlay) whose plays WOULD
 # import on a later attempt: the lookup failed, the data didn't. An overwrite
 # import must not delete a range it can't fully rebuild, so any of these aborts
-# the batch. "droppedNoTrack" is deliberately absent - podcast/audiobook rows
+# the batch; an append import still lands what it can, but must not mark the
+# file's hash as imported, or the re-import that would retry them is refused
+# (see _applyImportData). "droppedNoTrack" is deliberately absent - podcast/audiobook rows
 # carry no track name and can never resolve, so treating them as retryable
 # would make overwrite import impossible for most real exports.
 RETRYABLE_DROP_STAT_KEYS = ("droppedTransient", "droppedUnexpected")
@@ -649,7 +651,19 @@ class ImportMixin:
                     earliestTouchedTimestamp = _minTimestamp(earliestTouchedTimestamp, played_at)
                 runState.insertedPlayKeys.add((track_id, played_at))
 
-            if track_file_hash:
+            # The hash's job is to stop a COMPLETE import of this file from
+            # repeating. A file whose plays were partly dropped for a retryable
+            # reason (see RETRYABLE_DROP_STAT_KEYS) is not one: the importer's
+            # own drop log line tells the user to re-import it, and the append
+            # batch answers a marked hash with "skipped" before it builds an
+            # Importer - so marking it here made that advice impossible to
+            # follow. Left unmarked, the re-import runs in full and the plays
+            # that did land dedup against themselves. (A deterministic
+            # per-entry failure therefore re-imports in full on every drop of
+            # the file; dedup absorbs the rows, and only the still-missing
+            # tracks are looked up again.)
+            retryableDropped = sum(importStats.get(key, 0) for key in RETRYABLE_DROP_STAT_KEYS)
+            if track_file_hash and not retryableDropped:
                 self.repo.markFileImported(self.user, _exportContentHash(exportedHistory))
 
             if deferCommit:
@@ -682,6 +696,12 @@ class ImportMixin:
                        f"{skipsSavedCount} skips saved")
             if droppedNoTrack:
                 summary += f", {droppedNoTrack} without track info dropped"
+            if retryableDropped:
+                #< the same count that withheld the hash mark above - named
+                #  here because until now these drops reached only the server
+                #  log, and the user was told "Import complete" over them
+                summary += (f", {retryableDropped} could not be looked up "
+                            "(re-import this file to retry them)")
             _dbmod.logger.info("Imported %d tracks for user %s: %s", len(stagedTracks), self.user, summary)
 
             status = "complete" if isFinalFile else "running"
