@@ -190,10 +190,11 @@ def register(app, dashboard):
         # startDate/endDate ride along whenever they are set, rather than only
         # for interval == "custom" - deliberately matching what
         # _buildPaginationContext already puts in every page link, so the first
-        # load and the links below it agree. (These pages treat "both dates
-        # present" as the custom range being active; see _page_card.html's
-        # option, which has always selected Custom on that condition rather
-        # than on the interval value.)
+        # load and the links below it agree. (The dates only ever APPLY under
+        # interval == "custom" - see dashboard/date_ranges.py's
+        # _getDateRange - so carrying them here for another interval is inert
+        # filter state, not a second way to select Custom; the card's
+        # customActive in _page_card.html is keyed on interval alone.)
         listArgs = {
             "q": filters["searchQuery"],
             "sortBy": filters["sortBy"],

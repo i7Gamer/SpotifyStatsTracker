@@ -21,6 +21,7 @@ htmx page, in tests/test_ajax_unauthenticated.py. Eight copies of it lived
 here and in the sibling files, and only half checked all three things.
 """
 import os
+import re
 import sys
 import unittest
 from unittest.mock import ANY, patch
@@ -217,6 +218,62 @@ class TestShell(TopListHtmxTestCase):
                 self.assertIn("interval=week", body)
                 self.assertIn("q=abc", body)
                 self.assertIn("sortBy=plays", body)
+
+
+class TestCustomDateSelection(TopListHtmxTestCase):
+    """_page_card.html's customActive (2026-09-04 review, F-C-2): a URL naming
+    a real interval (e.g. ?interval=year) but ALSO carrying startDate/endDate -
+    a stale bookmark from before f79d1cf, or a hand-edited link - must not
+    select "Custom Date Range" in the card while listUrl still asks for
+    `year`'s data. dashboard/date_ranges.py only ever applies the dates under
+    interval == "custom" (routes/charts.py's _topListShell carries them
+    unconditionally so page links stay consistent, not because another
+    interval reads them), so the card must key off interval alone, same as
+    history.html/genres.html/charts.html/tracks.html."""
+
+    _INTERVAL_SELECT = re.compile(
+        r'<select name="interval" id="interval"[^>]*>(.*?)</select>', re.DOTALL)
+
+    def _intervalSelectHtml(self, body):
+        match = self._INTERVAL_SELECT.search(body)
+        self.assertIsNotNone(match, "no #interval select in the shell markup")
+        return match.group(1)
+
+    def test_a_named_interval_with_both_dates_selects_only_that_interval(self):
+        """The finding's exact shape: a named interval plus both dates."""
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                body = self._shell(
+                    path, "?interval=year&startDate=2020-01-01&endDate=2020-01-02")
+
+                selectHtml = self._intervalSelectHtml(body)
+                self.assertEqual(selectHtml.count("selected"), 1,
+                                  "more than one option reads as selected - the "
+                                  "browser resolves that to whichever is LAST")
+                self.assertRegex(selectHtml, r'value="year"[^>]*selected')
+
+    def test_a_named_interval_with_both_dates_disables_the_date_inputs(self):
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                body = self._shell(
+                    path, "?interval=year&startDate=2020-01-01&endDate=2020-01-02")
+
+                self.assertRegex(body, r'id="startDate"[^>]*disabled')
+                self.assertRegex(body, r'id="endDate"[^>]*disabled')
+
+    def test_the_custom_interval_still_selects_custom_and_enables_dates(self):
+        """Control: interval=custom is the one case that must keep behaving
+        as before - selected AND its dates left enabled."""
+        for path in TOP_LIST_PATHS:
+            with self.subTest(path=path):
+                body = self._shell(
+                    path, "?interval=custom&startDate=2020-01-01&endDate=2020-01-02")
+
+                selectHtml = self._intervalSelectHtml(body)
+                self.assertEqual(selectHtml.count("selected"), 1)
+                self.assertRegex(selectHtml, r'value="custom"[^>]*selected')
+                self.assertNotRegex(body, r'id="startDate"[^>]*disabled')
+                self.assertNotRegex(body, r'id="endDate"[^>]*disabled')
 
 
 class TestFullPlaysOnlyToggle(TopListHtmxTestCase):

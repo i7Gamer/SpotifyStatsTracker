@@ -29,7 +29,13 @@
    Enter in #searchQuery (the only enabled text field) falls through to a
    native form submit - a full navigation that PUSHES a history entry and
    carries an empty query string. #}
-{% set customActive = interval == 'custom' or (customStart and customEnd) %}
+{# Keyed on interval alone, matching history.html/genres.html/charts.html/
+   tracks.html: dashboard/date_ranges.py applies startDate/endDate ONLY when
+   interval == 'custom' (a stale or hand-edited URL carrying both a named
+   interval and dates must not render that interval's data under a
+   "Custom Date Range" label with the dates enabled - see routes/charts.py's
+   _topListShell for why listArgs carries the dates unconditionally anyway). #}
+{% set customActive = interval == 'custom' %}
 <form class="filter-section" id="topListFilters" method="get" action="{{ request.path }}"
       hx-get="{{ request.path }}"
       hx-target="#topListResults"
