@@ -206,13 +206,21 @@ function initPlayEmbed() {
   button.addEventListener('click', () => dispatch('click'));
 }
 
+if (typeof window !== 'undefined') {
+  // The detail pages render as a shell and fetch their body afterwards
+  // (templates/_entity_detail_shell.html), so the call below finds none of the
+  // three elements it needs. detail-page.js re-runs this after each body swap
+  // through window - which is the only path that ever wires the button there.
+  window.initPlayEmbed = initPlayEmbed;
+}
+
 if (typeof document !== 'undefined') {
   initPlayEmbed();
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   // initPlayEmbed is exported for the DOM-stub tests only; in a browser the
-  // guard above has already run it.
+  // window hook above is how it is reached.
   module.exports = {
     nextPlayEmbedState, embedHeightFor, EMBED_HEIGHT_PX, SPOTIFY_IFRAME_API_SRC,
     initPlayEmbed, SCRIPT_FAILED_NOTICE,

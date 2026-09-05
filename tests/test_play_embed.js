@@ -222,3 +222,23 @@ run('the failure still reveals the container and frees the button to retry', () 
 });
 
 console.log('All play-embed tests passed.');
+
+// --- the browser hook ---------------------------------------------------------
+// detail-page.js re-runs initPlayEmbed after every deferred-body swap through
+// `if (window.initPlayEmbed) window.initPlayEmbed()`. The script-load call in
+// play-embed.js runs against the SHELL, where none of the three elements exist
+// yet, so that hook is the only path that ever wires the button. It went
+// missing in 9e44f58 (the shell/body split) and nothing here noticed: every
+// test above reaches initPlayEmbed through module.exports, which a browser
+// never has.
+
+run('the hook detail-page.js calls after a body swap is published on window', () => {
+  global.window = {};
+  global.document = { querySelector() { return null; }, getElementById() { return null; } };
+  const modulePath = require.resolve('../static/js/play-embed.js');
+  delete require.cache[modulePath];
+  const fresh = require(modulePath);
+
+  assert.strictEqual(global.window.initPlayEmbed, fresh.initPlayEmbed,
+                     'without this the Play Now button is inert on every detail page');
+});
