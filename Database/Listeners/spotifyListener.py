@@ -20,7 +20,8 @@ from Database.utils import parseError, timeToInt, flaskDebugEnabled
 #< the connect-state string-number coercion, shared with the poll/push tracking
 #  and Database.getNowPlaying rather than copied a third time; recentlyPlayed
 #  imports nothing back from here, so no cycle (same reasoning as workers/listener.py)
-from Database.Spotify.recentlyPlayed import _connectStateInt
+from Database.Spotify.recentlyPlayed import _connectStateInt, _isSessionClosedError
+from spotapi.exceptions.errors import RequestError as SpotapiRequestError
 
 # A background thread's websocket ping (e.g. spotapi's keep_alive) can raise
 # websockets.exceptions.ConnectionClosed/ConnectionAbortedError for many reasons -
@@ -475,6 +476,38 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return classifyListenerError(exc)[1]  # Invalid JSON usually indicates Spotify API issue
 
 
+NO_VERDICT_SERVER_ERROR_PATTERN = re.compile(r"status code:\s*5\d\d")  #< spotapi's TLSClient.get on a 5xx:
+                                                                        #  LoginError("Could not GET <url>. Status Code: 503")
+
+
+def _isNoVerdictError(exc: Exception) -> bool:
+    """True when a current_user() failure says nothing about the cookies
+    either way: the request never reached Spotify (spotapi's RequestError,
+    raised by TLSClient.build_request for any curl-level failure - reset,
+    timeout, DNS), or Spotify itself fell over (a 5xx on the profile endpoint,
+    which TLSClient.get surfaces as LoginError("Could not GET <url>. Status
+    Code: 503") - the status rides in the message; the .error detail is the
+    constant "Request Failed."). Live, 2026-07..09: 39x503 + 1x504 on that
+    endpoint, each read by isLoggedIn() as a logout, and 32 listener rebuilds
+    from _validateCurrentUser reading the same thing as a refusal.
+
+    Deliberately NOT a third flag on classifyListenerError: that pair drives
+    startListener's precedence, and calling a transport failure "transient"
+    there would fire the process-wide SPOTIFY_LIMITER.applyBackoff for a
+    local outage. This is consulted only where the question is "did Spotify
+    refuse these cookies?" - isLoggedIn() and _validateCurrentUser - and the
+    answer is "it never got to say".
+
+    The one RequestError that IS a verdict: a closed curl session (see
+    _isSessionClosedError) - that transport is dead for good, so it keeps
+    reading as a refusal rather than being retried against forever."""
+    if _isSessionClosedError(exc):
+        return False
+    if isinstance(exc, SpotapiRequestError):
+        return True
+    return NO_VERDICT_SERVER_ERROR_PATTERN.search(str(exc).lower()) is not None
+
+
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str,
                                    logUser: str | None = None) -> str | None:
     """`logUser` is the internal user key (e.g. "7kevinegger"), used only to
@@ -860,6 +893,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             # _validateCurrentUser. Same answer as the transient branch below
             # (stay logged in), without the warning: this is the system
             # working, not an incident.
+            if _isNoVerdictError(e):
+                # The request never got Spotify's opinion of these cookies: a
+                # transport failure, or the profile endpoint itself down (5xx).
+                # Same answer as above - the cookie-level verdict stands. Read
+                # as a refusal, this parked every page on /login and refused a
+                # correct password for LOGIN_CACHE_TTL_SECONDS (user_registry
+                # caches the False), 40 times on live in two months.
+                logger.warning("Could not check login status for user %s (Spotify unreachable "
+                               "or answered 5xx) - keeping the cookie-level verdict: %s",
+                               self.logUser, parseError(e))
+                return True
             logger.debug("Skipped login check for user %s while the shared Spotify "
                          "backoff is open: %s", self.logUser, parseError(e))
             return True
@@ -917,7 +961,10 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         Results are cached for USER_VALIDATION_CACHE_SECONDS to reduce bot detection triggers
         from excessive polling; a refusal to answer starts its own, shorter
         cooldown (see _validationIsOnCooldown). Auth errors are not cached at
-        all - those return False immediately so the caller can reconnect."""
+        all - those return False immediately so the caller can reconnect. A
+        transport failure or a Spotify 5xx is neither a verdict nor a rate
+        limit (see _isNoVerdictError): the last known answer stands and the
+        refusal cooldown starts."""
         now = time.monotonic()
         if self._validationIsOnCooldown(now):
             # The last KNOWN answer, which on a listener that has never had one
@@ -1000,6 +1047,20 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         it, and widening the window to cover backoffs would re-admit the
         spurious rebuild-on-resume this bound exists to stop. Under-detection
         costs a later rebuild; over-detection costs a re-login at the moment
+            if _isNoVerdictError(e):
+                # Spotify never answered the identity question (transport
+                # failure, or the profile endpoint down with a 5xx). Not a
+                # refusal of the cookies, so not the False that makes
+                # _checkOnce rebuild the listener - a 503 here cost 32 full
+                # rebuilds on live; and not a rate limit, so not a raise into
+                # startListener's process-wide backoff. The last known answer
+                # stands, and the refusal cooldown keeps the next poll from
+                # walking straight back into the same endpoint.
+                self._last_validation_error_time = now
+                logger.warning("Could not validate current user %s (Spotify unreachable or "
+                               "answered 5xx) - keeping the last known answer: %s",
+                               self.logUser, parseError(e))
+                return self._last_user_validation_result
         someone starts listening."""
         state = self.getConnectPlayerState()
         if not state or not state.get("is_playing") or state.get("is_paused"):

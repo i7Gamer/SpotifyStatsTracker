@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
+from _spotapi_exceptions import realProfileStatusError, realTransportRequestError
 from Database.rate_limit import SpotifyLocallyRateLimitedError
 from Database.Listeners.spotifyListener import (
     Listener,
@@ -904,13 +905,25 @@ class TestClassifyRealSpotapiExceptions(unittest.TestCase):
         # Message has NO auth keyword - the type name is what classifies it.
         self.assertEqual(classifyListenerError(LoginError("Could not GET recently played")), (True, False))
 
-    def test_spotapi_requesterror_429_is_transient(self):
-        from spotapi.exceptions.errors import RequestError
-        self.assertEqual(classifyListenerError(RequestError("Got status 429 from server")), (False, True))
+    def test_spotapi_transport_requesterror_is_neither(self):
+        # RequestError("Failed to complete request.", error=<curl detail>) is
+        # what TLSClient.build_request raises for a reset/timeout: no status
+        # anywhere in the message, so neither bucket - and it must STAY that
+        # way, or startListener would open the process-wide backoff for a
+        # local outage. _isNoVerdictError handles it where it matters
+        # (tests/test_listener_no_verdict_errors.py).
+        self.assertEqual(classifyListenerError(realTransportRequestError()), (False, False))
 
-    def test_spotapi_requesterror_503_is_neither(self):
-        from spotapi.exceptions.errors import RequestError
-        self.assertEqual(classifyListenerError(RequestError("Got status 503 from server")), (False, False))
+    def test_spotapi_429_on_the_profile_endpoint_is_both(self):
+        # TLSClient.get raises LoginError("Could not GET <url>. Status Code:
+        # 429") - auth by type name, transient by the status in the message.
+        self.assertEqual(classifyListenerError(realProfileStatusError(429)), (True, True))
+
+    def test_spotapi_503_on_the_profile_endpoint_is_auth_by_type_name_only(self):
+        # The classifier alone reads a Spotify 5xx as an auth failure - which
+        # is exactly why isLoggedIn()/_validateCurrentUser consult
+        # _isNoVerdictError before it.
+        self.assertEqual(classifyListenerError(realProfileStatusError(503)), (True, False))
 
 
 class TestClassificationDiagnostic(unittest.TestCase):
