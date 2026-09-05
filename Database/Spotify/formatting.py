@@ -135,9 +135,17 @@ def formatSearchTrackData(trackData: dict) -> dict:
 def _sortedImages(sources) -> list:
     """coverArt/avatarImage sources to spotipy-style images, LARGEST first -
     consumers take images[0].url as THE artwork, and wire order is not a
-    documented promise."""
+    documented promise.
+
+    `s.get("width", 0)` alone is not enough: that default only covers an
+    ABSENT key, and a pathfinder payload can carry "width": null (key
+    present, value None; no recorded fixture shows it, but the API is
+    undocumented and the sibling reads guard for it) - which sorts against
+    an int and raises TypeError.
+    The trailing `or 0` catches the present-but-null case too, matching the
+    module's other numeric reads (see :76, :100, :166, :178)."""
     return sorted(
-        ({"url": s.get("url", ""), "width": s.get("width", 0), "height": s.get("height", 0)}
+        ({"url": s.get("url", ""), "width": s.get("width") or 0, "height": s.get("height") or 0}
          for s in (sources or []) if isinstance(s, dict)),
         key=lambda img: img["width"], reverse=True)
 

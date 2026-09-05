@@ -544,6 +544,31 @@ class TestPublicLookupClientPooling(unittest.TestCase):
         self.assertIsNot(passed, realDefault)
 
 
+class TestSortedImagesNullWidth(unittest.TestCase):
+    """A present-but-null "width"/"height" (seen on real pathfinder payloads)
+    is not covered by dict.get's default - get("width", 0) only substitutes
+    for an ABSENT key, and a source that carries the key with value null
+    still returns None. Sorting on that None against an int raises
+    TypeError, which used to blow up formatArtistUnion/formatTrackUnion for
+    every caller (Database/Spotify/client.py's artist()/album()/track()).
+    The module's other numeric reads already guard this with `... or 0`
+    (formatting.py:76, :100, :166, :178); _sortedImages was the one holdout."""
+
+    def test_null_width_sorts_last_and_reads_as_zero(self):
+        from Database.Spotify.formatting import _sortedImages
+
+        sources = [
+            {"url": "a", "width": None, "height": None},
+            {"url": "b", "width": 640, "height": 640},
+        ]
+
+        images = _sortedImages(sources)  #< must not raise TypeError
+
+        self.assertEqual([i["url"] for i in images], ["b", "a"])
+        self.assertEqual(images[1]["width"], 0)
+        self.assertEqual(images[1]["height"], 0)
+
+
 class TestArtistContract(unittest.TestCase):
     """media_fetch's lazy artist-image fallback reads
     artist.get("images")[0]["url"] - largest first, same as albums."""
@@ -562,6 +587,23 @@ class TestArtistContract(unittest.TestCase):
         self.assertEqual(artist["name"], "First Artist")
         self.assertEqual(artist["id"], ARTIST_ID)
         self.assertEqual(artist["images"][0]["url"], "https://i.scdn.co/image/artlarge")
+
+    @patch("spotapi.Artist")
+    def test_artist_image_with_null_width_does_not_crash(self, mock_artist_cls):
+        """End-to-end regression for the same bug through formatArtistUnion:
+        a source with "width": null (not merely absent) must not raise and
+        must sort after every properly-sized image."""
+        mock_artist_cls.return_value.get_artist.return_value = {"data": {"artistUnion": {
+            "uri": f"spotify:artist:{ARTIST_ID}",
+            "profile": {"name": "First Artist"},
+            "visuals": {"avatarImage": {"sources": [
+                {"url": "https://i.scdn.co/image/artnull", "width": None, "height": None},
+                {"url": "https://i.scdn.co/image/artlarge", "width": 640, "height": 640},
+            ]}},
+        }}}
+        artist = buildClient().artist(ARTIST_ID)
+        self.assertEqual(artist["images"][0]["url"], "https://i.scdn.co/image/artlarge")
+        self.assertEqual(artist["images"][1]["width"], 0)
 
     @patch("spotapi.Artist")
     def test_artist_without_visuals_has_empty_images(self, mock_artist_cls):
