@@ -1,6 +1,9 @@
 import unittest
 import time
 from pathlib import Path
+from unittest.mock import patch
+
+from conftest import RecordingConnection
 from Database.repository import Repository
 from Database.database import Database
 
@@ -170,9 +173,10 @@ class TestTrendQueries(unittest.TestCase):
         self.assertEqual(raw["rediscovery"]["track_id"], "rediscovery_track")
 
     def test_obsession_fallback_for_light_listener(self):
-        # A user who never clears the primary TREND_OBSESSION_MIN_PLAYS bar still
-        # gets an obsession from the relaxed fallback floor (>= 2). bob has one
-        # track played 3 times in the last 7 days.
+        # A light listener clears the TREND_OBSESSION_MIN_PLAYS floor with one
+        # track played 3 times in the last 7 days. (This used to be "the
+        # fallback floor" behind a higher preferred bar; the two passes were
+        # provably one answer, see TestForgottenFavoriteFloor.)
         self.repo.upsertUser("bob", "bob@example.com")
         self.repo.upsertTrack(makeTrack(trackId="bob_track", name="Bob Song"))
         for i in range(3):
@@ -483,19 +487,20 @@ class TestFreshFindFallback(unittest.TestCase):
         self.assertIn("first heard 1 day ago", trends["freshFind"]["trend_subtitle"])
 
 
-class TestForgottenFavoriteFallback(unittest.TestCase):
-    """The primary query needs TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS full plays;
-    the fallback exists so a lighter listener still gets the card. No fixture
-    ever landed between the two thresholds, so deleting the entire fallback
-    block broke no test."""
+class TestForgottenFavoriteFloor(unittest.TestCase):
+    """The card used to run its full-history statement twice: once demanding
+    15 full plays, and again at the floor of 2 when nothing cleared 15. Both
+    passes ordered by total_plays DESC and took LIMIT 1, and every track with
+    15 plays also has 2 - so the second pass could only ever return what the
+    first would have, and a lighter listener paid for two lifetime scans on
+    the landing page. One pass at the floor is the same answer."""
+
+    HEAVY_PLAY_COUNT = 20   #< well above any floor a light listener would clear
 
     def setUp(self):
-        from Database.queries.trends import (
-            TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS, TREND_FORGOTTEN_FALLBACK_MIN_PLAYS,
-        )
+        from Database.queries.trends import TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS
 
-        self.primaryMin = TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS
-        self.fallbackMin = TREND_FORGOTTEN_FALLBACK_MIN_PLAYS
+        self.minPlays = TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS
         self.db = Database("alice", dbPath=Path(":memory:"), startWorkers=False)
         self.repo = self.db.repo
         self.repo.upsertUser("alice", "alice@example.com")
@@ -511,37 +516,49 @@ class TestForgottenFavoriteFallback(unittest.TestCase):
             self.repo.insertPlay("alice", trackId, self.now_ts - (200 * self.day) - (i * 1000), 200000)
         self.repo.commit()
 
-    def test_a_track_between_the_two_thresholds_still_wins_the_card(self):
-        """Below the primary minimum, at or above the fallback's."""
-        playCount = self.primaryMin - 1
-        self.assertGreaterEqual(playCount, self.fallbackMin)   #< the window exists at all
-        self._seedOldFullPlays("light_favorite", playCount)
+    def _forgottenStatements(self):
+        """How many times the Forgotten Favorite statement ran during one
+        getDashboardTrendsRaw - the oracle for "once", counted rather than timed."""
+        log = []
+        real = self.repo._conn()
+        with patch.object(self.repo, "_conn", return_value=RecordingConnection(real, log)):
+            self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
+        return [sql for sql, _ in log if "HAVING last_played_at" in sql]
+
+    def test_a_light_listener_at_the_floor_wins_the_card(self):
+        self._seedOldFullPlays("light_favorite", self.minPlays)
 
         raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
 
         self.assertIsNotNone(raw["forgotten"])
         self.assertEqual(raw["forgotten"]["track_id"], "light_favorite")
-        self.assertEqual(raw["forgotten"]["total_plays"], playCount)
+        self.assertEqual(raw["forgotten"]["total_plays"], self.minPlays)
 
-    def test_below_the_fallback_minimum_there_is_no_card(self):
-        self._seedOldFullPlays("barely_played", self.fallbackMin - 1)
+    def test_below_the_floor_there_is_no_card(self):
+        self._seedOldFullPlays("barely_played", self.minPlays - 1)
 
         raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
 
         self.assertIsNone(raw["forgotten"])
 
-    def test_the_primary_query_still_wins_when_it_matches(self):
-        """A heavy favorite must not be displaced by the fallback's ordering."""
-        self._seedOldFullPlays("heavy_favorite", self.primaryMin + 5)
-        self._seedOldFullPlays("light_favorite", self.primaryMin - 1)
+    def test_the_heaviest_favorite_wins_over_a_lighter_one(self):
+        self._seedOldFullPlays("heavy_favorite", self.HEAVY_PLAY_COUNT)
+        self._seedOldFullPlays("light_favorite", self.minPlays)
 
         raw = self.repo.getDashboardTrendsRaw("alice", now_ts=self.now_ts)
 
         self.assertEqual(raw["forgotten"]["track_id"], "heavy_favorite")
 
-    def test_a_recently_played_track_is_not_forgotten_even_via_the_fallback(self):
+    def test_the_statement_runs_once_whether_or_not_a_heavy_favorite_exists(self):
+        self._seedOldFullPlays("light_favorite", self.minPlays)
+        self.assertEqual(len(self._forgottenStatements()), 1, "a light listener paid for two lifetime scans")
+
+        self._seedOldFullPlays("heavy_favorite", self.HEAVY_PLAY_COUNT)
+        self.assertEqual(len(self._forgottenStatements()), 1)
+
+    def test_a_recently_played_track_is_not_forgotten(self):
         self.repo.upsertTrack(makeTrack(trackId="recent_favorite", name="Recent"))
-        for i in range(self.primaryMin - 1):
+        for i in range(self.HEAVY_PLAY_COUNT):
             self.repo.insertPlay("alice", "recent_favorite", self.now_ts - (i * 1000), 200000)
         self.repo.commit()
 

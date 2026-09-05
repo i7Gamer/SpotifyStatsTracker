@@ -8,7 +8,6 @@ from Database.queries._base import *  # noqa: F401,F403 - shared constants/db he
 from config import (
     TREND_OBSESSION_DAYS,
     TREND_OBSESSION_MIN_PLAYS,
-    TREND_OBSESSION_FALLBACK_MIN_PLAYS,
     TREND_REDISCOVERY_RECENT_DAYS,
     TREND_REDISCOVERY_GAP_DAYS,
     TREND_REDISCOVERY_FALLBACK_GAP_DAYS,
@@ -17,7 +16,6 @@ from config import (
     TREND_FRESH_FIND_MIN_PLAYS,
     TREND_FORGOTTEN_GAP_DAYS,
     TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS,
-    TREND_FORGOTTEN_FALLBACK_MIN_PLAYS,
 )
 
 
@@ -40,10 +38,8 @@ class TrendQueries:
 
         conn = self._conn()
 
-        # 1. Obsession. One statement, run twice - the fallback differs only in
-        # how many recent plays it demands, same shape as forgottenWithAtLeast
-        # below (this pair was the verbatim copy that pattern was made to
-        # avoid).
+        # 1. Obsession. One statement, run once at the play floor - see
+        # TREND_OBSESSION_MIN_PLAYS for why the higher first pass went.
         obsession_cutoff = now_ts - (TREND_OBSESSION_DAYS * SECONDS_PER_DAY)
         obsessionQuery = """
             SELECT COALESCE(t.canonical_id, t.id) AS track_id, COUNT(*) as recent_count, SUM(time_played) as recent_ms
@@ -59,18 +55,13 @@ class TrendQueries:
             LIMIT 1
             """
 
-        def obsessionWithAtLeast(minPlays: int):
-            return conn.execute(obsessionQuery, (username, obsession_cutoff, minPlays)).fetchone()
+        obsession_row = conn.execute(
+            obsessionQuery, (username, obsession_cutoff, TREND_OBSESSION_MIN_PLAYS)).fetchone()
 
-        obsession_row = obsessionWithAtLeast(TREND_OBSESSION_MIN_PLAYS)
-        # Fallback for obsession if user has < TREND_OBSESSION_MIN_PLAYS but plays exist
-        if not obsession_row:
-            obsession_row = obsessionWithAtLeast(TREND_OBSESSION_FALLBACK_MIN_PLAYS)
-
-        # 2. Rediscovery. One statement, run once per gap tier - same
-        # run-it-again shape as the two cards either side of it, except what
-        # relaxes here is the gap rather than a play floor (its play floor is
-        # already low).
+        # 2. Rediscovery. One statement, run once per gap tier. Unlike the play
+        # floors the cards either side of it used to retry on, a shorter gap
+        # CAN surface a different track (the ordering is by count, the tier is
+        # a date), so the retry here is not redundant.
         rediscovery_recent_cutoff = now_ts - (TREND_REDISCOVERY_RECENT_DAYS * SECONDS_PER_DAY)
         rediscoveryQuery = """
             SELECT COALESCE(t.canonical_id, t.id) AS track_id,
@@ -194,10 +185,11 @@ class TrendQueries:
         # forgotten favorite - a favorite has to have been actually heard.
         forgotten_gap_cutoff = now_ts - (TREND_FORGOTTEN_GAP_DAYS * SECONDS_PER_DAY)
         completion_ratio = self.getCompletionCompletePercent() / PERCENT_DIVISOR
-        # One statement, run twice: the fallback below differs only in how many
-        # historical plays it demands. The completion test is the shared
-        # FULL_PLAY_PREDICATE rather than its own copy of the same SQL, so a
-        # change to what "a full listen" means reaches here too.
+        # One statement, run once at the play floor (the higher first pass it
+        # used to make could only return the same row - see
+        # TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS). The completion test is the
+        # shared FULL_PLAY_PREDICATE rather than its own copy of the same SQL,
+        # so a change to what "a full listen" means reaches here too.
         forgottenQuery = f"""
             SELECT COALESCE(t.canonical_id, t.id) as track_id, COUNT(*) as total_plays,
                    MAX(p.played_at) as last_played_at
@@ -212,16 +204,10 @@ class TrendQueries:
             LIMIT 1
             """
 
-        def forgottenWithAtLeast(minPlays: int):
-            return conn.execute(
-                forgottenQuery,
-                (username, completion_ratio, forgotten_gap_cutoff, minPlays),
-            ).fetchone()
-
-        forgotten_row = forgottenWithAtLeast(TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS)
-        # Fallback for forgotten if no track hits high threshold
-        if not forgotten_row:
-            forgotten_row = forgottenWithAtLeast(TREND_FORGOTTEN_FALLBACK_MIN_PLAYS)
+        forgotten_row = conn.execute(
+            forgottenQuery,
+            (username, completion_ratio, forgotten_gap_cutoff, TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS),
+        ).fetchone()
 
         return {
             "obsession": dict(obsession_row) if obsession_row else None,

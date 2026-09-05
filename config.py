@@ -250,7 +250,14 @@ WRAPPED_TOP_SONGS_EXPORT_LIMIT = 100
 
 # Dashboard Trend Insights thresholds
 TREND_OBSESSION_DAYS = 7
-TREND_OBSESSION_MIN_PLAYS = 5
+# Play floors. Each card used to demand a higher count first (5 here, 15 for
+# Forgotten Favorite) and rerun the same statement at the floor when nothing
+# cleared it - but both passes order by play count and take the top row, and
+# every track above the higher bar is above the floor, so the second pass could
+# only ever return the row the first would have. The two-pass shape bought a
+# second lifetime scan for every lighter listener; the floor alone is the same
+# card (tests/test_trends.py::TestForgottenFavoriteFloor counts the statements).
+TREND_OBSESSION_MIN_PLAYS = 2
 TREND_REDISCOVERY_GAP_DAYS = 180
 TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS = 3
 # The "recent" side of the rediscovery split (plays newer than this count as
@@ -259,12 +266,7 @@ TREND_REDISCOVERY_MIN_HISTORICAL_PLAYS = 3
 # obsession window can't silently move rediscovery's boundary.
 TREND_REDISCOVERY_RECENT_DAYS = 7
 TREND_FORGOTTEN_GAP_DAYS = 180
-TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS = 15
-# Relaxed play-count floors used only when nobody clears the primary
-# MIN_PLAYS bar above, so the card still surfaces something for lighter
-# listeners rather than rendering empty.
-TREND_OBSESSION_FALLBACK_MIN_PLAYS = 2
-TREND_FORGOTTEN_FALLBACK_MIN_PLAYS = 2
+TREND_FORGOTTEN_MIN_HISTORICAL_PLAYS = 2   #< see TREND_OBSESSION_MIN_PLAYS
 # Rediscovery degrades on the gap instead, since its play floor is already low:
 # shorter comebacks tried in order only when no track clears the gap above.
 # Longest-first, so the strongest gap that matches is the one shown - a genuine
