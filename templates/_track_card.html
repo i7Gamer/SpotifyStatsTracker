@@ -152,13 +152,17 @@
                 {#- (username | displayName), not the bare username: on the public
                     share page `username` is the raw account key (the owner's email
                     local-part) - it stays raw only as the /img/ path base above -#}
-                {#- On Wrapped, this count is PER-RELEASE (Database/queries/plays.py's
-                    uniqueSongCount docstring) while _wrapped_results.html's own
-                    "Unique Songs" tile is a MERGED count for the whole year - the two
-                    sit right next to each other, so "song releases" says which one
-                    this is instead of reading as the same number (2026-09-02 review,
-                    UT-10 option a). Every other page keeps the plain wording. -#}
-                <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different {{ 'song releases' if wrappedCard else 'songs' }} by {{ cardTitle }}</div>
+                {#- Plain "songs" on Wrapped too. This count MERGES since 429f148
+                    (2026-09-05): an artist's song list shows a merged song once and
+                    Database/queries/plays.py's _uniqueSongCountSql collapses the
+                    artist's unique-song count to match, so it is the same kind of
+                    number as _wrapped_results.html's own "Unique Songs" tile beside
+                    it. It said "song releases" on Wrapped from 2026-09-02 (UT-10
+                    option a), when the count was per-release and had to be told
+                    apart from that tile - true now only of the ALBUM card below,
+                    which keeps the wording. Pinned by
+                    tests/test_track_card_wrapped_release_caption.py. -#}
+                <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}
@@ -175,9 +179,14 @@
                   MISSING key - a present-but-None name rendered the word "None" -#}
               {#- (username | displayName): same label-vs-image-path split as the
                   artist branch above -#}
-              {#- Same per-release-vs-merged distinction as the artist branch above
-                  (2026-09-02 review, UT-10 option a): "release(s)" on Wrapped-sourced
-                  cards, plain "song(s)" everywhere else. -#}
+              {#- The album count is PER-RELEASE (the album aggregates count
+                  DISTINCT p.track_id and never collapse a merge group, because an
+                  album page lists per-release rows) while Wrapped's own "Unique
+                  Songs" tile beside it is a MERGED count for the whole year - so
+                  "release(s)" on Wrapped-sourced cards says which one this is
+                  (2026-09-02 review, UT-10 option a), plain "song(s)" everywhere
+                  else. The artist branch above used to share this and no longer
+                  does: its count merges now. -#}
               <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} {{ 'song release' if wrappedCard else 'song' }}{{ 's' if track.get('uniqueSongCount') != 1 else '' }} from {{ cardTitle }}</div>
               {% endif %}
           </div>

@@ -1,23 +1,26 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Database/queries/plays.py's uniqueSongCount is deliberately PER-RELEASE on
-artist/album surfaces (its docstring: a merged number "nobody can reconcile
-with what is on screen" would be worse, since those pages list per-release
-rows). Wrapped's Top Artists/Top Albums cards route through the same query,
-but sit right below the page's own "Unique Songs" tile - a single MERGED count
-for the whole year (_wrapped_results.html's uniqueSongsCount). The unqualified
-"played N different songs by X" / "played N songs from X" caption reads as the
-same claim as that tile even though the two use different counting rules.
+"""Wrapped's Top Artists/Top Albums cards sit right below the page's own
+"Unique Songs" tile - a single MERGED count for the whole year
+(_wrapped_results.html's uniqueSongsCount) - so a card's "played N ... by X"
+caption must say what KIND of count N is, or it reads as the same claim as
+the tile.
 
-Option (a) from the 2026-09-02 review (UT-10): caption-only disambiguation -
-reword the caption on Wrapped-sourced cards to name the distinction ("song
-releases" rather than bare "songs"), changing no query. Reuses the wrappedCard
-flag UT-22 added to _track_card.html.
+The ALBUM count is per-release (Database/queries/plays.py's album aggregates
+count DISTINCT p.track_id and never collapse a merge group, because an album
+page lists per-release rows), so the album card says "song release(s)" -
+option (a) from the 2026-09-02 review (UT-10), caption-only, no query change.
 
-Rendered through a bare Jinja environment, like test_track_card_none_name.py.
+The ARTIST count MERGES since 429f148 (2026-09-05): an artist's song list
+shows a merged song once, and _uniqueSongCountSql collapses the artist's
+"unique songs" to match it. So the artist card's number is the same kind of
+count as the tile, and "song releases" would now mislead - it says "songs",
+on Wrapped like everywhere else. (With no merge in the catalog the two
+counting rules give the same number, so "songs" is never wrong.) Found by the
+2026-09-05 range review of 429f148.
 
-2026-09-02 review, UT-10."""
+Rendered through a bare Jinja environment, like test_track_card_none_name.py."""
 import os
 import sys
 import unittest
@@ -54,11 +57,11 @@ class TrackCardWrappedReleaseCaptionTestCase(unittest.TestCase):
             context["wrappedCard"] = wrappedCard
         return _renderTrackCard(**context)
 
-    def test_wrapped_artist_card_names_releases_not_songs(self):
+    def test_wrapped_artist_card_says_songs_because_its_count_merges(self):
         html = self._artistCard(wrappedCard=True)
 
-        self.assertIn("You played 4 different song releases by Fixture Artist", html)
-        self.assertNotIn("different songs by", html)
+        self.assertIn("You played 4 different songs by Fixture Artist", html)
+        self.assertNotIn("song releases by", html)
 
     def test_wrapped_album_card_names_releases_not_songs(self):
         html = self._albumCard(wrappedCard=True)
