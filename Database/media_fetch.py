@@ -106,7 +106,13 @@ class MediaFetchMixin:
         an oversized response from being materialized in full before PIL ever
         looks at it."""
         declared = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
-        if declared is not None and str(declared).isdigit() and int(declared) > MAX_IMAGE_BYTES:
+        #< isdecimal(), not isdigit(): a superscript or circled digit is
+        #  isdigit-true and int()-rejected, and that ValueError is not the
+        #  cap's own - it escaped before imageIsGood was set and, not being a
+        #  RequestException, marked the image FAILED for good. A header the
+        #  cap cannot read is a header to ignore; the body cap below still
+        #  holds. The same 08e8e98 rule the ?page= params follow.
+        if declared is not None and str(declared).isdecimal() and int(declared) > MAX_IMAGE_BYTES:
             raise ValueError(f"image too large: {declared} bytes (max {MAX_IMAGE_BYTES})")
 
         chunks, total = [], 0

@@ -924,6 +924,26 @@ class TestImageDownloadSizeCap(DatabaseTestCase):
             self.assertTrue((imgDir / "track-ok.jpeg").exists())
         self.assertEqual(db.repo.imageStatus("track-ok", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
 
+    def test_a_non_decimal_content_length_is_ignored_rather_than_fatal(self):
+        """The early exit guards its int() with isdigit(), which admits
+        characters like the superscript two that int() then refuses (the same
+        08e8e98 shape as the ?page= params). That ValueError is not the cap's
+        own, it escapes _readCappedBody before imageIsGood is set, and it is
+        not a RequestException - so the image was marked FAILED for good, the
+        permanent status the artist path refuses forever. A Content-Length the
+        cap cannot read is a Content-Length to ignore; the body cap still
+        holds. 2026-09-05 range review."""
+        db = self._makeDb({}, [])
+        response = _imageResponse(_pngBytes())
+        response.headers = {"Content-Length": "\u00b2"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            imgDir = Path(tmpdir)
+            with patch.object(Database, "_mediaGet", return_value=response):
+                db._downloadImageTask(imgDir, "https://img.example/odd", "track-odd", IMAGE_KIND_TRACK)
+
+            self.assertTrue((imgDir / "track-odd.jpeg").exists())
+        self.assertEqual(db.repo.imageStatus("track-odd", IMAGE_KIND_TRACK), IMAGE_STATUS_OK)
+
 
 class TestMediaFetchRequestTimeouts(DatabaseTestCase):
     """Both outbound requests in this module run on a background image thread
