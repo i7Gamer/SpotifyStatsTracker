@@ -75,8 +75,14 @@ def flaskDebugEnabled() -> bool:
 
     Read per call rather than cached at import: the tests drive this with
     patch.dict(os.environ, ...) around the code under test, and a value frozen
-    at import would ignore them."""
-    return environ.get("FLASK_DEBUG", "").lower() in TRUTHY_ENV_VALUES
+    at import would ignore them.
+
+    .strip() before .lower(): Docker's --env-file and `-e KEY=VALUE ` both
+    pass surrounding whitespace through untouched, and every other env-flag
+    reader in the app (app.py, migrate1_32_0.py, patches.py) already strips
+    before comparing - this was the one holdout that read a value like "1 "
+    as off while the rest of the app treated it as on."""
+    return environ.get("FLASK_DEBUG", "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 class _SystemLocalTimezone(datetime.tzinfo):

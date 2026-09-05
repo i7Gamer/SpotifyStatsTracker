@@ -378,7 +378,11 @@ def register(app, dashboard):
         spotify_totp = totpAuthSnapshot()
 
         skip_mode, skip_value = dashboard.repo.getSkipThreshold()
-        restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() in TRUTHY_ENV_VALUES
+        # .strip() before .lower(): Docker's --env-file/`-e KEY=VALUE ` pass
+        # surrounding whitespace through untouched; other env-flag readers in
+        # the app already strip before comparing (see adminRestart's gate,
+        # which reads this same variable).
+        restart_enabled = os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES
 
         # Run live rather than reusing the startup probe's result: the number's
         # value is in noticing when it CHANGES, and a boot-time figure would
@@ -951,7 +955,9 @@ def register(app, dashboard):
         INSTANCE_RESTART_DELAY_SECONDS so this response reaches the browser
         first; threading.Timer is the testable seam (no real os._exit under
         test, which patches it)."""
-        if os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").lower() not in TRUTHY_ENV_VALUES:
+        # .strip() before .lower(): see the same read in the settings-tab
+        # snapshot above (restart_enabled) for why.
+        if os.environ.get(ALLOW_INSTANCE_RESTART_ENV_VAR, "").strip().lower() not in TRUTHY_ENV_VALUES:
             return redirect(url_for("adminPage", tab="settings",
                 error="Instance restart is disabled. Set ALLOW_INSTANCE_RESTART=1 in a supervised launch to enable it."))
 

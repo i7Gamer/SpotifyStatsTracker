@@ -835,6 +835,20 @@ class TestAdminRestart(AdminRouteTestBase):
         self.assertIn("message=", location)
         self.assertNotIn("error=", location)
 
+    def test_enabled_with_trailing_whitespace_still_schedules_graceful_exit(self):
+        # Docker's --env-file and `-e KEY=VALUE ` pass trailing whitespace
+        # through untouched, so ALLOW_INSTANCE_RESTART="1 " reaches the gate
+        # exactly as an operator's env file spelled it. routes/admin.py used
+        # to read this with only `.lower()` (no `.strip()`), so a value every
+        # other env-flag reader in the app treats as on left this one - and
+        # POST /admin/restart - reading as off.
+        dash = self._makeApp()
+        with patch("threading.Timer") as timer, \
+             patch.dict(os.environ, {"ALLOW_INSTANCE_RESTART": "1 "}):
+            resp = self._post(dash, "/admin/restart", isAdmin=True, data={})
+        self.assertEqual(resp.status_code, 302)
+        timer.assert_called_once()
+
 
 class TestAdminLastfmSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):

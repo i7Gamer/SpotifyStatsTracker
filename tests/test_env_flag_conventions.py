@@ -155,6 +155,19 @@ class TestFlaskDebugHasOneReader(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"FLASK_DEBUG": "0"}):
             self.assertFalse(databaseUtils.flaskDebugEnabled())
 
+    def test_surrounding_whitespace_does_not_hide_a_truthy_value(self):
+        """Docker's --env-file and `-e KEY=VALUE ` both pass trailing/leading
+        whitespace through untouched, so a value like "1 " reaches this reader
+        exactly as an operator typed it. Five of the app's other env-flag
+        readers (app.py:84/114/264, migrate1_32_0.py:54, patches.py:1352) do
+        `.strip().lower()`; flaskDebugEnabled() did only `.lower()`, so the
+        same FLASK_DEBUG=1 that turns debug logging on everywhere else read as
+        off here."""
+        for padded in ("1 ", " 1", "1\t"):
+            with self.subTest(value=padded):
+                with unittest.mock.patch.dict(os.environ, {"FLASK_DEBUG": padded}):
+                    self.assertTrue(databaseUtils.flaskDebugEnabled())
+
 
 class TestEnvVarNamesAreSpelledOnce(unittest.TestCase):
     """An environment variable's name lives in exactly one `*_ENV_VAR` constant
