@@ -28,7 +28,7 @@
  * What could not move is below. The charts themselves are the reason this file
  * still exists at all: they are drawn onto <canvas>, which htmx has no way to
  * swap, so the data comes with the markup as a JSON island and the redraw is a
- * htmx:afterSwap listener. */
+ * htmx:afterSettle listener - settle, not swap, see the listener for why. */
 
 //< the swap target, and the data island that arrives inside it
 var CHARTS_TARGET_ID = 'chartsCard';
@@ -85,7 +85,22 @@ if (typeof document !== 'undefined') {
   // series travel with it as a JSON island (see _charts_results.html) and the
   // redraw happens here. This IS window.__chartData - charts.js reads it
   // directly, so there is no reshaping left to get wrong.
-  document.body.addEventListener('htmx:afterSwap', function (evt) {
+  //
+  // afterSETTLE, not afterSwap - and this is load-bearing, not a preference.
+  // Every canvas swapped in carries the id of the one it replaces, and htmx's
+  // settle step (handleAttributes in the vendored build) treats a same-id
+  // arrival as a transition: at swap time it copies the OLD element's
+  // attributes onto the new one, then `settleDelay` (20ms) later restores the
+  // new element's original attributes. A canvas sized and painted in afterSwap
+  // therefore had its width/height/style stripped again 20ms later - and
+  // removing a canvas's width attribute resets its bitmap to a blank 300x150.
+  // The first paint was fine (a "Loading…" placeholder holds no canvas to
+  // match), so this only showed on the SECOND filter change onward: every
+  // chart on the page went invisible, and stayed so until a resize repainted
+  // it. afterSettle fires after those restore tasks have run, so what this
+  // sets is what stays. The same rule holds in genres.js and wrapped.js.
+  // Pinned by tests/test_charts_page.js.
+  document.body.addEventListener('htmx:afterSettle', function (evt) {
     if (evt.target.id !== CHARTS_TARGET_ID) return;
     var island = evt.target.querySelector('#' + CHARTS_DATA_ID);
     if (island) window.__chartData = JSON.parse(island.textContent);

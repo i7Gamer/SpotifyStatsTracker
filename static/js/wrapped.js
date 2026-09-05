@@ -30,7 +30,7 @@
 //
 //   - the chart. htmx swaps the HTML; the <canvas> is a NEW element after every
 //     swap and has to be redrawn from the freshly-rendered data island. That is
-//     an htmx:afterSwap listener, and there is no version of it htmx owns.
+//     an htmx:afterSettle listener, and there is no version of it htmx owns.
 //   - the Export Summary Card PNG, which is ~100 lines of canvas drawing.
 //   - which stats-filter category is showing. That is client state the server
 //     has no idea about (it is not in the URL), so it is remembered here and
@@ -425,7 +425,16 @@ if (typeof document !== 'undefined') {
   // Everything that has to happen once new markup is in the page. Scoped to the
   // main swap so the four out-of-band regions (which fire their own events)
   // don't run it four more times.
-  document.body.addEventListener('htmx:afterSwap', function (evt) {
+  //
+  // afterSETTLE, not afterSwap: the new #timeSeriesChart carries the id of the
+  // canvas it replaces, and htmx's settle step restores a same-id arrival's
+  // ORIGINAL attributes 20ms after the swap - so a canvas sized and painted in
+  // afterSwap had its width/height/style stripped again, which blanks the
+  // bitmap. Every year and filter change after the first paint went invisible.
+  // The full mechanism is written up once, on charts-page.js's listener;
+  // pinned by tests/test_wrapped_page.js. (The title listener below stays on
+  // afterSwap: it writes document.title, which settle never touches.)
+  document.body.addEventListener('htmx:afterSettle', function (evt) {
     if (evt.target.id !== WRAPPED_RESULTS_ID) return;
 
     loadChartData();

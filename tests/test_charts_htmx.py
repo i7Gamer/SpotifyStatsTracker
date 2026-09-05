@@ -10,7 +10,7 @@ on why the transport looks like this. What is specific to this page:
   all, and the Top Genres section's entire locked/unlocked body. All three are
   markup, and the server was already rendering the third one into a string. Now
   it renders all of them, and the nine chart SERIES ride along in one JSON data
-  island the afterSwap handler parses into window.__chartData.
+  island the afterSettle handler parses into window.__chartData.
 - the charts are hand-rolled canvas drawing (static/js/chart-utils.js), not a
   library holding instances per <canvas>, so replacing the canvases wholesale on
   every filter change leaks nothing - each render sets its canvas up from
@@ -176,11 +176,11 @@ class TestShell(ChartsHtmxTestCase):
 
     def test_the_first_load_swaps_into_the_card_and_not_the_placeholder(self):
         """The one thing that makes the canvases draw. charts-page.js redraws
-        in htmx:afterSwap and keys its guard on the swapped target being
+        in htmx:afterSettle and keys its guard on the swapped target being
         #chartsCard, so the first load has to land THERE. htmx defaults a
         request's target to the element that fired it, and the placeholder is
         not that element - without an hx-target on the card for it to inherit
-        it swaps into itself, afterSwap carries an id-less div, the guard bails,
+        it swaps into itself, afterSettle carries an id-less div, the guard bails,
         and the page paints eight blank canvases under their headings.
 
         Asserted on the card rather than on the placeholder because inheriting

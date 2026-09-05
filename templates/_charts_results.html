@@ -107,8 +107,8 @@
 
 {# The nine datasets, as one value the swap deposits in the DOM. They are drawn
    onto canvases, which htmx has no way to swap, so charts-page.js parses this
-   into window.__chartData and redraws in htmx:afterSwap - the one thing on this
-   page htmx cannot own.
+   into window.__chartData and redraws in htmx:afterSettle - the one thing on
+   this page htmx cannot own.
 
    type="application/json" is what makes it a value rather than code: htmx only
    re-executes swapped-in <script> tags it recognises as JavaScript, so this is

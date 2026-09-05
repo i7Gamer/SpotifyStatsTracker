@@ -116,7 +116,7 @@
      page means the first-load placeholder below, and it is load-bearing rather
      than tidy. htmx defaults a request's target to the element that FIRED it,
      so without hx-target the placeholder swapped into itself: the card arrived
-     nested a level deeper, htmx:afterSwap carried an id-less <div>, and
+     nested a level deeper, htmx:afterSettle carried an id-less <div>, and
      charts-page.js's guard (which keys on the target being #chartsCard) bailed
      - leaving eight blank canvases under their headings until the first filter
      change, which goes through the form and so did land on the card.

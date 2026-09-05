@@ -22,7 +22,8 @@
        fail at runtime here, not at render time. Plain attributes only.
      - the charts stay hand-drawn. htmx swaps HTML; a <canvas> arrives blank and
        its data is not markup, so each fragment carries its datasets in a JSON
-       island and genres.js repaints in htmx:afterSwap. #}
+       island and genres.js repaints in htmx:afterSettle (settle, not swap:
+       see the listener in genres.js for why the 20ms matter). #}
   <section class="hero">
     <div class="hero-content">
       <h1>Genres</h1>

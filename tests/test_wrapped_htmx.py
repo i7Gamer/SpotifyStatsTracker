@@ -103,7 +103,7 @@ class TestFragmentBranch(WrappedHtmxTestCase):
 
     def test_the_fragment_carries_the_chart_canvas(self):
         """It is swapped in as one unit with the lists - the canvas is a new
-        element every time, which is why the re-render is an afterSwap
+        element every time, which is why the re-render is an afterSettle
         listener in static/js/wrapped.js rather than anything htmx owns."""
         body = self._fragment()
 
@@ -111,7 +111,7 @@ class TestFragmentBranch(WrappedHtmxTestCase):
 
     def test_the_fragment_carries_the_time_series_for_the_redraw(self):
         """The chart data used to arrive as a JSON key; it now rides in the
-        same data island the full render uses, which the afterSwap listener
+        same data island the full render uses, which the afterSettle listener
         re-parses."""
         body = self._fragment()
 

@@ -85,7 +85,7 @@
 </section>
 
 {# The canvas is a NEW element after every swap, so the redraw cannot be
-   anything htmx owns - it is an htmx:afterSwap listener in
+   anything htmx owns - it is an htmx:afterSettle listener in
    static/js/wrapped.js, reading the data island at the bottom of this file. #}
 <section class="card chart-card">
   <div class="chart-section">
@@ -234,8 +234,9 @@
 
 <!-- The chart's data, server-rendered into a JSON data island (not executable
      script - htmx inserts a type="application/json" tag without evaluating it).
-     Read once at load by static/js/wrapped.js and re-read by its htmx:afterSwap
-     listener, which is why it lives INSIDE the swap container. -->
+     Read once at load by static/js/wrapped.js and re-read by its
+     htmx:afterSettle listener, which is why it lives INSIDE the swap
+     container. -->
 <script type="application/json" id="wrapped-bootstrap">
 {{ {"timeSeries": timeSeries} | tojson }}
 </script>

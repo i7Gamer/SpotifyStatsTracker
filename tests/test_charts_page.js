@@ -5,12 +5,18 @@
 // and tests/test_top_list_page.js). What is unique here is the redraw: a
 // <canvas> is not markup, so htmx cannot swap it - the series ride along inside
 // the swapped card as a JSON island and this file re-reads them afterwards.
-// That listener is the reason the file still exists, and it has three ways to
+// That listener is the reason the file still exists, and it has four ways to
 // be wrong that all look like "the charts went blank":
 //   * firing for a swap of some OTHER target and stamping window.__chartData
 //     with whatever that target happened to contain
 //   * not firing at all, leaving the new markup under the old picture
 //   * skipping the redraw when a card arrives with no island
+//   * firing on htmx:afterSwap instead of htmx:afterSettle. Each canvas keeps
+//     the id of the one it replaces, and htmx's settle step restores such an
+//     element's ORIGINAL attributes 20ms after the swap - so a canvas sized
+//     and painted in afterSwap had its width/height/style stripped again,
+//     resetting the bitmap to a blank 300x150. Every filter change after the
+//     first paint went invisible (2026-09-05 regression).
 //
 // Also pinned: the Trend-buckets select is HIDDEN, not disabled, for a
 // single-day range - its value has to survive switching back to a multi-day
@@ -152,7 +158,7 @@ run('a request from anything but the charts form is left alone', () => {
 run('a swapped charts card re-reads its data island and redraws', () => {
   const page = loadCharts({});
 
-  page.bodyListeners['htmx:afterSwap']({ target: swapTarget('chartsCard', '{"plays":[1,2,3]}') });
+  page.bodyListeners['htmx:afterSettle']({ target: swapTarget('chartsCard', '{"plays":[1,2,3]}') });
 
   assert.deepStrictEqual(page.window.__chartData, { plays: [1, 2, 3] });
   assert.strictEqual(page.redraws, 1);
@@ -161,7 +167,7 @@ run('a swapped charts card re-reads its data island and redraws', () => {
 run('a swap of some other target never touches the chart data', () => {
   const page = loadCharts({});
 
-  page.bodyListeners['htmx:afterSwap']({ target: swapTarget('somethingElse', '{"plays":[9]}') });
+  page.bodyListeners['htmx:afterSettle']({ target: swapTarget('somethingElse', '{"plays":[9]}') });
 
   assert.strictEqual(page.window.__chartData, undefined,
                      'another region swapping must not stamp the charts with its contents');
@@ -172,7 +178,7 @@ run('a card that arrives with no island still redraws, rather than going blank',
   const page = loadCharts({});
   page.window.__chartData = { plays: [7] };
 
-  page.bodyListeners['htmx:afterSwap']({ target: swapTarget('chartsCard', undefined) });
+  page.bodyListeners['htmx:afterSettle']({ target: swapTarget('chartsCard', undefined) });
 
   assert.deepStrictEqual(page.window.__chartData, { plays: [7] }, 'the previous series survive');
   assert.strictEqual(page.redraws, 1);
@@ -181,10 +187,19 @@ run('a card that arrives with no island still redraws, rather than going blank',
 run('a swap before charts.js has loaded does not throw', () => {
   const page = loadCharts({ noRenderer: true });
 
-  page.bodyListeners['htmx:afterSwap']({ target: swapTarget('chartsCard', '{"plays":[]}') });
+  page.bodyListeners['htmx:afterSettle']({ target: swapTarget('chartsCard', '{"plays":[]}') });
 
   assert.deepStrictEqual(page.window.__chartData, { plays: [] });
   assert.strictEqual(page.redraws, 0);
+});
+
+run('the redraw waits for settle - a canvas painted in afterSwap is wiped 20ms later', () => {
+  const page = loadCharts({});
+
+  assert.strictEqual(typeof page.bodyListeners['htmx:afterSettle'], 'function');
+  assert.strictEqual(page.bodyListeners['htmx:afterSwap'], undefined,
+                     'settle restores a same-id element' + "'s original attributes, " +
+                     'so a width/height set before it is stripped and the bitmap goes blank');
 });
 
 // --------------------------------------------------------------- the retry

@@ -9,7 +9,7 @@
 
    The canvases arrive blank: their data is not markup, so it rides in the JSON
    island at the bottom and static/js/genres.js paints them from it in an
-   htmx:afterSwap listener. That listener is the one part of this page htmx
+   htmx:afterSettle listener. That listener is the one part of this page htmx
    cannot own - it swaps a <canvas>, and has no idea it has to be drawn on. #}
 <section class="card chart-card" id="genresOverview">
   <div class="chart-section">

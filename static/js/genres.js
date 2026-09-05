@@ -26,9 +26,9 @@
  * What htmx genuinely could not absorb is the CHARTS. htmx swaps HTML: a
  * <canvas> arrives blank and has to be painted, and its data is not markup. So
  * each fragment carries its datasets in a <script type="application/json">
- * island, and the htmx:afterSwap listener at the bottom reads them back out and
- * redraws. That listener is hand-written on purpose; there is no htmx feature
- * that owns chart rendering.
+ * island, and the htmx:afterSettle listener at the bottom reads them back out
+ * and redraws. That listener is hand-written on purpose; there is no htmx
+ * feature that owns chart rendering.
  *
  * Note there is no `hx-on:` or event-filter shortcut available as a shortcut
  * here - the CSP withholds 'unsafe-eval' from this page (see the header comment
@@ -241,10 +241,18 @@
 
   // ---- The part htmx cannot own: painting the canvases it just swapped in ---
   //
-  // Scoped to the two swap targets by id. htmx fires afterSwap on the target
+  // Scoped to the two swap targets by id. htmx fires afterSettle on the target
   // AND on each top-level element it inserted, so an unguarded listener would
   // redraw several times per swap.
-  document.body.addEventListener('htmx:afterSwap', function (evt) {
+  //
+  // afterSETTLE, not afterSwap: each canvas swapped in carries the id of the
+  // one it replaces, and htmx's settle step restores a same-id arrival's
+  // ORIGINAL attributes 20ms after the swap - so a canvas sized and painted in
+  // afterSwap had its width/height/style stripped again, which blanks the
+  // bitmap. Every chip and time-period change after the first paint went
+  // invisible. The full mechanism is written up once, on charts-page.js's
+  // listener; pinned by tests/test_genres_page.js.
+  document.body.addEventListener('htmx:afterSettle', function (evt) {
     var swapped = evt.target.id;
     if (swapped !== GENRES_RESULTS_ID && swapped !== GENRE_EXPLORE_ID) return;
     CU.refreshPalette();

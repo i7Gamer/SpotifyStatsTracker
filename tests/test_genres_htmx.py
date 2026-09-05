@@ -15,7 +15,7 @@ things /history did not, and both are pinned here:
 - CHART DATA, which is not HTML. htmx swaps response bodies, so the datasets
   ride along inside the fragment as ``<script type="application/json">``
   islands, and genres.js redraws the canvases from them in an
-  ``htmx:afterSwap`` listener. That listener is the one thing htmx cannot own:
+  ``htmx:afterSettle`` listener. That listener is the one thing htmx cannot own:
   it swaps the <canvas> element, it has no idea it has to be painted.
 
 The unlock GATE is unchanged and re-asserted here from the htmx side: a
@@ -160,7 +160,7 @@ class TestFragmentBranch(GenresHtmxTestCase):
 
     def test_the_chart_datasets_ride_along_as_a_json_island(self):
         """The one thing a body swap cannot carry as markup. genres.js reads
-        these back out in htmx:afterSwap and paints the canvases."""
+        these back out in htmx:afterSettle and paints the canvases."""
         data = islandJson(self._fragment(), "genres-overview-data")
 
         self.assertIn(["rock", 120], data["distributionPairs"])
@@ -169,7 +169,7 @@ class TestFragmentBranch(GenresHtmxTestCase):
 
     def test_a_range_with_no_genres_still_ships_well_formed_islands(self):
         """There is nothing to select, so the chip row and the drill-down render
-        empty - but the islands still have to parse, or genres.js's afterSwap
+        empty - but the islands still have to parse, or genres.js's afterSettle
         would bail before it cleared the previous range's charts."""
         body = self._fragment(db=self._makeDb(distribution={}))
 

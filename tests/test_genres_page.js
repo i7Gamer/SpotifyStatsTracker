@@ -11,9 +11,15 @@
 //     field. Without it, changing the time period silently resets the page to
 //     that range's top genre - the drill-down has no visible control in the
 //     form to carry it.
-//   * the afterSwap listener is scoped to two ids, because htmx fires afterSwap
-//     on the target AND on every top-level element it inserted. Unguarded, one
+//   * the afterSettle listener is scoped to two ids, because htmx fires it on
+//     the target AND on every top-level element it inserted. Unguarded, one
 //     swap repaints every canvas several times.
+//   * the repaint is on htmx:afterSettle, NOT htmx:afterSwap. A swapped-in
+//     canvas keeps the id of the one it replaces, and htmx's settle step
+//     restores such an element's ORIGINAL attributes 20ms after the swap - a
+//     canvas painted in afterSwap had its width/height/style stripped again,
+//     which resets the bitmap to a blank 300x150. Every filter and chip change
+//     after the first paint went invisible (2026-09-05 regression).
 //
 // The donut's "Other" fold is covered too: it is the one place this file does
 // arithmetic, and an off-by-one in the slice cap silently drops a genre.
@@ -89,8 +95,8 @@ function loadGenres(options) {
 
 function island(text) { return makeElement({ textContent: text }); }
 
-function afterSwap(page, targetId) {
-  page.bodyListeners['htmx:afterSwap']({ target: { id: targetId } });
+function afterSettle(page, targetId) {
+  page.bodyListeners['htmx:afterSettle']({ target: { id: targetId } });
 }
 
 const results = [];
@@ -116,7 +122,7 @@ const OVERVIEW = JSON.stringify({
 run('a results swap reads the overview island into the chart data', () => {
   const page = loadGenres({ elements: { 'genres-overview-data': island(OVERVIEW) } });
 
-  afterSwap(page, 'genresResults');
+  afterSettle(page, 'genresResults');
 
   assert.deepStrictEqual(page.window.__genreData.distributionPairs, [['jazz', 10], ['lofi', 5]]);
   assert.deepStrictEqual(page.window.__genreData.breadthPairs, [['jazz', 3]]);
@@ -128,7 +134,7 @@ run('a truncated island leaves the previous data standing', () => {
     elements: { 'genres-overview-data': island('{"distributionPairs": [[') },
   });
 
-  afterSwap(page, 'genresResults');
+  afterSettle(page, 'genresResults');
 
   assert.deepStrictEqual(page.window.__genreData.distributionPairs, [['prior', 99]],
                          'an empty chart would read as "you listened to nothing"');
@@ -143,7 +149,7 @@ run('the resolved genre is written back into the form, so the period change keep
     },
   });
 
-  afterSwap(page, 'genreExplore');
+  afterSettle(page, 'genreExplore');
 
   assert.strictEqual(field.value, 'shoegaze');
 });
@@ -157,12 +163,12 @@ run('a detail island with no genre clears the field rather than leaving a stale 
     },
   });
 
-  afterSwap(page, 'genreExplore');
+  afterSettle(page, 'genreExplore');
 
   assert.strictEqual(field.value, '');
 });
 
-// ------------------------------------------------------- afterSwap scoping
+// ----------------------------------------------------- afterSettle scoping
 
 run('a chip swap redraws the drill-down but not the overview', () => {
   const page = loadGenres({
@@ -172,7 +178,7 @@ run('a chip swap redraws the drill-down but not the overview', () => {
     },
   });
 
-  afterSwap(page, 'genreExplore');
+  afterSettle(page, 'genreExplore');
 
   assert.strictEqual(page.window.__genreData.distributionPairs, undefined,
                      'a genre switch does not change the overview datasets');
@@ -182,16 +188,25 @@ run('a chip swap redraws the drill-down but not the overview', () => {
 run('a swap of an unrelated region repaints nothing', () => {
   const page = loadGenres({ elements: { 'genres-overview-data': island(OVERVIEW) } });
 
-  afterSwap(page, 'someOtherRegion');
+  afterSettle(page, 'someOtherRegion');
 
   assert.strictEqual(page.palettes, 0);
-  assert.deepStrictEqual(page.bars, [], 'htmx fires afterSwap per inserted element - this must not multiply');
+  assert.deepStrictEqual(page.bars, [], 'htmx fires afterSettle per inserted element - this must not multiply');
+});
+
+run('the repaint waits for settle - a canvas painted in afterSwap is wiped 20ms later', () => {
+  const page = loadGenres({ elements: { 'genres-overview-data': island(OVERVIEW) } });
+
+  assert.strictEqual(typeof page.bodyListeners['htmx:afterSettle'], 'function');
+  assert.strictEqual(page.bodyListeners['htmx:afterSwap'], undefined,
+                     'settle restores a same-id element' + "'s original attributes, " +
+                     'so a width/height set before it is stripped and the bitmap goes blank');
 });
 
 run('a landed swap clears whatever error banner was up', () => {
   const page = loadGenres({ elements: { 'genres-overview-data': island(OVERVIEW) } });
 
-  afterSwap(page, 'genresResults');
+  afterSettle(page, 'genresResults');
 
   assert.strictEqual(page.cleared, 1);
 });
@@ -207,7 +222,7 @@ function donutFor(pairs) {
       genreShareLegend: legend,
     },
   });
-  afterSwap(page, 'genresResults');
+  afterSettle(page, 'genresResults');
   page.legend = legend;
   return page;
 }
@@ -251,7 +266,7 @@ run('an empty genre set leaves the legend blank rather than half-built', () => {
     },
   });
 
-  afterSwap(page, 'genresResults');
+  afterSettle(page, 'genresResults');
 
   assert.strictEqual(legend.innerHTML, '');
 });

@@ -102,8 +102,8 @@ function loadWrapped(options) {
     title: options.title || '2026 Wrapped - Spotify Tracker',
     addEventListener(type, fn) { calls.docListeners[type] = fn; },
     //< multiple listeners for one event type, like the real DOM allows -
-    //  wrapped.js registers two separate htmx:afterSwap handlers, and a
-    //  single-slot stub would silently drop the first
+    //  wrapped.js registers more than one htmx listener per event, and a
+    //  single-slot stub would silently drop all but the last
     body: {
       addEventListener(type, fn) {
         (calls.bodyListeners[type] = calls.bodyListeners[type] || []).push(fn);
@@ -152,9 +152,8 @@ function loadWrapped(options) {
   return calls;
 }
 
-// document.body can carry more than one listener per event type (wrapped.js
-// registers two separate htmx:afterSwap handlers) - fire every one of them,
-// the way the real DOM would.
+// document.body can carry more than one listener per event type - fire every
+// one of them, the way the real DOM would.
 function fireBody(page, type, evt) {
   (page.bodyListeners[type] || []).forEach((fn) => fn(evt));
 }
@@ -249,7 +248,7 @@ run('the chosen category survives a swap, instead of bouncing back to All', () =
   dom.songs.selectors = ['.stats-filter-button'];
   clickOn(dom.page, dom.songs);
 
-  fireBody(dom.page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
+  fireBody(dom.page, 'htmx:afterSettle', { target: { id: 'wrappedResults' } });
 
   assert.strictEqual(dom.songs.classList.contains('active'), true,
                      'the server has no idea which category is open - this file remembers');
@@ -264,9 +263,28 @@ run('a swap of the recap reloads the data and redraws once', () => {
   });
   const before = page.charts;
 
-  fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
+  fireBody(page, 'htmx:afterSettle', { target: { id: 'wrappedResults' } });
 
   assert.strictEqual(page.charts, before + 1);
+});
+
+// The redraw is on htmx:afterSettle, NOT htmx:afterSwap. The swapped-in canvas
+// keeps the id of the one it replaces, and htmx's settle step restores such an
+// element's ORIGINAL attributes 20ms after the swap - so a canvas sized and
+// painted in afterSwap had its width/height/style stripped again, resetting
+// the bitmap to a blank 300x150. Every year and filter change after the first
+// paint went invisible (2026-09-05 regression).
+run('the redraw waits for settle - a canvas painted in afterSwap is wiped 20ms later', () => {
+  const page = loadWrapped({
+    elements: { 'wrapped-bootstrap': makeElement({ textContent: '{"timeSeries":{"buckets":[]}}' }) },
+  });
+  const before = page.charts;
+
+  fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
+
+  assert.strictEqual(page.charts, before,
+                     'settle restores a same-id element' + "'s original attributes, " +
+                     'so a width/height set before it is stripped and the bitmap goes blank');
 });
 
 run('an out-of-band region swapping does not redraw the chart again', () => {
@@ -275,7 +293,7 @@ run('an out-of-band region swapping does not redraw the chart again', () => {
   });
   const before = page.charts;
 
-  fireBody(page, 'htmx:afterSwap', { target: { id: 'shareLinkPanel' } });
+  fireBody(page, 'htmx:afterSettle', { target: { id: 'shareLinkPanel' } });
 
   assert.strictEqual(page.charts, before, 'four OOB regions would otherwise redraw it four times');
 });
@@ -283,7 +301,9 @@ run('an out-of-band region swapping does not redraw the chart again', () => {
 // UT-7: document.title stayed on the year the page first loaded with. The
 // hero and the hidden year field both swap out of band on a year switch (see
 // _wrapped_hero.html / _wrapped_year_field.html) - OUTSIDE #wrappedResults -
-// so this is a second htmx:afterSwap listener, not a branch of the one above.
+// so this is its own htmx:afterSwap listener, not a branch of the settle one
+// above (and afterSwap is fine here: it writes document.title, not an
+// attribute of anything settle will touch).
 
 run('a year switch updates document.title, keeping the server\'s suffix', () => {
   const page = loadWrapped({ title: '2026 Wrapped - Spotify Tracker' });
@@ -305,6 +325,7 @@ run('the main results swap does not touch the title - it never carries the year 
   const page = loadWrapped({ title: '2026 Wrapped - Spotify Tracker' });
 
   fireBody(page, 'htmx:afterSwap', { target: { id: 'wrappedResults' } });
+  fireBody(page, 'htmx:afterSettle', { target: { id: 'wrappedResults' } });
 
   assert.strictEqual(global.document.title, '2026 Wrapped - Spotify Tracker');
 });
