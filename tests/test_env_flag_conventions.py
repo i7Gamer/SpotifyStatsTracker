@@ -225,3 +225,60 @@ class TestEveryEnvVarIsDocumented(unittest.TestCase):
         self.assertEqual(
             sorted(name for name in names if name not in readme), [],
             "these env vars are read by the app but never mentioned in README.md")
+
+
+#< the block scanned for KEY names below; stops at the next line whose
+# indentation returns to (or above) "environment:"'s own
+_COMPOSE_ENV_BLOCK_HEADER = "environment:"
+#< `- KEY=...` or `# - KEY=...`, active or commented, one per compose line
+_COMPOSE_ENV_VAR_LINE = re.compile(r'^\s*#?\s*-\s*([A-Za-z_][A-Za-z0-9_]*)=')
+
+
+class TestComposeFileDocumentsEveryEnvVar(unittest.TestCase):
+    """docker-compose.yml is the file an operator actually copies and edits -
+    README.md even tells them so ("A ready-to-adapt compose file"). A variable
+    that only exists in README's prose (ALLOW_INSTANCE_RESTART's paragraph,
+    the BACKUP_* trio) or only in README's OWN separate compose snippet
+    (DATA_ENCRYPTION_KEY, TRUST_PROXY_HEADERS, ENABLE_HSTS, ADMIN_EMAIL) is
+    invisible to someone who never scrolls past the shipped file. Structural
+    for the same reason as TestEveryEnvVarIsDocumented above: an undocumented
+    variable misbehaves nowhere, so nothing but a scan catches its absence."""
+
+    @staticmethod
+    def _composeEnvironmentBlockNames():
+        """KEY names of every `- KEY=...`/`# - KEY=...` line inside
+        docker-compose.yml's `environment:` block (active or commented)."""
+        compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        block = []
+        inBlock = False
+        headerIndent = None
+        for line in compose.splitlines():
+            stripped = line.strip()
+            indent = len(line) - len(line.lstrip(" "))
+            if not inBlock:
+                if stripped == _COMPOSE_ENV_BLOCK_HEADER:
+                    inBlock = True
+                    headerIndent = indent
+                continue
+            if stripped and indent <= headerIndent:
+                break   #< back out to the block's own indentation or above
+            block.append(line)
+
+        names = set()
+        for line in block:
+            match = _COMPOSE_ENV_VAR_LINE.match(line)
+            if match:
+                names.add(match.group(1))
+        return block, names
+
+    def test_the_compose_file_lists_every_variable_the_app_reads(self):
+        block, composeNames = self._composeEnvironmentBlockNames()
+        self.assertTrue(block, "docker-compose.yml has no `environment:` block to scan")
+
+        appNames = set(TestEnvVarNamesAreSpelledOnce._definitions()) | ENV_VAR_NAMES_WITHOUT_CONSTANTS
+
+        self.assertEqual(
+            sorted(appNames - composeNames), [],
+            "these env vars are read by the app but missing from docker-compose.yml's "
+            "environment: block (active or commented)")
