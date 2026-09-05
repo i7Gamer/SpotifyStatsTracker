@@ -75,8 +75,8 @@
 {# aria-pressed beside the class: the pressed tab is otherwise colour alone.
    detail-history.js moves both together on click. #}
 <nav class="wrapped-stats-filters" aria-label="Switch between top songs and play history">
-  <button class="stats-filter-button{{ ' active' if view != 'history' else '' }}" aria-pressed="{{ 'true' if view != 'history' else 'false' }}" data-filter="top-songs">Top Songs</button>
-  <button class="stats-filter-button{{ ' active' if view == 'history' else '' }}" aria-pressed="{{ 'true' if view == 'history' else 'false' }}" data-filter="history">History</button>
+  <button type="button" class="stats-filter-button{{ ' active' if view != 'history' else '' }}" aria-pressed="{{ 'true' if view != 'history' else 'false' }}" data-filter="top-songs">Top Songs</button>
+  <button type="button" class="stats-filter-button{{ ' active' if view == 'history' else '' }}" aria-pressed="{{ 'true' if view == 'history' else 'false' }}" data-filter="history">History</button>
 </nav>
 
 <div data-category="top-songs" class="{{ 'visible' if view != 'history' else '' }}">
