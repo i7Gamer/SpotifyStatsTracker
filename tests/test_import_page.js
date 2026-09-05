@@ -38,7 +38,13 @@ function loadImportPage(options) {
     IMPORT_PROGRESS_URL: '/import-progress',
     IMPORT_IS_RUNNING: !!options.running,
   };
-  global.document = { getElementById(id) { return elements[id] || null; } };
+  global.document = {
+    hidden: !!options.hidden,
+    listeners: {},
+    getElementById(id) { return elements[id] || null; },
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+  };
+  calls.document = global.document;
   global.setTimeout = function (fn, ms) { calls.timeouts.push({ fn, ms }); return calls.timeouts.length; };
   global.confirm = function (message) { calls.confirms.push(message); return !!options.confirmAnswer; };
   global.console = { error(...args) { calls.errors.push(args); }, log: realConsole.log };
@@ -170,6 +176,39 @@ run('a running import shows its percentage and polls again quickly', async () =>
   assert.strictEqual(bar.value, 42);
   assert.ok(message.textContent.includes('42%'), message.textContent);
   assert.deepStrictEqual(calls.timeouts.map(t => t.ms), [1200]);
+});
+
+// A background tab: the import keeps running server-side, so a request per
+// tick that nobody is looking at is pure server load - a 20-minute import in a
+// tab left open behind another would send ~1000 of them. The other polls on
+// the site follow document.hidden (static/js/visibility-poll.js); this one
+// re-arms itself and so has to check for itself.
+run('a hidden tab is not polled - the request waits for the tab to come back', async () => {
+  const calls = loadImportPage({
+    running: true, hidden: true,
+    respond: progressResponse({ status: 'running', percentage: 42, message: 'Parsing' }),
+    elements: { 'progress-bar': makeElement(), 'progress-message': makeElement() },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepStrictEqual(calls.fetched, [], 'nobody is looking at the bar');
+  assert.deepStrictEqual(calls.timeouts, [], 'and no timer must keep it hot either');
+  assert.strictEqual(typeof calls.document.listeners.visibilitychange, 'function');
+});
+
+run('the tab coming back polls at once and the loop resumes', async () => {
+  const calls = loadImportPage({
+    running: true, hidden: true,
+    respond: progressResponse({ status: 'running', percentage: 42, message: 'Parsing' }),
+    elements: { 'progress-bar': makeElement(), 'progress-message': makeElement() },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  calls.document.hidden = false;
+  calls.document.listeners.visibilitychange();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepStrictEqual(calls.fetched, ['/import-progress']);
+  assert.deepStrictEqual(calls.timeouts.map(t => t.ms), [1200], 'back on the fast poll');
 });
 
 run('a finished import stops polling', async () => {

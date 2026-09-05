@@ -39,6 +39,14 @@
   }
 
   async function fetchProgress() {
+    if (document.hidden) {
+      //< nobody is looking, and the import runs server-side regardless - so
+      //  wait for the tab instead of a request per tick. visibility-poll.js
+      //  does this for the other polls; this one re-arms itself and has to
+      //  check here. `once`: the next change from hidden is to visible.
+      document.addEventListener('visibilitychange', fetchProgress, { once: true });
+      return;
+    }
     try {
       var response = await fetch(window.IMPORT_PROGRESS_URL);
       if (response.status === UNAUTHORIZED_STATUS) {
