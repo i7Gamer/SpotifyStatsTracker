@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import unquote_plus
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -100,6 +101,25 @@ class TestDisconnectIsPostOnly(_LoggedInProfileTestCase):
             resp = client.post("/profile/disconnect")
         self.assertEqual(resp.status_code, 302)
         mock_db.updateUserSpotifyCredentials.assert_called_once_with(None, None, None)
+
+    def test_a_failed_disconnect_keeps_the_exception_out_of_the_redirect(self):
+        """The flash rides in the redirect's query string - browser history and
+        the access log - so `str(e)` there leaked a path or a lock message."""
+        dash = self._makeApp()
+        client = dash.app.test_client()
+        self._login(dash, client)
+        with patch.object(dash, "get_user_db") as mock_get_db:
+            mock_db = self._mockDb(mock_get_db)
+            mock_db.updateUserSpotifyCredentials.side_effect = RuntimeError(
+                "database is locked: C:\\\\hidden\\\\path\\\\stats.db")
+            with self.assertLogs("routes.auth", level="WARNING") as logs:
+                resp = client.post("/profile/disconnect")
+
+        self.assertEqual(resp.status_code, 302)
+        location = unquote_plus(resp.headers["Location"])
+        self.assertIn("Failed to disconnect", location)
+        self.assertNotIn("hidden", location)
+        self.assertTrue(any("hidden" in line for line in logs.output), logs.output)
 
     def test_the_disconnect_form_asks_before_it_submits(self):
         """Disconnecting discards the stored client secret and refresh token,

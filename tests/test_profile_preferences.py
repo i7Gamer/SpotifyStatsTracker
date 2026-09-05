@@ -5,6 +5,7 @@ isTagsEnabled and Database/queries/users.py's hide_tags_panel column)."""
 import sys
 import os
 from unittest.mock import patch, MagicMock
+from urllib.parse import unquote_plus
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -21,6 +22,7 @@ class ProfilePreferencesTestCase(AppTestCase):
         db = MagicMock()
         db.repo = self.dash.repo
         db.getUserSpotifyCredentials.return_value = {}
+        self.db = db
         for patcher in (
             patch.object(self.dash, 'is_user_logged_in', return_value=True),
             patch.object(self.dash, 'get_username_for_email', return_value=username),
@@ -365,3 +367,28 @@ class TestHideTagsPanelCheckbox(ProfilePreferencesTestCase):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class TestSaveFailureIsGeneric(ProfilePreferencesTestCase):
+    """A failed save used to flash `str(e)` - and the flash rides in the
+    redirect's query string, so the exception text (a table name, a path, a
+    lock message) landed in browser history and the access log. The same file
+    already states the rule for the token exchange: full detail server-side
+    only. The user gets a message that says what to do; app.log gets the why."""
+
+    def test_the_exception_text_stays_out_of_the_redirect(self):
+        client = self._loginAs("alice", "alice@example.com")
+        self.db.refreshSettings.side_effect = RuntimeError("no such table: users_v9")
+
+        with self.assertLogs("routes.auth", level="WARNING") as logs:
+            resp = client.post("/profile", data={
+                "action": "save_preferences",
+                "default_dashboard_window": "week",
+                "default_top_list_window": "year",
+                "timezone": "",
+            })
+
+        location = unquote_plus(resp.headers["Location"])
+        self.assertIn("Failed to save preferences", location)
+        self.assertNotIn("users_v9", location)
+        self.assertTrue(any("users_v9" in line for line in logs.output), logs.output)

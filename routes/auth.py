@@ -28,7 +28,7 @@ from config import (
 )
 from dashboard.date_ranges import SETTABLE_INTERVALS
 from Database.Spotify.cookies import parseCookieString
-from Database.utils import truncateForLog
+from Database.utils import parseError, truncateForLog
 from Database.lastfm import LastfmClient
 from services.email_worker import queue_email_notification
 from Database.queries.email_queries import (
@@ -523,7 +523,12 @@ def register(app, dashboard):
                         db.refreshSettings()
                         success = "Preferences saved successfully!"
                     except Exception as e:
-                        error = f"Failed to save preferences: {str(e)}"
+                        # The message rides in the redirect's query string -
+                        # browser history and the access log - so the exception
+                        # text (a table, a path, a lock message) stays here, like
+                        # the token exchange below keeps its response body.
+                        logger.warning("Failed to save preferences for %s: %s", username, parseError(e))
+                        error = "Failed to save preferences - please try again."
             elif action == "save_display_name":
                 flashFor = PROFILE_FLASH_DISPLAY_NAME
                 # Throttled like request_share: this name is visible to every
@@ -685,7 +690,9 @@ def register(app, dashboard):
                                 db.startLastfmAlbumBiographyBackfiller()
                                 success = "Last.fm API key saved! Genre and biography data are now backfilling in the background."
                             except Exception as e:
-                                error = f"Failed to save the Last.fm API key: {str(e)}"
+                                logger.warning("Failed to save the Last.fm API key for %s: %s",
+                                               username, parseError(e))
+                                error = "Failed to save the Last.fm API key - please try again."
                         elif validation["error"] == "invalid_key":
                             error = "Last.fm rejected that API key - double-check it and try again."
                         elif validation["error"] == "busy":
@@ -701,7 +708,9 @@ def register(app, dashboard):
                     db.stopLastfmAlbumBiographyBackfiller()
                     success = "Last.fm API key removed."
                 except Exception as e:
-                    error = f"Failed to remove the Last.fm API key: {str(e)}"
+                    logger.warning("Failed to remove the Last.fm API key for %s: %s",
+                                   username, parseError(e))
+                    error = "Failed to remove the Last.fm API key - please try again."
             else:
                 #< anything else on this page is the credentials form, which
                 #  predates the action field and posts without one
@@ -715,7 +724,9 @@ def register(app, dashboard):
                         db.updateUserSpotifyCredentials(client_id, client_secret, None)
                         success = "Spotify Developer credentials saved! Please click 'Authorize with Spotify' to connect your account."
                     except Exception as e:
-                        error = f"Failed to save credentials: {str(e)}"
+                        logger.warning("Failed to save Spotify credentials for %s: %s",
+                                       username, parseError(e))
+                        error = "Failed to save credentials - please try again."
                 else:
                     error = "Both Client ID and Client Secret are required."
 
@@ -815,7 +826,9 @@ def register(app, dashboard):
             return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                                     success="Successfully disconnected Spotify API credentials.")
         except Exception as e:
-            return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY, error=f"Failed to disconnect: {str(e)}")
+            logger.warning("Failed to disconnect Spotify credentials for %s: %s", username, parseError(e))
+            return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
+                                    error="Failed to disconnect - please try again.")
     # POST-only + CSRF-protected: wiping the stored Spotify credentials is
     # state-changing, so it must not be reachable via a cross-site GET link.
     app.add_url_rule("/profile/disconnect", "profileDisconnect", profileDisconnect, methods=["POST"])

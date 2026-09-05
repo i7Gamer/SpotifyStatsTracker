@@ -2,6 +2,7 @@
 remove, rate limiting and encrypted storage."""
 import unittest
 from unittest.mock import patch, MagicMock
+from urllib.parse import unquote_plus
 
 import sys
 import os
@@ -186,6 +187,7 @@ class TestSaveLastfmKey(ProfileLastfmTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Failed to save the Last.fm API key", resp.data)
         self.assertNotIn(b"Last.fm API key saved", resp.data)
+        self.assertNotIn(b"disk full", resp.data)   #< the why is for app.log, not the URL
 
     @patch("Database.lastfm.requests.get")
     def test_save_is_rate_limited(self, mockGet):
@@ -242,7 +244,27 @@ class TestRemoveLastfmKey(ProfileLastfmTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"Failed to remove the Last.fm API key", resp.data)
         self.assertNotIn(b"Last.fm API key removed", resp.data)
+        self.assertNotIn(b"thread wedged", resp.data)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCredentialsSaveFailureIsGeneric(ProfileLastfmTestCase):
+    """Same rule as TestSaveFailureIsGeneric in test_profile_preferences.py,
+    for the Spotify credentials form on the same page."""
+
+    @patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
+    def test_the_exception_text_stays_out_of_the_redirect(self):
+        client = self._loginAs("alice", "alice@example.com")
+        self.db.updateUserSpotifyCredentials.side_effect = RuntimeError("no such table: spotify_secrets")
+
+        with self.assertLogs("routes.auth", level="WARNING") as logs:
+            resp = client.post("/profile/connections",
+                               data={"client_id": "my_id", "client_secret": "my_secret"})
+
+        location = unquote_plus(resp.headers["Location"])
+        self.assertIn("Failed to save credentials", location)
+        self.assertNotIn("spotify_secrets", location)
+        self.assertTrue(any("spotify_secrets" in line for line in logs.output), logs.output)

@@ -177,6 +177,27 @@ class TestSpotifyOAuthState(SpotifyEnvTestCase):
         self.assertIn("/profile/connections", location)
         self.assertIn(f"flash_for={PROFILE_FLASH_SPOTIFY}", location)
 
+    def test_a_failed_exchange_logs_a_capped_body(self):
+        """A gateway in front of accounts.spotify.com answers a 502 with its
+        own HTML page; logging resp.text in full put all of it in app.log once
+        per attempt. The head is where the diagnosis is."""
+        dash, client = self._makeLoggedInClient()
+        with client.session_transaction() as sess:
+            sess[SPOTIFY_OAUTH_STATE_SESSION_KEY] = "expected-state"
+        body = "<html>gateway error</html>" * 400
+
+        tokenResponse = MagicMock(status_code=502, text=body)
+        with patch.object(dash, 'get_user_db') as mock_get_db, \
+                patch("requests.post", return_value=tokenResponse), \
+                self.assertLogs("routes.auth", level="WARNING") as logs:
+            self._mockDb(mock_get_db)
+            resp = client.get("/spotify-callback?code=good-code&state=expected-state")
+
+        self.assertIn("error=", resp.headers["Location"])
+        line = next(l for l in logs.output if "token exchange failed" in l)
+        self.assertLess(len(line), len(body) // 2)
+        self.assertIn(f"[{len(body)} chars total]", line)
+
     def test_callback_accepts_the_matching_state_only_once(self):
         dash, client = self._makeLoggedInClient()
         with client.session_transaction() as sess:
