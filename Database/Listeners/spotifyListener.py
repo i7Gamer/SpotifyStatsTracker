@@ -177,8 +177,6 @@ STALE_REASON_NO_CONNECT_STATE = "no connect state"
 STALE_REASON_HARD_CEILING = "quiet feed hard ceiling"
 STALE_REASON_AUTH_ERROR = "auth error"
 
-AUTH_ERROR_TIMEOUT_SECONDS = 30  #< trigger reconnection immediately for auth errors, not 30 min
-
 RATE_LIMIT_ERROR_BACKOFF_SECONDS = 60  #< how long THIS listener's poll loop pauses after a rate limit.
                                         #  The process-wide pause that actually matters is applied
                                         #  separately - see the backoff branch in startListener.
@@ -1435,6 +1433,10 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 self._stop_event.wait(1)
             except Exception as e:
                 if _is_auth_error(e):
+                    # Auth errors skip the reconnect ladder and trigger
+                    # reconnection immediately, not after the 30-minute stale
+                    # timeout - the credentials are bad now, so waiting out
+                    # the usual ceiling would just keep failing quietly.
                     logger.warning("Auth error detected, triggering immediate reconnection: %s", parseError(e))
                     if onStale is not None:
                         try:
