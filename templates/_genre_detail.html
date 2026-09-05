@@ -61,9 +61,16 @@
       <h3>Top Artists</h3>
       {% if topArtists %}
         {% for artist in topArtists %}
+        {# A blank imageId (cover never fetched) means /img/.../None.jpeg is a
+           guaranteed 404 - same rule as _track_card.html's cover and
+           _compare_macros.html's coverImg: the src is the placeholder data URI
+           directly rather than a request the onerror would just repaint anyway.
+           placeholderImgDataUri comes from dashboard/context_processors.py's
+           _injectPlaceholderImage, which reaches this include like any other
+           template variable. Pinned by tests/test_genre_detail_cover_image.py. #}
         <a class="genre-top-row" href="{{ url_for('artistDetailPage', artist_id=artist.id) }}">
           <img class="genre-top-cover" loading="lazy" alt=""
-               src="/img/{{ username }}/artists/{{ artist.imageId }}.jpeg"
+               src="{{ ('/img/' + username + '/artists/' + artist.imageId + '.jpeg') if artist.imageId else placeholderImgDataUri }}"
                onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
           <span class="genre-top-name">{{ artist.name }}</span>
           <span class="genre-top-count">{{ "{:,}".format(artist.playCount) }} plays</span>
@@ -80,7 +87,7 @@
         {% for track in topTracks %}
         <a class="genre-top-row" href="{{ url_for('songDetailPage', track_id=track.id) }}">
           <img class="genre-top-cover" loading="lazy" alt=""
-               src="/img/{{ username }}/tracks/{{ track.imageId }}.jpeg"
+               src="{{ ('/img/' + username + '/tracks/' + track.imageId + '.jpeg') if track.imageId else placeholderImgDataUri }}"
                onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMG;" />
           <span class="genre-top-name">{{ track.name }}<span class="genre-top-artist">{{ track.artistName }}</span></span>
           <span class="genre-top-count">{{ "{:,}".format(track.playCount) }} plays</span>
