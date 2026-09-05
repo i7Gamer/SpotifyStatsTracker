@@ -28,6 +28,7 @@ from config import (
 )
 from dashboard.date_ranges import SETTABLE_INTERVALS
 from Database.Spotify.cookies import parseCookieString
+from Database.utils import truncateForLog
 from Database.lastfm import LastfmClient
 from services.email_worker import queue_email_notification
 from Database.queries.email_queries import (
@@ -964,7 +965,7 @@ def register(app, dashboard):
                 # Full response body only server-side - the redirect param ends up
                 # in browser history/access logs and may echo credential details.
                 logger.warning("Spotify token exchange failed for %s (HTTP %s): %s",
-                               username, resp.status_code, resp.text)
+                               username, resp.status_code, truncateForLog(resp.text))
                 return _profileRedirect(
                     "profileConnectionsPage", PROFILE_FLASH_SPOTIFY,
                     error="Failed to exchange token with Spotify - check your API credentials and try again.")

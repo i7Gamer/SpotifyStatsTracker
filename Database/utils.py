@@ -172,6 +172,22 @@ def parseError(e) -> str:
             f"at line {frame.lineno}: '{frame.line}' -> Error: {e}")
 
 
+LOG_BODY_MAX_CHARS = 500   #< an upstream error body in a log line: the whole of the JSON
+                           #  Spotify answers with, the head of the HTML page a gateway
+                           #  in front of it answers with instead
+
+
+def truncateForLog(text, limit: int = LOG_BODY_MAX_CHARS) -> str:
+    """`text` cut to `limit` characters for a log line, the total appended so
+    the cut is visible as one. None (a body that never arrived) reads as
+    empty rather than as the word None."""
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... [{len(text)} chars total]"
+
+
 # --- Datetime helpers ----------------------------------------------------------
 def _tzOrDefault(tz, default=None):
     """The tzinfo to actually use: `tz` when it really is one (a few call

@@ -16,7 +16,7 @@ from Database.rate_limit import (
     SPOTIFY_LIMITER, SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS, SpotifyLocallyRateLimitedError,
     retryAfterSeconds,
 )
-from Database.utils import parseError, timeToInt, flaskDebugEnabled
+from Database.utils import parseError, timeToInt, flaskDebugEnabled, truncateForLog
 #< the connect-state string-number coercion, shared with the poll/push tracking
 #  and Database.getNowPlaying rather than copied a third time; recentlyPlayed
 #  imports nothing back from here, so no cycle (same reasoning as workers/listener.py)
@@ -553,7 +553,8 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
                 "Spotify rate-limited the access-token refresh for user %s - it asked for %.0fs",
                 logUser, standDown)
         else:
-            logger.error("Failed to refresh Spotify access token for user %s: %s %s", logUser, resp.status_code, resp.text)
+            logger.error("Failed to refresh Spotify access token for user %s: %s %s",
+                         logUser, resp.status_code, truncateForLog(resp.text))
     except Exception as e:
         logger.error("Error refreshing Spotify access token for user %s: %s", logUser, str(e))
     return None

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Database.utils import msToString, flaskDebugEnabled
+from Database.utils import msToString, flaskDebugEnabled, truncateForLog, LOG_BODY_MAX_CHARS
 
 
 class TestFlaskDebugEnabled(unittest.TestCase):
@@ -109,3 +109,30 @@ class TestMsToString(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTruncateForLog(unittest.TestCase):
+    """An upstream response body in a log line. Spotify's token endpoints answer
+    a failure with a short JSON object, but a gateway or CDN in front of them
+    answers with its own HTML error page, and two log lines printed whatever
+    came back in full. The cap keeps a diagnosis (the first part is where the
+    error is) without letting one bad hour fill the log."""
+
+    def test_a_short_body_is_logged_as_is(self):
+        self.assertEqual(truncateForLog("x" * LOG_BODY_MAX_CHARS), "x" * LOG_BODY_MAX_CHARS)
+
+    def test_a_long_body_is_cut_and_says_how_much_there_was(self):
+        body = "a" * (LOG_BODY_MAX_CHARS + 1000)
+
+        shown = truncateForLog(body)
+
+        self.assertTrue(shown.startswith("a" * LOG_BODY_MAX_CHARS))
+        self.assertNotIn("a" * (LOG_BODY_MAX_CHARS + 1), shown)
+        self.assertIn(str(LOG_BODY_MAX_CHARS + 1000), shown)   #< the total, so the cut is visibly a cut
+
+    def test_the_cap_is_a_parameter(self):
+        self.assertEqual(truncateForLog("abcdef", limit=3)[:3], "abc")
+        self.assertEqual(truncateForLog("abc", limit=3), "abc")
+
+    def test_a_missing_body_is_not_an_error(self):
+        self.assertEqual(truncateForLog(None), "")
