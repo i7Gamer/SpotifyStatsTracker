@@ -464,6 +464,50 @@ class ApiBackfillTestCase(unittest.TestCase):
 
     @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
+    def test_check_web_api_backfill_null_duration_ms_does_not_raise(self, mock_refresh, mock_fetch):
+        """A present-but-null "duration_ms" (seen in the wild on some
+        recently-played items) must be treated as duration-unknown (0), not
+        crash the whole poll - track.get("duration_ms", 0) only supplies its
+        default when the key is MISSING, not when it is present and set to
+        None. Before the fix this raised TypeError (None // 1000), caught
+        only by the poll's catch-all, which silently lost the whole batch
+        (callback and onWebApiSnapshot never ran) and still spent the
+        15-minute poll interval."""
+        mock_refresh.return_value = "token123"
+        mock_fetch.return_value = [
+            {"track": {"id": "track_null_duration", "duration_ms": None}, "played_at": "2026-07-13T10:05:00Z"},
+        ]
+
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com", get_credentials=get_credentials)
+
+        callback = MagicMock()
+        onWebApiSnapshot = MagicMock()
+        listener._lastWebApiPollTime = 0
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(callback, onWebApiSnapshot=onWebApiSnapshot)
+
+        callback.assert_called_once()
+        backfilled = callback.call_args[0][0]
+        self.assertEqual(len(backfilled), 1)
+        self.assertEqual(backfilled[0]["track"]["id"], "track_null_duration")
+        self.assertEqual(backfilled[0]["ms_played"], 0)
+
+        # The webApiRecentlyPlayed_Z1 rebuild reads the same field - it must
+        # also treat null duration_ms as 0, not carry the None value forward.
+        self.assertEqual(listener.webApiRecentlyPlayed_Z1[0]["ms_played"], 0)
+
+        onWebApiSnapshot.assert_called_once()
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token")
     def test_check_web_api_backfill_does_not_resurface_play_reported_as_start_time(self, mock_refresh, mock_fetch):
         """Regression test for the root-cause bug: the live listener already
         recorded this exact play (true start time). The Web API reports the

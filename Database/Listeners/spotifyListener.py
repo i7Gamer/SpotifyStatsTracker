@@ -1687,7 +1687,11 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                     continue
 
                 timestamp = timeToInt(played_at_str)
-                duration_ms = track.get("duration_ms", 0)
+                # `or 0` (not get's default): an item's track can carry
+                # "duration_ms": None (present but null), where dict.get
+                # returns None rather than falling back to 0, and the
+                # division below would crash and abort the whole poll.
+                duration_ms = track.get("duration_ms", 0) or 0
                 duration_s = duration_ms // 1000
 
                 # Spotify's Web API documents played_at only as "the date and
@@ -1778,8 +1782,11 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                     "played_at": item.get("played_at"),
                     # `or {}` (not get's default): an item can carry "track": None,
                     # where dict.get returns None and None.get(...) would crash and
-                    # abort the whole rebuild for this poll.
-                    "ms_played": (item.get("track") or {}).get("duration_ms", 0),
+                    # abort the whole rebuild for this poll. The trailing `or 0`
+                    # covers the sibling case - "duration_ms": None (present but
+                    # null) - which get's default does not: dict.get returns
+                    # None rather than falling back to 0.
+                    "ms_played": (item.get("track") or {}).get("duration_ms", 0) or 0,
                     "context": item.get("context") or {}
                 }
                 for item in items

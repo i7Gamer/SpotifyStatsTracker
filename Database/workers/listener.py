@@ -75,7 +75,10 @@ class ListenerMixin:
             # backfill would store - instead of dropping it: the recently-played
             # feed doesn't always contain the track later, and a skip then loses
             # the play for good (2026-07-17, timorzipa).
-            track_duration = track.get("duration_ms", 0) if track else 0
+            # `or 0` (not get's default): track can carry "duration_ms": None
+            # (present but null), where dict.get returns None rather than
+            # falling back to 0, and the comparison below would crash.
+            track_duration = (track.get("duration_ms", 0) or 0) if track else 0
             if track_duration > 0 and msPlayed > track_duration * self.LISTENER_DURATION_CORRUPTION_FACTOR:
                 _dbmod.logger.warning(
                     "Track %s: recorded duration %dms is %dx the track's actual duration (%dms). "

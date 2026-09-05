@@ -168,6 +168,28 @@ class TestAddToDatabaseFromListener(unittest.TestCase):
             "2026-07-17T10:35:00Z", {"id": "t1", "duration_ms": trackDuration},
             longButPlausible, context=None, source="listener")
 
+    def test_null_duration_ms_does_not_raise(self):
+        """A present-but-null "duration_ms" (seen in the wild on some Web API
+        recently-played items) must be treated as duration-unknown (0), not
+        crash the corruption check - track.get("duration_ms", 0) only
+        supplies its default when the key is MISSING, not when it is present
+        and explicitly None. Before the fix, "track_duration > 0" raised
+        TypeError comparing None to int, outside the per-item try/except, so
+        it would have aborted the whole batch instead of just this item."""
+        db = _bareDatabase()
+        items = [{
+            "track": {"id": "t1", "duration_ms": None},
+            "played_at": "2026-07-17T10:35:00Z",
+            "ms_played": 60000,
+            "context": None,
+        }]
+
+        db._addToDatabaseFromListener(items)
+
+        db.appendTrackData.assert_called_once_with(
+            "2026-07-17T10:35:00Z", {"id": "t1", "duration_ms": None},
+            60000, context=None, source="listener")
+
     def test_corrupt_duration_does_not_mark_listener_errored(self):
         """A clamped play is handled, not an error - it must not push the
         listener toward DEGRADED."""
