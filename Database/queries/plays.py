@@ -932,29 +932,31 @@ class PlayQueries:
     def _uniqueSongCountSql(self) -> tuple[str, str]:
         """(join, COUNT expression) for "unique songs" on the artist surfaces.
 
-        Deliberately does NOT collapse a merge group, though "two releases of
-        one recording are one song" is exactly what the global lists say. This
-        number captions a list that does not merge: _mergesCanonically keeps
-        per-release rows on an entity page, so an artist's own song list shows
-        both releases. Collapsing here put "Unique Songs Listened: 1" above two
-        visible rows of the same song - the shape the merge audit called a
-        defect in the first place, since a number nobody can reconcile with
-        what is on screen is indistinguishable from a wrong one, whether it
-        spans more than the list or less.
+        Collapses a merge group: a merged recording is one song, which is what
+        the global lists say AND, since 2026-09-05, what an artist's own song
+        list says too (_mergesCanonically). The two are one decision - this
+        number captions that list, and a count nobody can reconcile with what
+        is on screen is indistinguishable from a wrong one, whether it spans
+        more than the list or less. It collapsed once before over a list that
+        did not merge ("Unique Songs Listened: 1" above two visible rows), was
+        scoped back to per-release for exactly that reason, and returns with
+        the list. tests/test_track_merge_audit.py's
+        TestEntitySongCountsMatchTheListBesideThem pins the pairing.
 
         Artist surfaces only, which is the whole blast radius: the album
-        aggregates count DISTINCT p.track_id inline and never collapsed, so
-        the album History tab's singleTrackTimeline flag (routes/charts.py)
-        was always reading a per-release number and is untouched here.
+        aggregates count DISTINCT p.track_id inline and never collapse, so an
+        album's count matches its per-release list, and the album History
+        tab's singleTrackTimeline flag (routes/charts.py) keeps reading a
+        per-release number.
 
-        The counterpart, and why this is a scoping rule rather than a retreat:
-        every count whose own list merges still merges - getSongsCount, the
-        discovered-song counts, Wrapped. tests/test_track_merge_audit.py's
-        TestEntitySongCountsMatchTheListBesideThem pins both halves.
-
-        Kept as a seam rather than inlined so the pairing stays one decision
-        across all three artist queries; it also costs nothing now, the join
-        it used to need having gone with the collapse."""
+        The tracks probe that collapses measured +193% per query, paid on every
+        play row - free while nothing is merged (every instance with the
+        toggle off), so the join only exists once a merge does. See
+        _anyTrackMerges. Kept as a seam rather than inlined so the pairing
+        stays one decision across all three artist queries."""
+        if self._anyTrackMerges():
+            return ("\n                JOIN tracks tsong ON tsong.id = p.track_id",
+                    "COUNT(DISTINCT COALESCE(tsong.canonical_id, p.track_id)) AS unique_song_count")
         return "", "COUNT(DISTINCT p.track_id) AS unique_song_count"
 
     @staticmethod
@@ -1165,9 +1167,12 @@ class PlayQueries:
         `trackId` narrows to ONE SONG - the whole merge group, aggregated onto
         its canonical row, because the caller is the song detail page and that
         page is the canonical's (ask by either end of a merge and the same row
-        answers; the route redirects on the id mismatch). `artistId`/`albumId`
-        narrow to an artist's or album's own songs and stay per-release, since
-        those pages describe releases. `artistId` is
+        answers; the route redirects on the id mismatch). `artistId` narrows
+        to an artist's own songs and merges like the global list does - every
+        release is the artist's own, and membership is decided by the played
+        track, so the total still adds up (see _mergesCanonically). `albumId`
+        narrows to an album's own songs and stays per-release, since an album
+        page describes one release. `artistId` is
         matched via EXISTS rather than an extra JOIN so a multi-artist track
         still yields exactly one row. `trackIds` narrows to an explicit set of
         track ids (the tag-filtered playlist export, already group-expanded by
@@ -1880,9 +1885,10 @@ class PlayQueries:
             orderBy = f"{self._shrunkSkipRateSql()} DESC, skips DESC, track_id ASC"
         else:
             orderBy = "skips DESC, track_id ASC"   #< the same tiebreakers, minus a prior for one row
-        # Global only, like getSongsPage: a song skipped on both its releases is
-        # one song you skip. An album-scoped list keeps its own rows, because
-        # "what do I skip on this album" is a question about that album.
+        # Merged wherever getSongsPage merges: a song skipped on both its
+        # releases is one song you skip, globally and on its artist's page. An
+        # album-scoped list keeps its own rows, because "what do I skip on this
+        # album" is a question about that album.
         skipKey = "p.track_id"
         skipJoins = joins
         if self._mergesCanonically(trackId, artistId, albumId):

@@ -259,14 +259,16 @@ class TestTagsAreSongLevel(MergedPairTestCase):
 class TestEntitySongCountsMatchTheListBesideThem(MergedPairTestCase):
     """"Unique Songs Listened" counts what the page below it lists.
 
-    This one used to collapse the merge group, which reads as the same
-    statement the global lists make - but the list it captions does NOT merge
-    (_mergesCanonically keeps per-release rows on an entity page, so an album
-    is never handed a row belonging to a different release). The hero then
-    said 1 over two visible rows of the same song, which is the very shape the
-    merge audit called a defect: a number nobody can reconcile with what is on
-    screen is indistinguishable from a wrong one, whether it spans more than
-    the list or less.
+    The count and the list beside it are one decision, and they have flipped
+    together twice. The count collapsed the merge group first, over an artist
+    list that did not - "1" above two visible rows of the same song, which is
+    the very shape the merge audit called a defect: a number nobody can
+    reconcile with what is on screen is indistinguishable from a wrong one,
+    whether it spans more than the list or less. So the count was scoped to
+    per-release. Since 2026-09-05 the artist's song list merges like the
+    global lists do (every release is the artist's own), and the count
+    collapses again to match it. An album's list stays per-release, so its
+    count does too.
 
     The global counts are where "a song is a song" stays observable - Top
     Songs' own Unique Songs, discovered songs, Wrapped - and those still
@@ -280,7 +282,7 @@ class TestEntitySongCountsMatchTheListBesideThem(MergedPairTestCase):
 
         self.assertEqual(len(artists), 1)
         self.assertEqual(artists[0]["uniqueSongCount"], len(songs))
-        self.assertEqual(artists[0]["uniqueSongCount"], 2)
+        self.assertEqual(artists[0]["uniqueSongCount"], 1)
 
     def test_the_album_count_matches_its_own_song_list(self):
         db = self._db()

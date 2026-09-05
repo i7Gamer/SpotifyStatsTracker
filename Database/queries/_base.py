@@ -660,23 +660,36 @@ class SqlFragments:
 
     @staticmethod
     def _mergesCanonically(trackId=None, artistId=None, albumId=None) -> bool:
-        """Whether this query is a GLOBAL one, and so counts a merged song once.
+        """Whether this query counts a merged song once - everything but an
+        album scope does.
 
         A merge says two catalog rows are the same recording, which is true
         everywhere - but it is not the right ANSWER everywhere. An album page
         asks "what is on this album", and the canonical belongs to exactly one
         release, so merging there would hand an album a row whose title, cover
-        and link belong to a different one. Same for an artist's own song list.
+        and link belong to a different one. That is the ONLY scope that keeps
+        per-release rows.
+
+        An artist scope merges (2026-09-05; it kept per-release rows before):
+        every release of the song is that artist's own, so the canonical's
+        title, cover and link still belong on the page, and the artist's total
+        still equals the sum of its rows - membership is decided by the PLAYED
+        track (the EXISTS / _trackSetClause on t / p.track_id), so a release
+        credited to someone else stays out of this artist's count. Per-release
+        rows put one song on the artist page once per release, which is the
+        duplicate the merge exists to remove. _uniqueSongCountSql collapses
+        the artist's "unique songs" the same way, so the count and the list
+        beside it agree (tests/test_track_merge_audit.py).
 
         A trackId lookup DOES merge: it is the song detail page's own query,
         and that page is the canonical's page - the row every merged global
         list links to. Answering per-release there is the central
         contradiction the audit found: the hero saying 9 plays under a caption
         promising "plays across all of them are counted together" while Top
-        Songs says 12. (`trackId` is accepted and ignored so call sites read
-        uniformly; only the entity narrowings decide.)"""
-        del trackId   #< deliberate - see above
-        return artistId is None and albumId is None
+        Songs says 12. (`trackId` and `artistId` are accepted and ignored so
+        call sites read uniformly; only the album narrowing decides.)"""
+        del trackId, artistId   #< deliberate - see above
+        return albumId is None
 
     @staticmethod
     def _canonicalTrackJoin(trackAlias: str = "t", canonicalAlias: str = "c") -> str:

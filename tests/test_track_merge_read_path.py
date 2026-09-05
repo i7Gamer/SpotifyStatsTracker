@@ -1,11 +1,15 @@
 """Phase 5: the global lists count a merged song once.
 
 Scoped deliberately. A merge says two catalog rows are the same RECORDING, and
-that is true globally - in Top Songs, in counts, in totals. It is not the right
-answer on an album page, where the question is "what is on this album": the
-canonical belongs to exactly one release, so merging there would show an album a
-row whose title, cover and link belong to a different one. Album and artist
-detail pages keep their own per-track rows.
+that is true globally - in Top Songs, in counts, in totals - and on an ARTIST
+page: every release of the song is that artist's own, so the canonical's title,
+cover and link still belong there and the artist's total still equals the sum
+of its rows. (Artist pages kept per-release rows until 2026-09-05, which put
+one song on the page once per release.) It is not the right answer on an album
+page, where the question is "what is on this album": the canonical belongs to
+exactly one release, so merging there would show an album a row whose title,
+cover and link belong to a different one. Album pages keep their own per-track
+rows.
 
 Everything here is a no-op until something sets canonical_id, which is why the
 change can ship ahead of the matcher ever running.
@@ -86,7 +90,7 @@ class TestGlobalListsMergeThem(TrackMergeReadPathTestCase):
         self.assertEqual(db.repo.getSongsCount("alice"), 2)
 
 
-class TestDetailPagesKeepTheirOwnRows(TrackMergeReadPathTestCase):
+class TestAlbumPagesKeepTheirOwnRows(TrackMergeReadPathTestCase):
     def test_an_album_page_shows_its_own_track_and_its_own_plays(self):
         """The question an album page answers is "what is on this album", and
         the answer cannot be a row belonging to a different release."""
@@ -107,8 +111,22 @@ class TestDetailPagesKeepTheirOwnRows(TrackMergeReadPathTestCase):
         self.assertEqual(songs[0]["id"], ALBUM_CUT)
         self.assertEqual(songs[0]["plays"], 9)
 
-    def test_an_artist_page_keeps_per_track_rows(self):
+
+class TestArtistPagesMergeLikeTheGlobalLists(TrackMergeReadPathTestCase):
+    def test_an_artist_page_shows_the_merged_song_once(self):
+        """Every release of the song is the artist's own, so the artist page
+        answers the way Top Songs does: one row, the canonical's, carrying the
+        group's plays. Per-release rows put the same song on the page once per
+        release (2026-09-05)."""
         db = self._seed(self._makeDb({}, []))
+
+        songs = self._songs(db, artistId="art1")
+
+        self.assertEqual([s["id"] for s in songs], [ALBUM_CUT])
+        self.assertEqual(songs[0]["plays"], 12)
+
+    def test_an_artist_page_is_unchanged_without_a_merge(self):
+        db = self._seed(self._makeDb({}, []), merge=False)
 
         songs = self._songs(db, artistId="art1")
 
@@ -178,6 +196,18 @@ class TestTheOtherGlobalCounts(TrackMergeReadPathTestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["skips"], 4)
+
+    def test_an_artist_scoped_skip_list_merges_like_its_song_list(self):
+        """One decision (_mergesCanonically) drives both scans, so an artist's
+        skip list cannot show twice what its song list shows once."""
+        db = self._seed(self._makeDb({}, []))
+        self._skip(db, SINGLE, 4)
+        self._skip(db, ALBUM_CUT, 6)
+
+        rows = db.repo.getMostSkippedTracks("alice", limit=10, artistId="art1")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["skips"], 10)
 
 
 class TestSearchSpansTheMergeGroup(TrackMergeReadPathTestCase):
