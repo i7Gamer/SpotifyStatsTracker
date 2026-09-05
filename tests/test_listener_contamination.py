@@ -21,7 +21,16 @@ if isinstance(sys.modules.get("Database.database"), MagicMock):
     del sys.modules["Database.database"]
 
 from conftest import DatabaseTestCase
-from Database.Listeners.spotifyListener import Listener
+from Database.Listeners.spotifyListener import (
+    Listener,
+    STALE_REASON_VALIDATION_FAILED,
+    USER_VALIDATION_CACHE_SECONDS,
+    WEB_API_POLL_INTERVAL_SECONDS,
+)
+
+_MONOTONIC = "Database.Listeners.spotifyListener.time.monotonic"
+_T0 = 100_000.0
+_ONE_SECOND = 1.0
 
 
 def _makeListener(cookieAccountEmail, expectedEmail="expected@example.com"):
@@ -149,3 +158,88 @@ class TestContaminatedListenerHealth(DatabaseTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _listenerWhoseBuildTimeCheckRaised(expectedEmail="expected@example.com"):
+    """A real Listener whose __init__ identity check met a bot-check page:
+    no baseline, no flag, and (before 2026-09-05) no guard for life."""
+    sp = MagicMock()
+    # The profile call raises the way it did on live, 13 times.
+    sp.current_user.side_effect = RuntimeError("Invalid JSON (Status: 200, Type: str, Response: <html>Oh nein!</html>)")
+    sp.current_user_recently_played.return_value = []
+    sp.isLoggedIn.return_value = True
+    with patch("Database.Listeners.spotifyListener.Spotify", return_value=sp):
+        listener = Listener(cookiesFile="unused.json", email=expectedEmail)
+    sp.current_user.reset_mock()   #< the build-time call is not the one under test
+    sp.current_user.side_effect = None
+    return listener, sp
+
+
+class TestBaselineAdoptedByTheFirstValidation(unittest.TestCase):
+    """When __init__'s identity check raised, _validateCurrentUser compared
+    every later answer against None - i.e. passed all of them, whoever they
+    named - for the listener's whole life (2026-09-05 review, L2). Its first
+    successful answer now becomes the baseline, through the same email
+    comparison __init__ makes."""
+
+    def test_build_time_failure_leaves_no_baseline(self):
+        listener, _ = _listenerWhoseBuildTimeCheckRaised()
+        self.assertIsNone(listener._authenticated_user_id)
+        self.assertFalse(listener.contaminationDetected)
+
+    def test_a_mismatching_session_email_is_contamination(self):
+        listener, sp = _listenerWhoseBuildTimeCheckRaised()
+        sp.current_user.return_value = {"id": "intruder", "email": "someone-else@example.com"}
+        with patch(_MONOTONIC, return_value=_T0):
+            self.assertFalse(listener._validateCurrentUser())
+        self.assertTrue(listener.contaminationDetected)
+        self.assertFalse(listener.isLoggedIn())   #< the re-login flow takes it from here
+
+    def test_a_mismatch_hands_the_loop_to_on_stale(self):
+        """False from validation is what _checkOnce turns into the reconnect,
+        whose rebuilt listener runs __init__'s own check and refuses to record."""
+        listener, sp = _listenerWhoseBuildTimeCheckRaised()
+        sp.current_user.return_value = {"id": "intruder", "email": "someone-else@example.com"}
+        onStale = MagicMock()
+        with patch(_MONOTONIC, return_value=_T0):
+            self.assertFalse(listener._checkOnce(MagicMock(), onStale))
+        onStale.assert_called_once_with(reason=STALE_REASON_VALIDATION_FAILED)
+
+    def test_a_matching_answer_becomes_the_baseline_and_guards_from_then_on(self):
+        listener, sp = _listenerWhoseBuildTimeCheckRaised()
+        sp.current_user.return_value = {"id": "spotify-user-1", "email": "Expected@Example.com"}
+        with patch(_MONOTONIC, return_value=_T0):
+            self.assertTrue(listener._validateCurrentUser())
+        self.assertEqual(listener._authenticated_user_id, "spotify-user-1")
+        self.assertFalse(listener.contaminationDetected)
+
+        sp.current_user.return_value = {"id": "someone-else", "email": "expected@example.com"}
+        with patch(_MONOTONIC, return_value=_T0 + USER_VALIDATION_CACHE_SECONDS + _ONE_SECOND):
+            self.assertFalse(listener._validateCurrentUser())   #< the id guard has a baseline now
+
+    def test_a_session_without_an_email_is_adopted_without_a_verdict(self):
+        """Spotify can return "email": null - the same rule __init__ applies:
+        only a real, non-empty string email is proof of a mismatch."""
+        for sessionEmail in (None, ""):
+            with self.subTest(sessionEmail=sessionEmail):
+                listener, sp = _listenerWhoseBuildTimeCheckRaised()
+                sp.current_user.return_value = {"id": "spotify-user-1", "email": sessionEmail}
+                with patch(_MONOTONIC, return_value=_T0):
+                    self.assertTrue(listener._validateCurrentUser())
+                self.assertEqual(listener._authenticated_user_id, "spotify-user-1")
+                self.assertFalse(listener.contaminationDetected)
+
+    def test_the_credentialed_path_still_asks_the_profile_endpoint_nothing(self):
+        """Regression pin: the Web API /v1/me arm stamps the same cache
+        (_recordExternalIdentityCheck) and polls more often than it expires,
+        so a credentialed listener keeps not touching www.spotify.com - the
+        adoption above runs only when the cookie check actually runs."""
+        listener, sp = _listenerWhoseBuildTimeCheckRaised()
+        sp.current_user.side_effect = AssertionError("profile endpoint asked while on cooldown")
+        listener._recordExternalIdentityCheck(_T0)
+        for poll in range(1, 4):
+            now = _T0 + poll * WEB_API_POLL_INTERVAL_SECONDS
+            with patch(_MONOTONIC, return_value=now):
+                self.assertTrue(listener._validateCurrentUser())
+            listener._recordExternalIdentityCheck(now)
+        sp.current_user.assert_not_called()

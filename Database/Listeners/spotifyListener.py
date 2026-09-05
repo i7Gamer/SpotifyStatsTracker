@@ -778,28 +778,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
 
             # Validate that this Spotify client is properly authenticated for the expected user
             try:
-                current_user = self.sp.current_user()
-                self._authenticated_user_id = current_user.get("id")
-                authenticated_email = current_user.get("email")
-
-                # CRITICAL: Verify cookies actually belong to the expected user, not a
-                # different account. Detection alone isn't enough - the flag set here
-                # makes this listener refuse to record anything (see startListener/
-                # isLoggedIn): without it, plays from the wrong account kept being
-                # recorded under this user, and _validateCurrentUser was no help
-                # because it baselines on _authenticated_user_id, i.e. the WRONG
-                # account's own id, so the ongoing check always passed. Only a real,
-                # non-empty string email is proof of a mismatch - Spotify can return
-                # "email": null, which must not read as contamination.
-                if isinstance(authenticated_email, str) and authenticated_email and email:
-                    if authenticated_email.lower() != email.lower():
-                        self.contaminationDetected = True
-                        logger.error(
-                            "CRITICAL: Cookie contamination detected! Cookies for %s are actually authenticated as %s. "
-                            "Recording is disabled for this listener so plays from %s are NOT recorded under %s's account. "
-                            "The stored cookies must be re-authorized.",
-                            email, authenticated_email, authenticated_email, email
-                        )
+                self._captureIdentityBaseline(self.sp.current_user())
 
                 # The Spotify id used to be logged alongside this - but for these
                 # accounts Spotify returns the email AS the id, so the line printed
@@ -811,6 +790,12 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 # start/stop lines cover the lifecycle events worth seeing.
                 logger.debug("Listener initialized for user %s", self.logUser)
             except Exception as e:
+                # No baseline then - _validateCurrentUser's first successful
+                # answer adopts one (see there). Before that adoption existed,
+                # a listener built through a bot-check page on the profile
+                # endpoint (13x on live, last 2026-07-29) ran its whole life
+                # with the ongoing id check comparing against None, i.e. passing
+                # every answer whoever it named.
                 logger.warning("Could not verify authenticated user during listener init: %s", parseError(e))
 
             if (self.loginFailed or self.contaminationDetected) and self.user:
@@ -893,17 +878,6 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             # _validateCurrentUser. Same answer as the transient branch below
             # (stay logged in), without the warning: this is the system
             # working, not an incident.
-            if _isNoVerdictError(e):
-                # The request never got Spotify's opinion of these cookies: a
-                # transport failure, or the profile endpoint itself down (5xx).
-                # Same answer as above - the cookie-level verdict stands. Read
-                # as a refusal, this parked every page on /login and refused a
-                # correct password for LOGIN_CACHE_TTL_SECONDS (user_registry
-                # caches the False), 40 times on live in two months.
-                logger.warning("Could not check login status for user %s (Spotify unreachable "
-                               "or answered 5xx) - keeping the cookie-level verdict: %s",
-                               self.logUser, parseError(e))
-                return True
             logger.debug("Skipped login check for user %s while the shared Spotify "
                          "backoff is open: %s", self.logUser, parseError(e))
             return True
@@ -918,6 +892,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             if "json" in error_str or _is_rate_limit_error(e):
                 logger.warning("Transient error checking login status for user %s "
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
+                return True
+            if _isNoVerdictError(e):
+                # The request never got Spotify's opinion of these cookies: a
+                # transport failure, or the profile endpoint itself down (5xx).
+                # Same answer as above - the cookie-level verdict stands. Read
+                # as a refusal, this parked every page on /login and refused a
+                # correct password for LOGIN_CACHE_TTL_SECONDS (user_registry
+                # caches the False), 40 times on live in two months.
+                logger.warning("Could not check login status for user %s (Spotify unreachable "
+                               "or answered 5xx) - keeping the cookie-level verdict: %s",
+                               self.logUser, parseError(e))
                 return True
             return False   #< a real refusal: the cookies no longer authenticate
 
@@ -939,6 +924,40 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         self._last_user_validation_time = now
         self._last_user_validation_result = True
         self._last_validation_error_time = None
+
+    def _captureIdentityBaseline(self, current_user: dict) -> bool:
+        """Adopt the session's Spotify id as the identity every later
+        _validateCurrentUser answer is compared against, and check the
+        session's email against the account the cookies are stored under.
+        Returns False when that email proves the session is another account's.
+
+        CRITICAL: Verify cookies actually belong to the expected user, not a
+        different account. Detection alone isn't enough - the flag set here
+        makes this listener refuse to record anything (see startListener/
+        isLoggedIn): without it, plays from the wrong account kept being
+        recorded under this user, and the id comparison was no help because
+        it baselines on _authenticated_user_id, i.e. the WRONG account's own
+        id, so the ongoing check always passed. Only a real, non-empty string
+        email is proof of a mismatch - Spotify can return "email": null, which
+        must not read as contamination.
+
+        Runs from __init__, and again from _validateCurrentUser's first
+        successful answer when the build-time call raised and left no
+        baseline - the same comparison either way, so a listener whose
+        constructor met a bot-check page is not unguarded for life."""
+        self._authenticated_user_id = current_user.get("id")
+        authenticated_email = current_user.get("email")
+        if isinstance(authenticated_email, str) and authenticated_email and self.email:
+            if authenticated_email.lower() != self.email.lower():
+                self.contaminationDetected = True
+                logger.error(
+                    "CRITICAL: Cookie contamination detected! Cookies for %s are actually authenticated as %s. "
+                    "Recording is disabled for this listener so plays from %s are NOT recorded under %s's account. "
+                    "The stored cookies must be re-authorized.",
+                    self.email, authenticated_email, authenticated_email, self.email
+                )
+                return False
+        return True
 
     def _validationIsOnCooldown(self, now: float) -> bool:
         """Whether the profile endpoint should be left alone this poll.
@@ -970,14 +989,26 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             # The last KNOWN answer, which on a listener that has never had one
             # is the constructor's optimistic default. That is unchanged
             # behaviour: the 5-minute success cache always returned it too for
-            # the window after any check, and __init__'s contamination check is
-            # what actually guards against recording under the wrong account.
+            # the window after any check, and __init__'s contamination check
+            # (or, when that raised, the first successful validation's - see
+            # _captureIdentityBaseline) is what actually guards against
+            # recording under the wrong account.
             return self._last_user_validation_result
 
         try:
             current_user = self.sp.current_user()
             current_user_id = current_user.get("id")
-            if self._authenticated_user_id and current_user_id != self._authenticated_user_id:
+            if not self._authenticated_user_id:
+                # No baseline: __init__'s own identity check raised and the
+                # guard below had nothing to compare against - before this
+                # branch existed, for the listener's whole life. This first
+                # answer becomes the baseline, through the same email
+                # comparison __init__ makes; a mismatch is the contamination
+                # that comparison exists to catch, and False here hands the
+                # loop to onStale (see _checkOnce), so the rebuilt listener's
+                # own __init__ check is what refuses to record.
+                result = self._captureIdentityBaseline(current_user)
+            elif current_user_id != self._authenticated_user_id:
                 logger.error(
                     "Session user mismatch! Expected %s, got %s - this could indicate cross-user contamination",
                     self._authenticated_user_id, current_user_id
@@ -1016,6 +1047,20 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 logger.warning("Transient error validating current user %s "
                                "(rate limit or malformed response): %s", self.logUser, parseError(e))
                 raise  # Trigger rate limit backoff in startListener
+            if _isNoVerdictError(e):
+                # Spotify never answered the identity question (transport
+                # failure, or the profile endpoint down with a 5xx). Not a
+                # refusal of the cookies, so not the False that makes
+                # _checkOnce rebuild the listener - a 503 here cost 32 full
+                # rebuilds on live; and not a rate limit, so not a raise into
+                # startListener's process-wide backoff. The last known answer
+                # stands, and the refusal cooldown keeps the next poll from
+                # walking straight back into the same endpoint.
+                self._last_validation_error_time = now
+                logger.warning("Could not validate current user %s (Spotify unreachable or "
+                               "answered 5xx) - keeping the last known answer: %s",
+                               self.logUser, parseError(e))
+                return self._last_user_validation_result
             if not _is_auth_error(e):
                 raise
             logger.warning("Could not validate current user: %s", parseError(e))
@@ -1047,20 +1092,6 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         it, and widening the window to cover backoffs would re-admit the
         spurious rebuild-on-resume this bound exists to stop. Under-detection
         costs a later rebuild; over-detection costs a re-login at the moment
-            if _isNoVerdictError(e):
-                # Spotify never answered the identity question (transport
-                # failure, or the profile endpoint down with a 5xx). Not a
-                # refusal of the cookies, so not the False that makes
-                # _checkOnce rebuild the listener - a 503 here cost 32 full
-                # rebuilds on live; and not a rate limit, so not a raise into
-                # startListener's process-wide backoff. The last known answer
-                # stands, and the refusal cooldown keeps the next poll from
-                # walking straight back into the same endpoint.
-                self._last_validation_error_time = now
-                logger.warning("Could not validate current user %s (Spotify unreachable or "
-                               "answered 5xx) - keeping the last known answer: %s",
-                               self.logUser, parseError(e))
-                return self._last_user_validation_result
         someone starts listening."""
         state = self.getConnectPlayerState()
         if not state or not state.get("is_playing") or state.get("is_paused"):
