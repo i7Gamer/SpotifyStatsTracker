@@ -221,6 +221,154 @@ run('the failure still reveals the container and frees the button to retry', () 
   assert.strictEqual(button.attributes['aria-expanded'], 'true');
 });
 
+// --- R4: hidden must be re-applied even when transitionend never fires ------
+// `hidden` used to be restored only from a one-shot transitionend listener.
+// Under this app's own reduced-motion CSS (style.css:1527's
+// `.play-embed { transition: none }` plus the global
+// `transition-duration: 0.001ms !important` at :4929) the computed
+// transitionDuration is "1e-06s" and transition-property is `none`, so
+// transitionend NEVER fires: the collapsed player kept hidden === false, its
+// Spotify iframe stayed live in the DOM, and one Tab from the button landed
+// inside the zero-height iframe.
+//
+// DO NOT reuse failedScriptLoad() here: this needs window.getComputedStyle
+// and a controllable setTimeout, neither of which it wires.
+
+/** A page whose Play-now button is already showing the player (idle -> loading,
+ * visible), driven by two clicks - the second one collapses it, running the
+ * hide branch under test. `transitionDuration` is whatever
+ * window.getComputedStyle(container).transitionDuration would report. */
+function revealedPlayer(transitionDuration) {
+  const button = fakeElement('button');
+  button.dataset = { spotifyUrl: SPOTIFY_URL, embedType: 'track' };
+  button.textContent = 'Play Now';
+  const container = fakeElement('section');
+  const slot = fakeElement('div');
+  const body = fakeElement('body');
+  const timeouts = [];
+  let nextTimeoutId = 1;
+
+  global.window = { getComputedStyle: () => ({ transitionDuration }) };
+  global.document = {
+    body,
+    querySelector(selector) { return selector === '.play-now-button' ? button : null; },
+    getElementById(id) {
+      if (id === 'play-embed') { return container; }
+      if (id === 'play-embed-slot') { return slot; }
+      return null;
+    },
+    createElement(tagName) { return fakeElement(tagName); },
+  };
+  global.setTimeout = (fn, delay) => {
+    const id = nextTimeoutId;
+    nextTimeoutId += 1;
+    timeouts.push({ id, fn, delay, cleared: false });
+    return id;
+  };
+  global.clearTimeout = (id) => {
+    const entry = timeouts.find((t) => t.id === id);
+    if (entry) entry.cleared = true;
+  };
+
+  initPlayEmbed();
+  button.listeners.click();   //< idle -> loading, visible = true
+  button.listeners.click();   //< loading, still visible -> visible = false (the hide branch)
+
+  return {
+    button, container, slot, timeouts,
+    click: () => button.listeners.click(),
+  };
+}
+
+/** No getComputedStyle at all on window (transitionDurationMs's other 0 case). */
+function revealedPlayerNoGetComputedStyle() {
+  const button = fakeElement('button');
+  button.dataset = { spotifyUrl: SPOTIFY_URL, embedType: 'track' };
+  const container = fakeElement('section');
+  const slot = fakeElement('div');
+  const body = fakeElement('body');
+  const timeouts = [];
+
+  global.window = {};
+  global.document = {
+    body,
+    querySelector(selector) { return selector === '.play-now-button' ? button : null; },
+    getElementById(id) {
+      if (id === 'play-embed') { return container; }
+      if (id === 'play-embed-slot') { return slot; }
+      return null;
+    },
+    createElement(tagName) { return fakeElement(tagName); },
+  };
+  global.setTimeout = (fn, delay) => { timeouts.push({ fn, delay }); return timeouts.length; };
+  global.clearTimeout = () => {};
+
+  initPlayEmbed();
+  button.listeners.click();
+  button.listeners.click();
+
+  return { container, timeouts };
+}
+
+run('(a) the reproduced reduced-motion case: "1e-06s" never fires transitionend, so a fallback timer hides it', () => {
+  const { container, timeouts } = revealedPlayer('1e-06s');
+
+  assert.strictEqual(container.hidden, false, 'must not hide synchronously - a real transition might still be running');
+  assert.strictEqual(timeouts.length, 1, 'a fallback timer must be armed');
+  assert.ok(timeouts[0].delay > 50 && timeouts[0].delay < 51,
+            `delay should be ~0.001 + 50 grace, got ${timeouts[0].delay}`);
+
+  timeouts[0].fn();
+
+  assert.strictEqual(container.hidden, true);
+});
+
+run('(b) multiple transition-duration values: the MAX is used, not the first', () => {
+  //< 0.35s is the larger value and sits SECOND, so a "take the first token"
+  //  mutant reads 0.25s (delay 300) while the correct code reads 350 (delay 400)
+  const { timeouts } = revealedPlayer('0.25s, 0.35s');
+
+  assert.strictEqual(timeouts.length, 1);
+  assert.strictEqual(timeouts[0].delay, 400, '350ms max + 50ms grace');
+});
+
+run('(c) a zero transition duration hides synchronously with no fallback timer', () => {
+  const { container, timeouts } = revealedPlayer('0s');
+
+  assert.strictEqual(container.hidden, true);
+  assert.strictEqual(timeouts.length, 0);
+});
+
+run('(c) a missing getComputedStyle also hides synchronously with no fallback timer', () => {
+  const { container, timeouts } = revealedPlayerNoGetComputedStyle();
+
+  assert.strictEqual(container.hidden, true);
+  assert.strictEqual(timeouts.length, 0);
+});
+
+run('(d) re-showing before the fallback timer fires means the timer must not hide it', () => {
+  const page = revealedPlayer('0.35s');
+  assert.strictEqual(page.timeouts.length, 1);
+
+  page.click();   //< re-show: loading, hidden -> visible = true
+
+  assert.strictEqual(page.container.hidden, false);
+  assert.ok(page.container.classList.contains('is-visible'));
+
+  page.timeouts[0].fn();   //< the stale timer fires anyway (race)
+
+  assert.strictEqual(page.container.hidden, false,
+                     'the .is-visible guard inside the callback must stop it, even if clearTimeout raced');
+});
+
+run('(e) a genuine transitionend still hides the player', () => {
+  const page = revealedPlayer('0.35s');
+
+  page.container.listeners.transitionend({ target: page.container });
+
+  assert.strictEqual(page.container.hidden, true);
+});
+
 console.log('All play-embed tests passed.');
 
 // --- the browser hook ---------------------------------------------------------

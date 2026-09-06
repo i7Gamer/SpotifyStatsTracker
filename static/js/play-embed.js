@@ -28,6 +28,34 @@ function embedHeightFor(type) {
   return EMBED_HEIGHT_PX[type] || EMBED_HEIGHT_PX.track;
 }
 
+// Padding past a real transitionend so the fallback timer (see
+// setContainerVisible below) never races one that IS still coming - only
+// stands in when transitionend does not fire at all.
+const TRANSITION_END_GRACE_MS = 50;
+
+// The MAX of the comma-separated values CSS allows for transition-duration
+// (each property can carry its own). "0.35s" -> 350, "250ms" -> 250,
+// "1e-06s" -> ~0.001 (the reduced-motion case: transition: none plus the
+// global transition-duration: 0.001ms !important collapse to this, not to a
+// clean "0s"), anything unparsable, empty, or with no getComputedStyle at
+// all -> 0.
+function parseDurationToMs(token) {
+  const match = /^([\d.eE+-]+)(ms|s)$/.exec((token || '').trim());
+  if (!match) return 0;
+  const value = parseFloat(match[1]);
+  if (Number.isNaN(value)) return 0;
+  return match[2] === 's' ? value * 1000 : value;
+}
+
+function transitionDurationMs(element) {
+  if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
+    return 0;
+  }
+  const computed = window.getComputedStyle(element);
+  const raw = (computed && computed.transitionDuration) || '';
+  return raw.split(',').reduce((max, token) => Math.max(max, parseDurationToMs(token)), 0);
+}
+
 // Pure decision function (unit-tested in tests/test_play_embed.js). Given the
 // current {phase, visible} and an event ('click' | 'api-ready'), return the next
 // state plus the side effect the wiring should run and the button's label.
@@ -76,6 +104,9 @@ function nextPlayEmbedState(state, event) {
 function initPlayEmbed() {
   let state = { phase: 'idle', visible: false };
   let controller = null;
+  //< the fallback hide timer armed in the hide branch of setContainerVisible;
+  //  cleared on a re-show so it cannot fire after the player is visible again
+  let hideFallbackTimer = null;
 
   const button = document.querySelector('.play-now-button');
   const container = document.getElementById('play-embed');
@@ -178,10 +209,22 @@ function initPlayEmbed() {
 
   // Animates the reveal/hide via the .is-visible class (CSS transitions
   // max-height/opacity) instead of toggling `hidden`, which snaps instantly.
-  // `hidden` is still applied once the hide transition finishes so the
-  // collapsed player stays out of layout and the accessibility tree.
+  // `hidden` is applied once the hide transition finishes (transitionend) -
+  // OR, if the computed transition duration is zero, or a browser policy
+  // collapses it so far that transitionend never fires at all, via a
+  // fallback timer instead. Under this app's own reduced-motion styling
+  // (style.css: `.play-embed { transition: none }` plus the global
+  // `transition-duration: 0.001ms !important`) transitionend NEVER fires -
+  // transition-property is `none` - so without the fallback the collapsed
+  // player kept `hidden === false` forever: its Spotify iframe stayed live
+  // in the DOM and in the accessibility tree, and one Tab from the button
+  // landed inside the zero-height iframe.
   function setContainerVisible(visible) {
     if (visible) {
+      if (hideFallbackTimer !== null) {
+        clearTimeout(hideFallbackTimer);
+        hideFallbackTimer = null;
+      }
       container.style.setProperty('--embed-max-height', `${embedHeightFor(button.dataset.embedType)}px`);
       container.hidden = false;
       // Force a reflow so the browser registers the collapsed state before
@@ -200,6 +243,23 @@ function initPlayEmbed() {
         },
         { once: true },
       );
+      const duration = transitionDurationMs(container);
+      if (duration <= 0) {
+        // No transition to wait for at all - apply immediately rather than
+        // arm a timer nothing would ever race.
+        container.hidden = true;
+      } else {
+        // Belt and suspenders for the case a real transitionend never
+        // arrives: padded past it so a transition that IS coming still wins.
+        // The .is-visible guard (repeated from the listener above) makes
+        // this a no-op if the player was re-shown before the timer fires.
+        hideFallbackTimer = setTimeout(() => {
+          hideFallbackTimer = null;
+          if (!container.classList.contains('is-visible')) {
+            container.hidden = true;
+          }
+        }, duration + TRANSITION_END_GRACE_MS);
+      }
     }
   }
 
