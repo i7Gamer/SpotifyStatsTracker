@@ -579,7 +579,7 @@ def _fetch_recently_played_from_web_api(access_token: str, logUser: str | None =
         if resp.status_code == 403 and "insufficient" in resp.text.lower():
             logger.error(
                 "Spotify Web API rejected recently-played request for user %s: refresh token lacks "
-                "user-read-recently-played scope - re-authorization required: %s", logUser, resp.text)
+                "user-read-recently-played scope - re-authorization required: %s", logUser, truncateForLog(resp.text))
             return _SCOPE_ERROR
         if resp.status_code == 429:
             # This request is made with a bare requests.get and never passes
@@ -598,7 +598,7 @@ def _fetch_recently_played_from_web_api(access_token: str, logUser: str | None =
                 "Spotify Web API rate-limited the recently-played read for user %s - "
                 "standing down for %.0fs", logUser, standDown)
             return None
-        logger.error("Failed to fetch recently played tracks from Web API for user %s: %s %s", logUser, resp.status_code, resp.text)
+        logger.error("Failed to fetch recently played tracks from Web API for user %s: %s %s", logUser, resp.status_code, truncateForLog(resp.text))
     except Exception as e:
         logger.error("Error fetching recently played tracks from Web API for user %s: %s", logUser, str(e))
     return None
@@ -633,7 +633,7 @@ def _get_current_user_from_web_api(access_token: str, logUser: str | None = None
                 "Spotify Web API rate-limited the user-info read for user %s - "
                 "standing down for %.0fs", logUser, standDown)
         else:
-            logger.error("Failed to fetch current user from Web API for user %s: %s %s", logUser, resp.status_code, resp.text)
+            logger.error("Failed to fetch current user from Web API for user %s: %s %s", logUser, resp.status_code, truncateForLog(resp.text))
     except Exception as e:
         logger.error("Error fetching current user from Web API for user %s: %s", logUser, str(e))
     return None
