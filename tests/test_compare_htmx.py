@@ -394,10 +394,63 @@ class TestShell(CompareHtmxTestCase):
     def test_a_superseded_request_is_aborted(self):
         """hx-sync ...:replace is what the AbortController bookkeeping in the
         old loadCompareData did by hand. One queue for all three request
-        shapes, because a sort change used to abort a pending filter load too."""
+        shapes, because a sort change used to abort a pending filter load too.
+
+        Scoped to the FORM element itself (not a substring anywhere in the
+        shell) - #sortBy carries a DIFFERENT hx-sync value on the same
+        queue, see test_sort_by_queues_behind_a_refresh_rather_than_aborting_it,
+        so a plain substring check could no longer tell the two apart."""
+        import bs4
         shell = self._shell()
 
-        self.assertIn('hx-sync="#compareFilters:replace"', shell)
+        soup = bs4.BeautifulSoup(shell, "html.parser")
+        self.assertEqual(soup.select_one("#compareFilters")["hx-sync"], "#compareFilters:replace")
+
+    def test_sort_by_queues_behind_a_refresh_rather_than_aborting_it(self):
+        """#sortBy inherits hx-sync from the form unless overridden, and it
+        must be: a sort request's response carries only the six sortable
+        lists, not the whole page. Left on the form's ...:replace (or with
+        none of its own), changing the sort while a full refresh is in
+        flight - the first-load placeholder or a filter change - would
+        ABORT that refresh, whose six "Loading..." placeholders would then
+        never resolve, since the sort response cannot stand in for one
+        (reproduced in a real browser - see plan.md R2).
+
+        Rejected alternatives:
+        - "#sortBy:replace" (its own queue): a sort issued before a filter
+          change could then land AFTER the refresh and repaint the lists
+          with stale data.
+        - "drop": the select would silently show a sort the lists were
+          never asked to apply.
+
+        "queue last" on the SAME #compareFilters queue instead: when a
+        filter change lands while a sort is queued, the form's ...:replace
+        aborts whatever is in flight and the queue drains to the (last)
+        queued sort; the form's own refresh then queues behind THAT - two
+        requests fire in a fixed order and the end state is correct. htmx
+        only collects a queued request's hx-include values when it is
+        actually issued, so the queued sort reflects the filters as they
+        stand then, not as they stood when it was queued.
+
+        This is an attribute test - it pins the markup, not the abort
+        semantics above, which were verified by hand in a browser."""
+        import bs4
+        shell = self._shell()
+
+        soup = bs4.BeautifulSoup(shell, "html.parser")
+        self.assertEqual(soup.select_one("#sortBy")["hx-sync"], "#compareFilters:queue last")
+
+    def test_the_first_load_placeholder_still_aborts_on_a_refresh(self):
+        """The first-load placeholder issues a full refresh too (it is what
+        populates the stats table), so it keeps the form's ...:replace
+        rather than adopting #sortBy's queued strategy."""
+        import bs4
+        shell = self._shell()
+
+        soup = bs4.BeautifulSoup(shell, "html.parser")
+        placeholder = soup.select_one("#compareStatsTable p.loading[hx-get]")
+        self.assertIsNotNone(placeholder)
+        self.assertEqual(placeholder["hx-sync"], "#compareFilters:replace")
 
     def test_the_placeholder_triggers_the_first_load(self):
         """The shell renders no data; something has to ask for it. It lives on

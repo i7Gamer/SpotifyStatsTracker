@@ -160,14 +160,32 @@
        render identically. hx-include is required, not decorative - htmx does
        NOT serialize the enclosing form for a GET fired by a control inside it,
        so without it this would ask for a sort of the DEFAULT view.
-       hx-swap/hx-sync/hx-replace-url are inherited from the form; the indicator
-       is not, on purpose - a sort change dims only the lists it replaces. The
-       route answers with an HX-Replace-Url so ?scope= never reaches the address
-       bar. #}
+       hx-swap/hx-replace-url are inherited from the form; the indicator is
+       not, on purpose - a sort change dims only the lists it replaces. The
+       route answers with an HX-Replace-Url so ?scope= never reaches the
+       address bar.
+
+       hx-sync is NOT left to inherit "#compareFilters:replace": a sort
+       request's response carries only the six sortable lists, never the
+       whole page, so it must not be able to abort a full refresh in flight
+       (the first-load placeholder below, or a filter change) - that
+       refresh's other regions would then be stuck on "Loading..." forever.
+       "queue last" on the SAME queue instead: a sort WAITS for a refresh in
+       flight rather than aborting it, and only the newest queued sort
+       survives. Rejected: "#sortBy:replace" (its own queue) lets a sort
+       issued before a filter change land AFTER the refresh and repaint the
+       lists with stale data; "drop" would silently show a sort the lists
+       never applied. When a filter change lands while a sort is queued: the
+       form's replace aborts whatever is in flight, the queue drains the
+       sort, and the form's own request queues behind it - two requests in a
+       fixed order, correct end state either way. htmx only collects a
+       queued request's hx-include values when it is actually issued, so the
+       queued sort reflects the filters as they stand then. #}
     <select id="sortBy" name="sortBy"
             hx-get="{{ url_for('comparePage') }}?scope=sortable"
             hx-trigger="change"
             hx-include="#compareFilters"
+            hx-sync="#compareFilters:queue last"
             hx-indicator=".compare-sortable-list">
       <option value="totalTimeListened" {% if sortBy == 'totalTimeListened' %}selected{% endif %}>Time Played</option>
       <option value="plays" {% if sortBy == 'plays' %}selected{% endif %}>Number of Plays</option>
