@@ -9,9 +9,22 @@
 
     Needs: shareCandidates, pendingIncoming, pendingOutgoing, acceptedShares. -#}
 
+{# Gated on shareCandidates, same as the picker below: this hint used to be
+   unconditional, so with no candidate left (everyone already shared or
+   pending) it told the user to do something with no control to do it. The
+   elif's sentence must stay true to how routes/auth.py computes
+   shareCandidates (every other user minus accepted counterparts,
+   pending-incoming requesters and pending-outgoing recipients) - a plain
+   else would also print here on a brand-new instance with nobody else at
+   all, which is already covered by the "nobody else on this instance"
+   sentence near the bottom of this panel. #}
+{% if shareCandidates %}
 <p class="profile-hint">
   Request to share your listening stats with another user. Once they accept, you'll both be able to compare stats on the Compare page.
 </p>
+{% elif pendingIncoming or pendingOutgoing or acceptedShares %}
+<p class="profile-hint">Everyone else on this instance already shares with you or has a request open, so there is nobody new to ask.</p>
+{% endif %}
 
 {% if shareCandidates %}
 <form class="login-form profile-share-request" method="post" action="{{ url_for('profileSharingPage') }}">

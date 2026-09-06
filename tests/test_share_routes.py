@@ -308,6 +308,66 @@ class TestProfilePageShareListings(ShareRoutesTestCase):
         self.assertNotIn(b'<tr style="border-bottom: 1px solid var(--glass-border);">', resp.data)
 
 
+class TestRequestAShareHint(ShareRoutesTestCase):
+    """templates/_share_manage_panel.html:12-14's "Request to share..." hint
+    used to render unconditionally even though the request picker beside it
+    (:16-36) is gated on shareCandidates - so with no candidate (everyone
+    already shared or pending) the user was told to do something with no
+    control to do it. Three states, matching how routes/auth.py:634-641
+    computes shareCandidates (every other user minus accepted counterparts,
+    pending-incoming requesters and pending-outgoing recipients)."""
+
+    _ORIGINAL_HINT = b"Request to share your listening stats with another user"
+    _NO_CANDIDATE_HINT = (b"Everyone else on this instance already shares with you "
+                           b"or has a request open, so there is nobody new to ask.")
+    _EMPTY_INSTANCE_HINT = b"There's nobody else on this instance to share with yet."
+
+    def test_a_candidate_shows_the_original_hint_and_the_picker(self):
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.upsertUser("bob", "bob@example.com")   #< no relationship yet - a candidate
+
+        client = self._loginAs("alice", "alice@example.com")
+        resp = client.get("/profile/sharing")
+
+        self.assertIn(self._ORIGINAL_HINT, resp.data)
+        self.assertIn(b'id="targetUsername"', resp.data)
+        self.assertNotIn(self._NO_CANDIDATE_HINT, resp.data)
+        self.assertNotIn(self._EMPTY_INSTANCE_HINT, resp.data)
+
+    def test_no_candidate_but_an_existing_relationship_shows_the_alternate_hint(self):
+        """bob is already accepted, so he is the only other user and there is
+        no one left to request - but the panel is not empty (there IS an
+        accepted share to show), so the "nobody on this instance" sentence
+        would be false here."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        self.dash.repo.upsertUser("bob", "bob@example.com")
+        self.dash.repo.createShareRequest("alice", "bob")
+        bobShareId = self.dash.repo.getPendingOutgoingShares("alice")[0]["id"]
+        self.dash.repo.respondToShareRequest(bobShareId, "bob", accept=True)
+
+        client = self._loginAs("alice", "alice@example.com")
+        resp = client.get("/profile/sharing")
+
+        self.assertIn(self._NO_CANDIDATE_HINT, resp.data)
+        self.assertNotIn(self._ORIGINAL_HINT, resp.data)
+        self.assertNotIn(b'id="targetUsername"', resp.data)
+        self.assertNotIn(self._EMPTY_INSTANCE_HINT, resp.data)
+
+    def test_a_brand_new_instance_shows_neither_hint(self):
+        """No other user exists at all, so shareCandidates AND every list are
+        empty - the existing bottom sentence already covers this case, and
+        neither of the two hints above should also render."""
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+
+        client = self._loginAs("alice", "alice@example.com")
+        resp = client.get("/profile/sharing")
+
+        self.assertNotIn(self._ORIGINAL_HINT, resp.data)
+        self.assertNotIn(self._NO_CANDIDATE_HINT, resp.data)
+        self.assertNotIn(b'id="targetUsername"', resp.data)
+        self.assertIn(self._EMPTY_INSTANCE_HINT, resp.data)
+
+
 class TestPendingSharesTopbarBadge(ShareRoutesTestCase):
     """The badge next to the version-badge in the topbar (layout.html) - the
     only place a user is alerted to an incoming share request without
