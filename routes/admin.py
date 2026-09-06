@@ -533,7 +533,13 @@ def register(app, dashboard):
         if success:
             return redirect(url_for("adminPage", tab="settings", message=f"Test email successfully sent to {email}."))
         else:
-            return redirect(url_for("adminPage", tab="settings", error=f"Test email failed: {err}"))
+            # `err` rides here only as far as the caller - the redirect's query
+            # string is browser history and the access log, and an SMTP auth
+            # failure echoes the configured username in its text. The detail
+            # is already logged at ERROR by send_test_email
+            # (services/email_service.py:213-215); keep it out of the URL.
+            return redirect(url_for("adminPage", tab="settings",
+                                    error="Test email failed - see the server log for the SMTP error."))
     app.add_url_rule("/admin/test_email", "adminTestEmail", adminTestEmail, methods=["POST"])
 
     @requiresAdmin

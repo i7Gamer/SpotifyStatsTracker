@@ -1171,6 +1171,26 @@ class TestAdminSendTestEmail(AdminRouteTestBase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("error=", resp.headers["Location"])
 
+    def test_a_failed_send_keeps_the_smtp_error_out_of_the_redirect(self):
+        """The flash rides in the redirect's query string - browser history
+        and the access log - and services/email_service.py's send_test_email
+        already logs the exception at ERROR (:213-215), including an SMTP
+        auth failure's echoed username. Same class of bug as 9b1d44a
+        (routes/auth.py's profile actions)."""
+        from urllib.parse import unquote_plus
+
+        dash = self._makeApp()
+        with patch("routes.admin.send_test_email",
+                   return_value=(False, "(535, b'5.7.8 Authentication failed: someone@example.com')")):
+            resp = self._post(dash, "/admin/test_email", isAdmin=True, data={})
+
+        self.assertEqual(resp.status_code, 302)
+        location = unquote_plus(resp.headers["Location"])
+        self.assertIn("error=", location)
+        self.assertIn("Test email failed", location)
+        self.assertNotIn("someone@example.com", location)
+        self.assertNotIn("Authentication failed", location)
+
 
 class TestAdminCreateBackup(AdminRouteTestBase):
     def _mockWorker(self, runBackup=None, error=None):
