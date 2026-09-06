@@ -58,7 +58,22 @@
      included values to a URL that already carries the parameter, and
      request.args.get returns the FIRST occurrence - the stale half would win.
      One pass is enough: the corrected URL is what the next swap requests, and
-     the controls it brings back are rendered from that request. */
+     the controls it brings back are rendered from that request.
+
+     Rewriting the attribute is not enough on its own, though: htmx 2.0.9
+     captures a boosted anchor's href and an element's hx-get path when it
+     PROCESSES the node (boostElement / processVerbs in
+     static/js/vendor/htmx.min.js), not at click time - so without a
+     re-init the sort/skips/pagination requests still went out WITHOUT
+     groupBy and the address bar lost it, no matter what the attribute now
+     read. htmx re-initialises a node whose attribute hash changed
+     (maybeDeInitAndHash: initHash !== attributeHash(elt) -> deInitNode,
+     then re-init) and leaves an unchanged node alone, so htmx.process(container)
+     after the rewrite is safe to call unconditionally - it re-captures the
+     new paths for the controls actually touched above and no-ops on
+     everything else. It is also safe to call on a node that already
+     initialised: a re-init never re-fires a `load` trigger, because
+     firstInitCompleted survives de-init. */
   function retargetPlayLogUrls(groupBy) {
     var container = document.getElementById(HISTORY_RESULTS_ID);
     if (!container || !container.querySelectorAll) return;
@@ -70,6 +85,9 @@
       var parsed = new URL(raw, window.location.origin);
       control.setAttribute(name, detailPageUrl(parsed.pathname, parsed.search, groupBy));
     });
+    if (window.htmx && typeof window.htmx.process === 'function') {
+      window.htmx.process(container);
+    }
   }
 
   function timeSeriesWrap() {

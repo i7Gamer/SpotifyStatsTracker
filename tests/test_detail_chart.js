@@ -170,6 +170,7 @@ function freshPage(options) {
 
   return {
     wrap, groupBySelect, hiddenInputs, calls, pendingFetches,
+    playLogContainer,
     chartData: global.window.__chartData,
     load(groupBy) {
       groupBySelect.value = groupBy || '';
@@ -395,6 +396,53 @@ run('a page with no play log on screen still updates the chart', () => {
   page.load('week');
 
   assert.strictEqual(page.pendingFetches.length, 1);
+});
+
+// --- R3: htmx must re-init the play log after its URLs are rewritten --------
+// htmx 2.0.9 captures a boosted anchor's href / an element's hx-get path when
+// it PROCESSES the node, not at click time (boostElement / processVerbs in
+// vendor/htmx.min.js) - rewriting the attribute afterwards changes nothing on
+// its own, so without htmx.process(container) the sort/skips/pagination
+// requests kept going out WITHOUT groupBy. window.htmx is set AFTER
+// freshPage(), which replaces global.window wholesale.
+
+run('a bucket change re-inits the play log with htmx AFTER the URLs are rewritten', () => {
+  const sortToggle = makeControl('href', '/song/t1?sort=oldest');
+  const page = freshPage({ playLogControls: [sortToggle] });
+  const processCalls = [];
+  global.window.htmx = {
+    process(node) {
+      //< recorded from INSIDE the spy: proves the rewrite ran first
+      processCalls.push({ node, hrefAtCallTime: sortToggle.getAttribute('href') });
+    },
+  };
+
+  page.load('month');
+
+  assert.strictEqual(processCalls.length, 1, 'exactly one re-init per bucket change');
+  assert.strictEqual(processCalls[0].node, page.playLogContainer,
+                     'must re-init the play log container itself, not some other node');
+  assert.strictEqual(processCalls[0].hrefAtCallTime, '/song/t1?sort=oldest&groupBy=month',
+                     'the URL must already be rewritten by the time htmx re-captures it');
+});
+
+run('a bucket change with no play log on screen never calls htmx.process', () => {
+  const page = freshPage();   //< no playLogControls -> getElementById returns null
+  const processCalls = [];
+  global.window.htmx = { process(node) { processCalls.push(node); } };
+
+  page.load('week');
+
+  assert.strictEqual(processCalls.length, 0);
+});
+
+run('a bucket change does not throw when window.htmx is unavailable', () => {
+  const sortToggle = makeControl('href', '/song/t1?sort=oldest');
+  const page = freshPage({ playLogControls: [sortToggle] });
+  delete global.window.htmx;
+
+  assert.doesNotThrow(() => page.load('month'));
+  assert.strictEqual(page.calls.errors.length, 0, 'no htmx is not a load failure to log');
 });
 (async () => {
   const only = process.argv[2] || '';
