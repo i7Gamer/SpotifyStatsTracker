@@ -217,7 +217,10 @@ def register(app, dashboard):
         dateText = now(tz=db.tz).strftime("%Y-%m-%d")
         filename = f"spotify_stats_export_{username}_{dateText}.{exportFormat}"
         if exportFormat == "csv":
-            generator, mimetype = generateCsvExport(db), "text/csv; charset=utf-8"
+            #< bare mimetype - Response(mimetype=...) appends "; charset=utf-8"
+            #  itself for text/*, so passing it here doubled the parameter
+            #  (services/export.py:resolvePlaylistFormat has the same fix)
+            generator, mimetype = generateCsvExport(db), "text/csv"
         else:
             generator, mimetype = generateJsonExport(db), "application/json"
 

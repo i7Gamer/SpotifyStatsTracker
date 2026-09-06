@@ -107,6 +107,10 @@ class TestBlendExportContent(BlendExportTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/csv", resp.mimetype)
+        #< resp.mimetype strips parameters, so it can never see Werkzeug
+        #  doubling "; charset=utf-8" for a text/* Response(mimetype=...) -
+        #  only the exact header catches that (R5, 2026-09-06 review)
+        self.assertEqual(resp.headers["Content-Type"], "text/csv; charset=utf-8")
         self.assertIn('attachment; filename="blend_alice_bob.csv"',
                       resp.headers["Content-Disposition"])
         lines = [l for l in body.splitlines() if l]
@@ -129,10 +133,13 @@ class TestBlendExportContent(BlendExportTestCase):
         self.assertTrue(m3u.data.decode().startswith("#EXTM3U"))
         self.assertIn("spotify:track:" + "S2" * 11, m3u.data.decode())
         self.assertIn(".m3u", m3u.headers["Content-Disposition"])
+        #< audio/x-mpegurl never gets Werkzeug's text/* charset treatment
+        self.assertEqual(m3u.headers["Content-Type"], "audio/x-mpegurl")
 
         xspf = client.get("/compare/blend?with=bob&interval=&format=xspf")
         self.assertIn("<playlist", xspf.data.decode())
         self.assertIn("Blend", xspf.data.decode())
+        self.assertEqual(xspf.headers["Content-Type"], "application/xspf+xml; charset=utf-8")
 
     def test_an_unknown_format_degrades_to_csv(self):
         self._accept("alice", "bob")

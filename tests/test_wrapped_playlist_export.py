@@ -71,6 +71,10 @@ class TestWrappedPlaylistExport(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.mimetype, "text/csv")
+        #< resp.mimetype strips parameters, so it can never see Werkzeug
+        #  doubling "; charset=utf-8" for a text/* Response(mimetype=...) -
+        #  only the exact header catches that (R5, 2026-09-06 review)
+        self.assertEqual(resp.headers["Content-Type"], "text/csv; charset=utf-8")
         self.assertIn("Wrapped Song One", resp.get_data(as_text=True))
         self.assertEqual(resp.headers["Content-Disposition"], 'attachment; filename="wrapped_top100_2026.csv"')
 
@@ -82,6 +86,8 @@ class TestWrappedPlaylistExport(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn("audio/x-mpegurl", resp.mimetype)
+        #< audio/x-mpegurl never gets Werkzeug's text/* charset treatment
+        self.assertEqual(resp.headers["Content-Type"], "audio/x-mpegurl")
         self.assertIn("spotify:track:t1", resp.get_data(as_text=True))
 
     def test_exports_as_xspf(self):
@@ -92,6 +98,7 @@ class TestWrappedPlaylistExport(AppTestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn("application/xspf+xml", resp.mimetype)
+        self.assertEqual(resp.headers["Content-Type"], "application/xspf+xml; charset=utf-8")
         self.assertIn("Wrapped 2026 Top 100", resp.get_data(as_text=True))
 
     def test_requests_up_to_100_songs_regardless_of_wrapped_page_limit(self):

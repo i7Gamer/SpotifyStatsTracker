@@ -210,18 +210,25 @@ class TestTagsRoutes(_TagsRoutesBase):
         resp = self.client.get("/playlist/export?tags=workout&format=csv")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.mimetype, "text/csv")
+        #< resp.mimetype strips parameters, so it can never see Werkzeug
+        #  doubling "; charset=utf-8" for a text/* Response(mimetype=...) -
+        #  only the exact header catches that (R5, 2026-09-06 review)
+        self.assertEqual(resp.headers["Content-Type"], "text/csv; charset=utf-8")
         self.assertIn("Rock Song", resp.get_data(as_text=True))
 
         # Export M3U
         resp = self.client.get("/playlist/export?tags=workout&format=m3u")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("audio/x-mpegurl", resp.mimetype)
+        #< audio/x-mpegurl never gets Werkzeug's text/* charset treatment
+        self.assertEqual(resp.headers["Content-Type"], "audio/x-mpegurl")
         self.assertIn("spotify:track:t1", resp.get_data(as_text=True))
 
         # Export XSPF
         resp = self.client.get("/playlist/export?tags=workout&format=xspf")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("application/xspf+xml", resp.mimetype)
+        self.assertEqual(resp.headers["Content-Type"], "application/xspf+xml; charset=utf-8")
         self.assertIn("<location>spotify:track:t1</location>", resp.get_data(as_text=True))
 
     def test_a_tag_whose_name_contains_a_comma_can_be_selected(self):

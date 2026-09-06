@@ -245,12 +245,21 @@ def resolvePlaylistFormat(tracks: list[dict], fmt: str, title: str):
     One resolver for every route that streams a playlist file (the Playlists
     page's tag export, Wrapped's Top 100, the Compare blend), so a new format
     or a mimetype fix lands everywhere at once. An unknown fmt degrades to
-    CSV, matching the routes' own whitelist fallback."""
+    CSV, matching the routes' own whitelist fallback.
+
+    Bare mimetypes, not "...; charset=utf-8": Werkzeug's Response(mimetype=...)
+    already appends "; charset=utf-8" for text/* and */*+xml types, so passing
+    it here doubled the parameter (text/csv shipped as
+    "text/csv; charset=utf-8; charset=utf-8"). XSPF's "+xml" suffix means it
+    qualifies too, even though appending the parameter ourselves happened not
+    to double it (the check is `endswith('+xml')`, which our own trailing
+    parameter defeated) - made bare anyway for consistency. audio/x-mpegurl
+    never gets this treatment either way."""
     if fmt == "m3u":
         return generatePlaylistM3u(tracks), "audio/x-mpegurl"
     if fmt == "xspf":
-        return generatePlaylistXspf(tracks, title=title), "application/xspf+xml; charset=utf-8"
-    return generatePlaylistCsv(tracks), "text/csv; charset=utf-8"
+        return generatePlaylistXspf(tracks, title=title), "application/xspf+xml"
+    return generatePlaylistCsv(tracks), "text/csv"
 
 
 # The C0 control characters XML 1.0 forbids outright: everything below 0x20

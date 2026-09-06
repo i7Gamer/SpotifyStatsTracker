@@ -159,6 +159,10 @@ class TestExportRoute(DatabaseTestCase, _AppTestBase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn(".csv", resp.headers["Content-Disposition"])
+        #< resp.mimetype strips parameters, so it can never see Werkzeug
+        #  doubling "; charset=utf-8" for a text/* Response(mimetype=...) -
+        #  only the exact header catches that (R5, 2026-09-06 review)
+        self.assertEqual(resp.headers["Content-Type"], "text/csv; charset=utf-8")
         rows = list(csv.reader(io.StringIO(resp.get_data(as_text=True))))
         self.assertEqual(rows[0][:4], ["played_at_utc", "track_name", "artists", "album"])
         self.assertEqual(len(rows), 3)   #< header + 2 plays
