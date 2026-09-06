@@ -44,6 +44,61 @@
   var filterButtons = [];
   var categoryDivs = [];
 
+  var SHOW_MORE_BUTTON_ID = 'showMorePlaysBtn';
+
+  // "Show More Plays" (templates/_play_log_batch.html) carries
+  // hx-disabled-elt="this": htmx disables it right after htmx:beforeRequest,
+  // which blurs it, so by beforeSwap/afterSettle nothing inside the swapped
+  // #timelineActions holds focus any more (the shared helper in
+  // htmx-filters.js sees nothing to restore). The swap is also outerHTML, so
+  // the old button - and the old #timelineActions - are gone by afterSettle;
+  // there is no by-id match for htmx's own restore either, because the old
+  // button was already disabled (and therefore unfocused) before the swap.
+  // Recorded here instead: true only when the button itself held focus right
+  // before the request that is about to disable it.
+  var restoreShowMoreFocus = false;
+
+  // htmx fires beforeRequest BEFORE hx-disabled-elt disables (and blurs) the
+  // button - the last point document.activeElement can still be it.
+  function armShowMoreFocusRestore(evt) {
+    var elt = evt && evt.detail && evt.detail.elt;
+    restoreShowMoreFocus = !!(elt && elt.id === SHOW_MORE_BUTTON_ID
+      && document.activeElement === elt);
+  }
+
+  // The button inherits the list's hx-sync="#detailHistoryResults:replace",
+  // so a sort/skips/pagination change firing while a batch is in flight
+  // aborts that batch rather than queuing behind it. None of these fire for
+  // the OTHER swap that then lands (a sort's own beforeRequest re-arms the
+  // flag for itself if it applies), so clearing here only ever disarms a
+  // batch that will never reach afterSettle - never a later request's own
+  // arm. Deliberately NOT htmx:afterRequest: it fires before the deferred
+  // afterSettle on a SUCCESSFUL request too, so clearing there would disarm
+  // every batch before its own afterSettle ever got a chance to look at the
+  // flag.
+  function disarmShowMoreFocusRestore() {
+    restoreShowMoreFocus = false;
+  }
+
+  function restoreShowMoreFocusIfArmed() {
+    if (!restoreShowMoreFocus) return;
+    restoreShowMoreFocus = false;
+    var newButton = document.getElementById(SHOW_MORE_BUTTON_ID);
+    if (newButton) {
+      newButton.focus();
+      return;
+    }
+    //< the batch that just landed was the last one: no new button to hand
+    //  focus to, so fall back to the container - the pattern the shared
+    //  helper (htmx-filters.js) uses for the same situation elsewhere
+    var results = document.getElementById(HISTORY_RESULTS_ID);
+    if (!results) return;
+    if (!results.hasAttribute || !results.hasAttribute('tabindex')) {
+      if (results.setAttribute) results.setAttribute('tabindex', '-1');
+    }
+    results.focus();
+  }
+
   // The tabs flip visibility over content that is already on the page - no
   // request, so nothing for htmx to own. The URL still has to follow, and it
   // replaceStates for the same reason every other update here does: Back must
@@ -135,5 +190,14 @@
     document.body.addEventListener('htmx:afterSwap', function (evt) {
       if (window.AjaxStatus && isHistorySwap(evt.target)) window.AjaxStatus.clearBanner(BANNER_OWNER);
     });
+
+    document.body.addEventListener('htmx:beforeRequest', armShowMoreFocusRestore);
+    document.body.addEventListener('htmx:afterSettle', restoreShowMoreFocusIfArmed);
+    //< a batch that never lands must not leave a stale arm for some later,
+    //  unrelated settle to act on (see disarmShowMoreFocusRestore above)
+    document.body.addEventListener('htmx:responseError', disarmShowMoreFocusRestore);
+    document.body.addEventListener('htmx:sendError', disarmShowMoreFocusRestore);
+    document.body.addEventListener('htmx:sendAbort', disarmShowMoreFocusRestore);
+    document.body.addEventListener('htmx:timeout', disarmShowMoreFocusRestore);
   }
 })();
