@@ -252,6 +252,14 @@ function onSwapFailure(targetId, retry) {
 // (Compare swaps a dozen), so with one flag the second beforeSwap cleared the
 // first's: the region the user actually had focus in was left unrestored,
 // silently, whenever anything overlapped it.
+//
+// The flag says only "focus was inside the target at beforeSwap" - it is not
+// an instruction to blindly refocus the target at afterSettle. /compare has
+// no hx-target anywhere, so htmx resolves the target to the firing control
+// itself, to the enclosing form (hx-swap="none"), or to <body> for a boosted
+// badge; restoreFocusAfterSwap checks where focus actually IS before touching
+// anything, precisely because "the target" is not always a swapped-out
+// container the browser dropped focus from.
 var FOCUS_WAS_INSIDE = '_htmxFocusWasInside';
 
 function rememberFocusBeforeSwap(evt) {
@@ -267,6 +275,20 @@ function restoreFocusAfterSwap(evt) {
   //< consumed, not merely read: a later settle of a region the user has since
   //  left must not pull focus back out of wherever they are now
   target[FOCUS_WAS_INSIDE] = false;
+  //< /compare has no hx-target anywhere, so htmx resolves the target to the
+  //  firing element itself, to the enclosing form (hx-swap="none"), or to
+  //  <body> for a boosted link - and Node.contains is inclusive, so "the
+  //  target still holds the focus" is the NORMAL case there, not an
+  //  exception to it. It is also what htmx's own by-id restore inside
+  //  swap() produces on /history, the Top lists and detail history: a
+  //  swapped-in element sharing an id with the one that had focus (the
+  //  jump-to-page input) is refocused before this handler ever runs. Either
+  //  way focus is already where the user left it, and stamping
+  //  tabindex="-1" on that control / form / <body> is pure damage - a
+  //  <select> refocused this way never gets its tabindex removed again and
+  //  drops out of the tab order for the rest of the page's life.
+  var active = document.activeElement;
+  if (active && target.contains && target.contains(active)) return;
   if (!target.focus) return;
   //< a container (a <div>, typically) is not focusable at all without one -
   //  document.body must never be where focus lands instead

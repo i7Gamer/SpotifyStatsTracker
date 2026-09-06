@@ -423,13 +423,21 @@ function makeFocusable(attrs) {
   };
 }
 
+// A real post-swap moment: the old content (and whatever was focused inside
+// it) is gone, and the browser's default has already dropped focus to
+// <body> - modelled here as a fresh, unrelated makeFocusable() standing in
+// for <body>, moved into place between beforeSwap and afterSettle. The old
+// version of these tests left document.activeElement pointed at the (by now
+// detached) button through the restore call, which the real DOM never does.
+
 run('focus inside the swap target is restored once the swap settles', () => {
   const button = makeFocusable();
   const target = makeFocusable();
-  target.contains = (node) => node === button;   //< button lives inside target
+  target.contains = (node) => node === button;   //< button lived inside target
   global.document = { activeElement: button };
 
   rememberFocusBeforeSwap({ detail: { target } });
+  global.document = { activeElement: makeFocusable() };   //< <body>, post-swap
   restoreFocusAfterSwap({ detail: { target } });
 
   assert.strictEqual(target.focusCalls, 1);
@@ -444,6 +452,7 @@ run('a target that already carries a tabindex keeps its own value', () => {
   global.document = { activeElement: button };
 
   rememberFocusBeforeSwap({ detail: { target } });
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target } });
 
   assert.strictEqual(target.focusCalls, 1);
@@ -457,6 +466,7 @@ run('focus outside the swap target is never moved onto it', () => {
   global.document = { activeElement: elsewhere };
 
   rememberFocusBeforeSwap({ detail: { target } });
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target } });
 
   assert.strictEqual(target.focusCalls, 0);
@@ -469,6 +479,7 @@ run('a swap nobody had focus in front of leaves nothing to restore', () => {
   global.document = { activeElement: makeFocusable() };
   rememberFocusBeforeSwap({ detail: { target } });   //< explicitly resets state for this case
 
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target } });
 
   assert.strictEqual(target.focusCalls, 0);
@@ -491,7 +502,9 @@ run('two overlapping swaps each restore their own focus', () => {
   global.document = { activeElement: makeFocusable() };
   rememberFocusBeforeSwap({ detail: { target: targetB } });   //< the interleaved one
 
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target: targetA } });
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target: targetB } });
 
   assert.strictEqual(targetA.focusCalls, 1, 'the region that held focus gets it back');
@@ -507,10 +520,96 @@ run('a second settle of the same target does not re-focus it', () => {
   global.document = { activeElement: button };
 
   rememberFocusBeforeSwap({ detail: { target } });
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target } });
+  global.document = { activeElement: makeFocusable() };
   restoreFocusAfterSwap({ detail: { target } });
 
   assert.strictEqual(target.focusCalls, 1);
+});
+
+// --- R1: the target is not always a swapped-out container --------------------
+// /compare has no hx-target anywhere, so htmx resolves the target to the
+// firing control itself, to the enclosing form (hx-swap="none"), or to
+// <body> for a boosted badge. Node.contains is inclusive, so a target that
+// IS (or still holds) the focused element must be left alone rather than
+// re-focused and stamped with tabindex="-1".
+
+run('(a) the target is the very control that fired the request', () => {
+  const target = makeFocusable();
+  target.contains = (node) => node === target;   //< Node.contains is inclusive
+  global.document = { activeElement: target };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 0);
+  assert.strictEqual('tabindex' in target._attrs, false);
+});
+
+run('(b) the target is a form whose focused child was not swapped away', () => {
+  //< hx-swap="none": the form itself is "the target" and the live control
+  //  (e.g. #sortBy) is still its child throughout
+  const child = makeFocusable();
+  const target = makeFocusable();
+  target.contains = (node) => node === child;
+  global.document = { activeElement: child };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 0);
+  assert.strictEqual(child.focusCalls, 0);
+  assert.strictEqual('tabindex' in target._attrs, false);
+});
+
+run('(c) the target is document.body (a boosted link with no ancestor hx-target)', () => {
+  const target = makeFocusable();
+  target.contains = () => true;   //< body contains everything
+  global.document = { activeElement: target };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 0);
+  assert.strictEqual('tabindex' in target._attrs, false, 'never stamp tabindex on <body>');
+});
+
+run('(d) a container whose focused child is really gone still restores', () => {
+  //< the case the guard must not break: a genuine swapped-out container
+  const button = makeFocusable();
+  const target = makeFocusable();
+  target.contains = (node) => node === button;
+  global.document = { activeElement: button };
+
+  rememberFocusBeforeSwap({ detail: { target } });
+  global.document = { activeElement: makeFocusable() };   //< <body>, post-swap
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 1);
+  assert.strictEqual(target._attrs.tabindex, '-1');
+});
+
+run('(e) MS-1: htmx already restored focus to a by-id-matched element inside the container', () => {
+  // htmx's own swap() does an id-matched focus restore for a swapped-in
+  // element sharing an id with the one that had focus (#jumpToPage on
+  // /history, the Top lists and detail history) - it runs well before this
+  // handler's afterSettle. The new element reports as contained by the
+  // target too, so this must not treat it as "gone" either.
+  const oldControl = makeFocusable();
+  const target = makeFocusable();
+  target.contains = (node) => node === oldControl;
+  global.document = { activeElement: oldControl };
+  rememberFocusBeforeSwap({ detail: { target } });
+
+  const newJumpToPage = makeFocusable();
+  target.contains = (node) => node === newJumpToPage;   //< htmx's restore already ran
+  global.document = { activeElement: newJumpToPage };
+
+  restoreFocusAfterSwap({ detail: { target } });
+
+  assert.strictEqual(target.focusCalls, 0);
+  assert.strictEqual('tabindex' in target._attrs, false);
 });
 
 console.log('All htmx filter tests passed.');
