@@ -5,6 +5,15 @@ from __future__ import annotations
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers
 
+# The created_reason prefixes a play is stored under for a live listener catch
+# vs. a Web API backfill recovery (see appendTrackData and
+# WEB_API_BACKFILL_SOURCE in Database/db.py). They would sit next to that
+# constant, but this module doesn't import Database.db directly (only
+# Database.queries._base does, on its own already-established import path),
+# and getPlaySourceCountsByUser below is their only user - see its docstring.
+LIVE_PLAY_REASON_PREFIX = "listener_play"
+BACKFILL_PLAY_REASON_PREFIX = "web_api_backfill_play"
+
 
 class PlayQueries:
     """PlayQueries: plays data-access methods, mixed into Repository."""
@@ -564,6 +573,53 @@ class PlayQueries:
             """
         ).fetchall()
         return {r["username"]: {"plays": r["plays"], "skips": r["skips"]} for r in rows}
+
+    def getPlaySourceCountsByUser(self, sinceTs: float, promptSeconds: int) -> dict[str, dict]:
+        """Per-user play counts for the admin ledger's live-miss ratio, split
+        into three buckets over plays with played_at >= sinceTs:
+        - "live": caught by the listener directly (LIVE_PLAY_REASON_PREFIX).
+        - "prompt_backfill": recovered by the Web API sweep
+          (BACKFILL_PLAY_REASON_PREFIX) within `promptSeconds` of the play
+          ending - a genuine missed live catch.
+        - "late_backfill": recovered by the same sweep, but later - offline
+          listening synced after the fact, not a live-path failure.
+        Any other created_reason (history_import, legacy NULL rows, an
+        unrecognised value) counts in none of the three: only live vs. prompt
+        backfill speaks to whether the live catch is working, and late/import
+        rows would only dilute that.
+
+        A NULL created_at (rows that predate the column) falls out of BOTH
+        backfill buckets on its own: `created_at - played_at` is NULL, so the
+        `<=`/`>` comparison is NULL, and `TRUE AND NULL` is NULL rather than
+        0 or 1 - SQLite's SUM() then simply ignores that row, which is the
+        right behaviour (unknown promptness is not evidence either way).
+
+        Users with no rows in the window are simply absent, same as
+        getPlayAndSkipCountsByUser above - the caller decides how to treat an
+        absent user."""
+        conn = self._conn()
+        livePattern = f"{LIVE_PLAY_REASON_PREFIX}%"
+        backfillPattern = f"{BACKFILL_PLAY_REASON_PREFIX}%"
+        rows = conn.execute(
+            """
+            SELECT username,
+                   SUM(created_reason LIKE ?) AS live,
+                   SUM(created_reason LIKE ? AND created_at - played_at <= ?) AS prompt_backfill,
+                   SUM(created_reason LIKE ? AND created_at - played_at > ?) AS late_backfill
+            FROM plays
+            WHERE played_at >= ?
+            GROUP BY username
+            """,
+            (livePattern, backfillPattern, promptSeconds, backfillPattern, promptSeconds, sinceTs),
+        ).fetchall()
+        return {
+            r["username"]: {
+                "live": r["live"] or 0,
+                "prompt_backfill": r["prompt_backfill"] or 0,
+                "late_backfill": r["late_backfill"] or 0,
+            }
+            for r in rows
+        }
 
     def getPlaysWithSourceInRange(self, username: str, startTs: float, endTs: float) -> list[dict]:
         """Plays in the closed [startTs, endTs] window including their

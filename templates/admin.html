@@ -273,6 +273,21 @@
           {% endfor %}
         </div>
 
+        {#- The live path's own health, distinct from Listener Sessions above
+            (rebuild churn): what share of the plays the API had PROMPTLY
+            (sweep delay <= 16 min) the live listener actually caught first.
+            The raw backfill share alone reads as a push failure even when the
+            gap is offline listening synced late - see the tooltip text and
+            implementationPlan-2026-09-07.md section 5. #}
+        <p class="admin-worker-label">Live miss ratio (30d)</p>
+        <div class="admin-worker-row" id="live-miss-ratio">
+          {% for u in users_list if u.live_miss %}
+            <span class="badge badge-secondary" title="{{ u.live_miss.missed }} missed live of {{ u.live_miss.live + u.live_miss.missed }} prompt plays in 30d; {{ u.live_miss.late }} more recovered late (offline listening, not counted)">{{ u.username }}: {{ "%.1f"|format(u.live_miss.pct) }}%</span>
+          {% else %}
+            <span class="badge badge-secondary">NO DATA</span>
+          {% endfor %}
+        </div>
+
         <p class="admin-worker-label">Spotify Rate Limiting</p>
         <div class="admin-worker-row">
           {% if spotify_rate_limit %}

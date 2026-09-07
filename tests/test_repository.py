@@ -916,6 +916,114 @@ EXTRAS_FULL = {
 }
 
 
+class TestGetPlaySourceCountsByUser(RepositoryTestCase):
+    """getPlaySourceCountsByUser: the per-user live/prompt-backfill/late-backfill
+    play counts behind the admin ledger's live-miss ratio (see
+    implementationPlan-2026-09-07.md section 5). Seeds use raw SQL rather than
+    insertPlay, which always stamps created_at from time.time() whenever a
+    created_reason is given - these tests need createdAt/playedAt pinned to
+    exact values, including a NULL createdAt for the legacy-row case."""
+
+    SINCE_TS = 10_000.0
+    PROMPT_SECONDS = 16 * 60
+
+    def setUp(self):
+        super().setUp()
+        self.repo.upsertUser("alice", "alice@example.com")
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.upsertTrack(makeTrack(trackId="t1"))
+
+    def _insertRawPlay(self, username, playedAt, createdReason, createdAt=None):
+        conn = self.repo._conn()
+        with conn:
+            conn.execute(
+                "INSERT INTO plays (username, track_id, played_at, time_played, created_at, created_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (username, "t1", playedAt, 5000, createdAt, createdReason),
+            )
+
+    def test_counts_are_split_per_bucket_per_user_not_just_totalled(self):
+        """A total-only assertion would pass a live/backfill prefix swap -
+        each bucket has to be checked on its own, for more than one user."""
+        # alice: 2 live, 1 prompt backfill, 1 late backfill, 1 import (ignored)
+        self._insertRawPlay("alice", self.SINCE_TS + 1, "listener_play (user: alice)",
+                             createdAt=self.SINCE_TS + 1)
+        self._insertRawPlay("alice", self.SINCE_TS + 2, "listener_play (user: alice)",
+                             createdAt=self.SINCE_TS + 2)
+        self._insertRawPlay("alice", self.SINCE_TS + 3, "web_api_backfill_play (user: alice)",
+                             createdAt=self.SINCE_TS + 3 + 60)   #< 60s later: prompt
+        self._insertRawPlay("alice", self.SINCE_TS + 4, "web_api_backfill_play (user: alice)",
+                             createdAt=self.SINCE_TS + 4 + self.PROMPT_SECONDS + 1)   #< late
+        self._insertRawPlay("alice", self.SINCE_TS + 5, "history_import (user: alice)",
+                             createdAt=self.SINCE_TS + 5)
+        # bob: 1 live, 1 prompt backfill only
+        self._insertRawPlay("bob", self.SINCE_TS + 1, "listener_play (user: bob)",
+                             createdAt=self.SINCE_TS + 1)
+        self._insertRawPlay("bob", self.SINCE_TS + 2, "web_api_backfill_play (user: bob)",
+                             createdAt=self.SINCE_TS + 2 + 30)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"], {"live": 2, "prompt_backfill": 1, "late_backfill": 1})
+        self.assertEqual(counts["bob"], {"live": 1, "prompt_backfill": 1, "late_backfill": 0})
+
+    def test_import_rows_never_count_in_any_bucket(self):
+        self._insertRawPlay("alice", self.SINCE_TS + 1, "history_import (user: alice)",
+                             createdAt=self.SINCE_TS + 1)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"], {"live": 0, "prompt_backfill": 0, "late_backfill": 0})
+
+    def test_unrecognised_source_lands_in_neither_bucket(self):
+        self._insertRawPlay("alice", self.SINCE_TS + 1, "unknown_play (user: alice)",
+                             createdAt=self.SINCE_TS + 1)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"], {"live": 0, "prompt_backfill": 0, "late_backfill": 0})
+
+    def test_played_at_exactly_at_since_ts_is_inclusive(self):
+        self._insertRawPlay("alice", self.SINCE_TS, "listener_play (user: alice)",
+                             createdAt=self.SINCE_TS)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"]["live"], 1)
+
+    def test_backfill_exactly_at_the_prompt_boundary_counts_as_prompt(self):
+        self._insertRawPlay("alice", self.SINCE_TS + 1, "web_api_backfill_play (user: alice)",
+                             createdAt=self.SINCE_TS + 1 + self.PROMPT_SECONDS)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"], {"live": 0, "prompt_backfill": 1, "late_backfill": 0})
+
+    def test_backfill_just_past_the_prompt_boundary_counts_as_late(self):
+        self._insertRawPlay("alice", self.SINCE_TS + 1, "web_api_backfill_play (user: alice)",
+                             createdAt=self.SINCE_TS + 1 + self.PROMPT_SECONDS + 1)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"], {"live": 0, "prompt_backfill": 0, "late_backfill": 1})
+
+    def test_backfill_row_with_null_created_at_lands_in_neither_bucket(self):
+        self._insertRawPlay("alice", self.SINCE_TS + 1, "web_api_backfill_play (user: alice)",
+                             createdAt=None)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts["alice"], {"live": 0, "prompt_backfill": 0, "late_backfill": 0})
+
+    def test_user_with_no_rows_in_the_window_is_omitted(self):
+        self._insertRawPlay("alice", self.SINCE_TS - 100, "listener_play (user: alice)",
+                             createdAt=self.SINCE_TS - 100)
+
+        counts = self.repo.getPlaySourceCountsByUser(self.SINCE_TS, self.PROMPT_SECONDS)
+
+        self.assertEqual(counts, {})
+
+
 class TestPlayBehavioralExtras(RepositoryTestCase):
     def setUp(self):
         super().setUp()

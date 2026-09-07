@@ -86,6 +86,11 @@ class AdminRouteTestBase(AppTestCase):
             patch.object(dash.repo, 'isAdmin', return_value=isAdmin),
             patch.object(dash.repo, 'getPlayAndSkipCountsByUser',
                          return_value={u["username"]: {"plays": 123, "skips": 7} for u in effectiveUsers}),
+            # Empty by default so every existing test stays explicit about not
+            # exercising the live-miss ratio - an unpatched call would run real
+            # SQL against the empty test db and silently yield nothing, which
+            # is indistinguishable from "patched to empty" until a test cares.
+            patch.object(dash.repo, 'getPlaySourceCountsByUser', return_value={}),
             patch.object(dash.repo, 'getAdminUsernames', return_value=['alice']),
             patch.object(dash, 'is_user_logged_in', return_value=loggedIn),
             patch.object(dash, 'get_username_for_email', return_value='alice'),
@@ -718,6 +723,72 @@ class TestPushBackfillWarningSection(AdminRouteTestBase):
         section = self._warningSection(resp)
         self.assertNotIn(b"alice", section)
         self.assertIn(b"bob", section)
+
+
+class TestLiveMissRatioHelper(unittest.TestCase):
+    """_liveMissRatio: the pure ratio maths behind the admin ledger's Live
+    miss ratio (30d) row - see implementationPlan-2026-09-07.md section 5."""
+
+    def test_zero_live_and_zero_missed_returns_none(self):
+        from routes.admin import _liveMissRatio
+        self.assertIsNone(_liveMissRatio({}))
+        self.assertIsNone(_liveMissRatio({"live": 0, "prompt_backfill": 0, "late_backfill": 5}))
+
+    def test_all_live_gives_zero_percent(self):
+        from routes.admin import _liveMissRatio
+        result = _liveMissRatio({"live": 10, "prompt_backfill": 0, "late_backfill": 0})
+        self.assertEqual(result, {"pct": 0.0, "live": 10, "missed": 0, "late": 0})
+
+    def test_all_backfill_gives_full_percent(self):
+        from routes.admin import _liveMissRatio
+        result = _liveMissRatio({"live": 0, "prompt_backfill": 10, "late_backfill": 3})
+        self.assertEqual(result, {"pct": 100.0, "live": 0, "missed": 10, "late": 3})
+
+    def test_a_tiny_ratio_rounds_to_display_zero_but_is_not_none(self):
+        from routes.admin import _liveMissRatio
+        result = _liveMissRatio({"live": 9999, "prompt_backfill": 1, "late_backfill": 0})
+        self.assertIsNotNone(result)
+        self.assertEqual("{:.1f}%".format(result["pct"]), "0.0%")
+        self.assertNotEqual(result["pct"], 0)
+
+
+class TestAdminLiveMissRatioSection(AdminRouteTestBase):
+    """The Worker Health card's Live miss ratio (30d) row, a sibling of
+    Listener Sessions - see implementationPlan-2026-09-07.md section 5."""
+
+    def _ratioSection(self, resp):
+        self.assertIn(b'id="live-miss-ratio"', resp.data)
+        after = resp.data.split(b'id="live-miss-ratio"', 1)[1]
+        return after.split(b'</div>', 1)[0]
+
+    def test_no_data_fallback_when_nothing_is_in_the_window(self):
+        dash = self._makeApp()
+        resp = self._getAdmin(dash, isAdmin=True)
+        section = self._ratioSection(resp)
+        self.assertIn(b"NO DATA", section)
+
+    def test_badge_and_tooltip_render_from_the_repo(self):
+        dash = self._makeApp()
+        patches = self._patches(dash, True)
+        patches.append(patch.object(
+            dash.repo, "getPlaySourceCountsByUser",
+            return_value={"alice": {"live": 92, "prompt_backfill": 8, "late_backfill": 40}}))
+        resp = self._getAdmin(dash, patches=patches)
+        section = self._ratioSection(resp)
+        self.assertIn(b"alice: 8.0%", section)
+        self.assertIn(b"8 missed live of 100 prompt plays in 30d; 40 more recovered late "
+                      b"(offline listening, not counted)", section)
+
+    def test_user_without_rows_in_the_window_is_omitted(self):
+        dash = self._makeApp()
+        patches = self._patches(dash, True)
+        patches.append(patch.object(
+            dash.repo, "getPlaySourceCountsByUser",
+            return_value={"alice": {"live": 10, "prompt_backfill": 0, "late_backfill": 0}}))
+        resp = self._getAdmin(dash, patches=patches)
+        section = self._ratioSection(resp)
+        self.assertIn(b"alice", section)
+        self.assertNotIn(b"bob", section)
 
 
 class TestAdminSkipSettings(AdminRouteTestBase):

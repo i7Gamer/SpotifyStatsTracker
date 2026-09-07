@@ -10,6 +10,7 @@ under their original endpoint names.
 import logging
 import os
 import threading
+import time
 
 from flask import render_template, redirect, request, url_for, abort, jsonify
 
@@ -38,7 +39,7 @@ from Database.repository import (
 from Database.backup import DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT
 from Database.rate_limit import SPOTIFY_LIMITER
 from Database.patches import totpAuthSnapshot
-from Database.utils import convertToDatetime
+from Database.utils import convertToDatetime, SECONDS_PER_DAY
 from services.email_service import (
     get_smtp_config, save_smtp_config, send_test_email,
     get_instance_public_url, save_instance_public_url,
@@ -55,6 +56,21 @@ logger = logging.getLogger(__name__)
 # only a large database exceeds it, and there we return rather than hold the
 # request thread open (and risk an HTTP timeout).
 MANUAL_BACKUP_SYNC_WAIT_SECONDS = 20
+
+# The live-miss ratio's rolling window: played_at (indexed) rather than
+# created_at (not indexed) - see implementationPlan-2026-09-07.md section 5.
+LIVE_MISS_WINDOW_DAYS = 30
+
+# A backfill row recorded within this many seconds of created_at - played_at
+# counts as a genuinely MISSED live catch; slower ones are late-arriving
+# offline listening recovered separately, not a live-path failure. Matches the
+# ~16-minute recently-played sweep interval validated in
+# eventDrivenConnectStatePlan.md.
+PROMPT_SWEEP_SECONDS = 16 * 60
+
+# Display rounding for the live-miss ratio badge - "%.1f%%" needs an explicit
+# digit count too, so the fraction isn't a bare literal in the format string.
+LIVE_MISS_RATIO_DISPLAY_DECIMALS = 1
 
 
 def _pushWithoutBackfill(pushEnabled: bool, backfillEnabled: bool, users: list[dict]) -> dict | None:
@@ -85,6 +101,26 @@ def _pushWithoutBackfill(pushEnabled: bool, backfillEnabled: bool, users: list[d
         if u.get("cookies_json") and (not u["hasApi"] or u["needsReauth"])
     ]
     return {"usernames": exposed} if exposed else None
+
+
+def _liveMissRatio(counts: dict) -> dict | None:
+    """The admin ledger's per-user Live miss ratio (30d) - see
+    implementationPlan-2026-09-07.md section 5.
+
+    `counts` is one user's row from Repository.getPlaySourceCountsByUser:
+    {"live", "prompt_backfill", "late_backfill"}. Returns
+    {"pct", "live", "missed", "late"}, or None when live + missed == 0 (no
+    prompt-window signal at all - the user is omitted from the row rather than
+    shown a meaningless 0%). `pct` is missed / (live + missed) * 100 as a raw
+    float; a tiny nonzero ratio can still round to "0.0%" once the template
+    formats it - that's a display fact, not a reason to treat it as None."""
+    live = counts.get("live", 0) or 0
+    missed = counts.get("prompt_backfill", 0) or 0
+    late = counts.get("late_backfill", 0) or 0
+    total = live + missed
+    if total == 0:
+        return None
+    return {"pct": missed / total * 100, "live": live, "missed": missed, "late": late}
 
 
 def _listenerSessionLedger(health: dict, tz) -> dict | None:
@@ -148,6 +184,12 @@ def register(app, dashboard):
         # One grouped scan for every user's play/skip counts instead of a
         # getPlaysCount()+getSkipCount() pair per user (2*N queries).
         countsByUser = dashboard.repo.getPlayAndSkipCountsByUser()
+        # Same shape of saving: one grouped scan for every user's live-miss
+        # source counts, rather than a per-user query. The window is rolling
+        # from now, not "since process start" like the sessions ledger above -
+        # see LIVE_MISS_WINDOW_DAYS.
+        sourceCountsByUser = dashboard.repo.getPlaySourceCountsByUser(
+            time.time() - LIVE_MISS_WINDOW_DAYS * SECONDS_PER_DAY, PROMPT_SWEEP_SECONDS)
         # The push-warning section's input: only the per-user fields
         # _pushWithoutBackfill actually needs, collected as the loop below
         # computes them anyway (see its own has_api/needs_reauth).
@@ -280,6 +322,7 @@ def register(app, dashboard):
                 "is_admin": u["is_admin"],
                 "sync_status": sync_status,
                 "listener_sessions": listener_sessions,
+                "live_miss": _liveMissRatio(sourceCountsByUser.get(u_username, {})),
                 "spotify_api_status": "Needs Re-Auth" if (has_api and needs_reauth) else ("Configured" if has_api else "Not Configured"),
                 #< .get(): raw row presence check only - the stored key
                 #  is encrypted and never needs decrypting here
