@@ -174,15 +174,8 @@ def buildListeningBehavior(raw: dict) -> dict:
     (40% of 1,030)") so a range mixing imported and live plays never reads as
     if the whole range were measured.
 
-    Degrades to the empty/no-data shape when `raw` is not a dict - the same
-    contract services/genre_gate.py's resolveGenresFor* functions use for a
-    stubbed test db whose method was never configured (a bare MagicMock()
-    return value has a `.get` attribute, but calling it does not behave like
-    dict.get - it returns another MagicMock, not the default), so a page with
-    several MagicMock-backed chart sections doesn't 500 on the one that
-    forgot to stub this method."""
-    if not isinstance(raw, dict):
-        raw = {}
+    `raw` is the dict Repository.getBehavioralCounts returns; an empty dict
+    is the no-data case. Anything else is a caller bug and fails loudly."""
     total = raw.get("total", 0) or 0
 
     flags = {}

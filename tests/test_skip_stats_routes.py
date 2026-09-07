@@ -38,6 +38,7 @@ class SkipStatsRouteTestCase(DetailPageClientMixin, AppTestCase):
         db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
         db.getReleaseDecadeDistribution.return_value = {}
         db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        db.getListeningBehavior.return_value = {"total": 0}
         db.getMostSkippedSongs.return_value = []
         db.getMostSkippedArtists.return_value = []
         db.getSkipStats.return_value = _skipStats()

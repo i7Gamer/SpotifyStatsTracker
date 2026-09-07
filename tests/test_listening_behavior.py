@@ -150,24 +150,14 @@ class TestBuildListeningBehaviorFlags(unittest.TestCase):
         #< known == 0 is still a well-defined 0% of total, unlike on/known
         self.assertEqual(result["flags"]["incognito"]["knownPct"], 0.0)
 
-    def test_an_unstubbed_magicmock_db_return_degrades_to_the_empty_shape(self):
-        """A page rendering several MagicMock-backed chart sections must not
-        500 on the one whose test db forgot to stub getListeningBehavior -
-        same degradation contract as services/genre_gate.py's
-        resolveGenresFor* functions. A bare MagicMock() is not a dict, so
-        this must not reach `.get()` on it at all (a MagicMock's `.get`
-        attribute exists but does not behave like dict.get)."""
-        result = buildListeningBehavior(MagicMock())
-
-        self.assertFalse(result["hasData"])
-        self.assertEqual(result["reasonEnd"], [])
-        self.assertEqual(result["platforms"], [])
-        self.assertEqual(result["countries"], [])
-        self.assertIsNone(result["unknownReasonShare"])
-        for name in ("shuffle", "offline", "incognito"):
-            with self.subTest(flag=name):
-                self.assertEqual(result["flags"][name],
-                                 {"on": 0, "known": 0, "total": 0, "pct": None, "knownPct": None})
+    def test_a_non_dict_input_fails_loudly_instead_of_rendering_no_data(self):
+        """A bare MagicMock() (a route test that forgot to stub
+        getListeningBehavior) or any other non-dict is a caller bug. It must
+        raise rather than quietly degrade to the no-data hint - that hint
+        would mask a facade returning the wrong shape in production. The three
+        bare-MagicMock charts test bases stub the method explicitly instead."""
+        with self.assertRaises(TypeError):
+            buildListeningBehavior(MagicMock())
 
     def test_every_flag_name_is_present_even_when_raw_omits_it(self):
         """A route stub or a genuinely old row shape might not carry every
