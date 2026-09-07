@@ -111,6 +111,18 @@
         <div class="chart-canvas-wrap" style="height: 250px;">
           <canvas id="behaviorPlatformChart" role="img" aria-label="Plays by platform"></canvas>
         </div>
+        {# conn_country is the one behavioral bucket without a canvas: a
+           handful of ISO codes reads better as chips than as a third donut.
+           Same top-N-by-count order buildListeningBehavior gives the others;
+           the NULL group renders as its Unknown label like reason_end does. #}
+        {% if chartData.listeningBehavior.countries %}
+        <p class="chart-subtitle">Streamed from</p>
+        <div class="genre-chip-row" id="behaviorCountries">
+          {% for label, count in chartData.listeningBehavior.countries %}
+          <span class="genre-chip">{{ label }} <strong>{{ count }}</strong></span>
+          {% endfor %}
+        </div>
+        {% endif %}
       </div>
     </div>
   {% else %}

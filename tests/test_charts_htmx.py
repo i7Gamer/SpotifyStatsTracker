@@ -286,6 +286,20 @@ class TestListeningBehaviorSection(ChartsHtmxTestCase):
         self.assertIn("Listening behavior", body)
         self.assertIn("all plays in range", body)
 
+    def test_countries_render_as_chips_with_their_counts(self):
+        """BEHAVIOR_RAW carries countries [("US", 3), ("DE", 1)]. They are the
+        one bucket with no canvas, so the template renders them as chips -
+        sliced to their own container, because a bare country code could
+        appear anywhere else on the page."""
+        body = self._fragment().get_data(as_text=True)
+
+        start = body.index('id="behaviorCountries"')
+        chips = body[start:body.index('</div>', start)]
+        self.assertIn("US", chips)
+        self.assertIn("DE", chips)
+        self.assertLess(chips.index("US"), chips.index("DE"))   #< highest count first
+        self.assertIn("<strong>3</strong>", chips)
+
     def test_a_flag_tile_renders_its_actual_percentage(self):
         """BEHAVIOR_RAW's shuffle is known=4, on=3 -> 75% of the known plays,
         which are 4 of the range's 10 (40%). Percentages render with one
