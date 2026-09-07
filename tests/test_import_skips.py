@@ -76,6 +76,23 @@ class TestImportSkipRouting(_ImportTestBase):
         # The track itself is still cataloged (FK + future skip analytics)
         self.assertIsNotNone(db.repo.getTrack("track_x"))
 
+    def test_a_skip_keeps_the_playlist_it_was_played_from(self):
+        """The real-play insert passes the entry's playedFrom through and the
+        skip insert did not, so every sub-floor skip lost its playlist context
+        on the way in (2026-09-07 review, item 9)."""
+        db = self._makeDb({}, [])
+
+        def gen():
+            meta = _meta("track_x", 1000, timePlayed=400, isSkip=True)
+            meta["playedFrom"] = "spotify:playlist:ctx"
+            yield meta
+
+        self._import(db, gen)
+
+        skips = self._skipRows(db)
+        self.assertEqual(len(skips), 1)
+        self.assertEqual(skips[0]["played_from"], "spotify:playlist:ctx")
+
     def test_skip_reimport_is_a_noop(self):
         db = self._makeDb({}, [])
 

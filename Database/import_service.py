@@ -419,7 +419,8 @@ class ImportMixin:
         runState.claimedRowIds.add(closest["id"])
         return True
 
-    def _applySkipEntry(self, track_id, played_at, time_played, extras, runState) -> int:
+    def _applySkipEntry(self, track_id, played_at, time_played, extras, runState,
+                        playedFrom=None) -> int:
         """Sub-5s events (entry["isSkip"], the fixed import floor) never
         claim or correct a real play row - they match only against
         other skips (see _claimNearbySkip for why matching against
@@ -432,7 +433,10 @@ class ImportMixin:
         skipsSavedCount only counts genuine new rows)."""
         if self._claimNearbySkip(track_id, played_at, runState):
             return 0
-        if self.repo.insertPlay(self.user, track_id, played_at, time_played,
+        #< playedFrom passed through exactly as the real-play insert passes
+        #  it: this path used to drop the playlist context of every sub-floor
+        #  skip on the way in
+        if self.repo.insertPlay(self.user, track_id, played_at, time_played, playedFrom,
                                 created_reason=f"history_import (user: {self.user})",
                                 extras=extras, is_skip=1):
             runState.insertedPlayKeys.add((track_id, played_at))
@@ -614,7 +618,8 @@ class ImportMixin:
                 # corrects a real play row.
                 if entry.get("isSkip") and isSkip:
                     skipsSavedCount += self._applySkipEntry(track_id, played_at, time_played,
-                                                            entry.get("importExtras"), runState)
+                                                            entry.get("importExtras"), runState,
+                                                            playedFrom=played_from)
                     continue
 
                 # Check if a play for this track already exists within (duration + 60s) tolerance -
@@ -701,6 +706,7 @@ class ImportMixin:
             # the file; dedup absorbs the rows, and only the still-missing
             # tracks are looked up again.)
             retryableDropped = sum(importStats.get(key, 0) for key in RETRYABLE_DROP_STAT_KEYS)
+            unreadableDropped = sum(importStats.get(key, 0) for key in UNREADABLE_DROP_STAT_KEYS)
             if track_file_hash and not retryableDropped:
                 self.repo.markFileImported(self.user, _exportContentHash(exportedHistory))
 
@@ -741,12 +747,18 @@ class ImportMixin:
                 # nonzero count (_guardStagedDrops aborts it first), so this
                 # accumulator stays 0 there.
                 runState.retryableDroppedTotal += retryableDropped
+                runState.unreadableDroppedTotal += unreadableDropped
 
             droppedNoTrack = importStats.get("droppedNoTrack", 0)
             summary = (f"{insertedCount} new, {updatedCount} corrected, {enrichedCount} enriched, "
                        f"{skipsSavedCount} skips saved")
             if droppedNoTrack:
                 summary += f", {droppedNoTrack} without track info dropped"
+            if unreadableDropped:
+                #< reached only the server log before; the file is still
+                #  hash-marked above, because a row the parser cannot read is
+                #  dropped again by any re-import, so no advice to retry
+                summary += f", {unreadableDropped} unreadable entries skipped"
             if retryableDropped:
                 #< the same count that withheld the hash mark above - named
                 #  here because until now these drops reached only the server
@@ -903,7 +915,11 @@ class ImportMixin:
         # before its accumulation point.
         retryableNote = (f" {runState.retryableDroppedTotal} could not be looked up "
                          "(re-import the affected file(s) to retry them)." if runState.retryableDroppedTotal else "")
-        self.writeProgress(status, total, total, message + unreadableNote + retryableNote,
+        #< same accumulator shape as the retryable count, same reason: the
+        #  per-file line naming these is gone by the time the page polls
+        unreadableEntriesNote = (f" {runState.unreadableDroppedTotal} unreadable entries were skipped "
+                                 "(see the server log)." if runState.unreadableDroppedTotal else "")
+        self.writeProgress(status, total, total, message + unreadableNote + retryableNote + unreadableEntriesNote,
                            error=bool(failedCount or unreadableFileCount))
         return outcomes
 

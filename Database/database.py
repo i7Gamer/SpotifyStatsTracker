@@ -185,6 +185,8 @@ class _ImportRunState:
         self.pendingImageTracks: dict[str, dict] = {}  #< tracks awaiting saveImagesFromTrack() once a
                                                    #  deferred-commit batch actually commits (same reason
                                                    #  as correctedYears - image-claiming self-commits too)
+        self.unreadableDroppedTotal: int = 0      #< sum of UNREADABLE_DROP_STAT_KEYS, same accumulation
+                                                   #  and same reason as retryableDroppedTotal just below
         self.retryableDroppedTotal: int = 0       #< sum of RETRYABLE_DROP_STAT_KEYS across every file this
                                                    #  run has actually committed, so a multi-file append
                                                    #  batch can name the count on its own final progress

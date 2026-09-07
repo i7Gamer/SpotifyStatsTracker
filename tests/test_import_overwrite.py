@@ -790,6 +790,38 @@ class TestOverwriteAbortsOnRetryableDrops(_OverwriteTestBase):
         self.assertIn("1 could not be looked up", completionLines[0])
         self.assertIn("re-import", completionLines[0])
 
+    def test_an_unreadable_entry_is_named_in_the_completion_lines(self):
+        """A row the parser could not read is counted (droppedMalformed) and
+        logged, and the append import carries on with the rest - correct, and
+        the file IS complete as far as a re-import could ever make it, so it
+        stays hash-marked. What was missing is the user being told: the
+        completion line said "Import complete" over the drop, and the batch
+        line that replaces it said nothing either (2026-09-07 review, item
+        10). Same shape as the retryable-drop note, minus the re-import advice
+        that cannot help here."""
+        db = self._seededDb()
+        content = "file 2019"
+
+        importer = self._mockImporter(self._fileSpecs())
+
+        def importHistoryDroppingOne(*args, stats=None, **kwargs):
+            stats["entriesSeen"] = 2
+            stats["droppedMalformed"] = 1   #< a row missing the fields its format guarantees
+            return iter([_meta("new19", _ts(2019, 3))])
+
+        importer.importHistory.side_effect = importHistoryDroppingOne
+        firstOutcomes, messages = self._runAppendBatchCapturingMessages(db, importer, content)
+        secondOutcomes, _ = self._runAppendBatchCapturingMessages(
+            db, self._mockImporter(self._fileSpecs()), content)
+
+        self.assertEqual(firstOutcomes, ["imported"])
+        self.assertEqual(secondOutcomes, ["skipped"])   #< deterministic: a re-import drops it again
+        completionLines = [m for m in messages if "Import complete" in m]
+        self.assertEqual(len(completionLines), 1)
+        self.assertIn("1 unreadable", completionLines[0])
+        self.assertIn("1 unreadable", messages[-1])   #< the batch line, the only one the page keeps
+        self.assertNotIn("re-import", messages[-1])
+
     def test_a_clean_append_import_is_still_hash_marked(self):
         """The other half of the rule: no retryable drop, and the second run
         of the same file is refused as before."""
