@@ -55,6 +55,17 @@
       </label>
     </div>
 
+    <div class="form-group">
+      <label class="setting-toggle">
+        <span class="setting-toggle-text">
+          Milestone reached
+          <small>Receive an email when you cross a lifetime plays/listen-time/streak milestone or get a new #1 artist. Off by default.</small>
+        </span>
+        <input type="checkbox" name="notif_milestone_reached" value="1" {% if preferences.milestone_reached %}checked{% endif %}>
+        <span class="setting-toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+
     <button type="submit" class="primary-button profile-wide-button">Save Notification Preferences</button>
   </form>
 </section>

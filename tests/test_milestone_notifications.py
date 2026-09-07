@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
+from services.milestones import formatMilestone
+from Database.queries.email_queries import EVENT_MILESTONE_REACHED
 
 
 class _BadgeTestCase(AppTestCase):
@@ -131,7 +133,7 @@ class TestDetectionWiring(AppTestCase):
         db.listener.thread.is_alive.return_value = True
         with patch.object(dash.repo, "getAllUsersWithCookies", return_value=[("alice", "alice@example.com")]), \
              patch.object(dash, "get_user_db", return_value=db), \
-             patch("app.detectMilestones") as mockDetect:
+             patch("app.detectMilestonesDetailed", return_value=[]) as mockDetect:
             dash._ensureAllUsersLogin()
 
         mockDetect.assert_called_once()
@@ -140,7 +142,7 @@ class TestDetectionWiring(AppTestCase):
 
     def test_detection_failure_does_not_stall_the_loop(self):
         dash = self._makeApp()
-        with patch("app.detectMilestones", side_effect=RuntimeError("boom")):
+        with patch("app.detectMilestonesDetailed", side_effect=RuntimeError("boom")):
             dash._detectMilestonesSafely(MagicMock(), "alice")   #< must not raise
 
     def test_detection_skipped_when_feature_disabled(self):
@@ -151,10 +153,87 @@ class TestDetectionWiring(AppTestCase):
         db.listener.thread.is_alive.return_value = True
         with patch.object(dash.repo, "getAllUsersWithCookies", return_value=[("alice", "alice@example.com")]), \
              patch.object(dash, "get_user_db", return_value=db), \
-             patch("app.detectMilestones") as mockDetect:
+             patch("app.detectMilestonesDetailed", return_value=[]) as mockDetect:
             dash._ensureAllUsersLogin()
 
         mockDetect.assert_not_called()
+
+
+class TestMilestoneEmailWiring(AppTestCase):
+    """_detectMilestonesSafely queues one milestone_reached email per pass for
+    the rows THIS pass recorded that are still unseen - seeding and
+    import-backfill (markSeen) passes record everything seen=True and must
+    stay silent, exactly like the topbar badge. The detection LOGIC that
+    decides what's seen is covered by test_milestones.py; this pins the
+    email-wiring decision built on top of it, so recalculateMilestoneDates is
+    disabled in every case here to isolate that decision from unrelated real
+    repo/db plumbing."""
+
+    def _dash(self):
+        dash = self._makeApp()
+        dash.repo.setMilestoneRecalcEnabled(False)   #< isolate the email decision (see class docstring)
+        return dash
+
+    def test_mixed_seen_batch_mails_only_the_unseen_rows(self):
+        dash = self._dash()
+        rows = [
+            {"kind": "plays", "threshold": 1000, "detail": None, "achieved_at": 1.0, "seen": True},
+            {"kind": "streak", "threshold": 7, "detail": None, "achieved_at": 2.0, "seen": False},
+        ]
+        with patch("app.detectMilestonesDetailed", return_value=rows), \
+             patch("app.queue_email_notification") as mockQueue:
+            dash._detectMilestonesSafely(MagicMock(), "alice")
+
+        mockQueue.assert_called_once()
+        args = mockQueue.call_args.args
+        self.assertEqual(args[0], "alice")
+        self.assertEqual(args[1], EVENT_MILESTONE_REACHED)
+        # Exactly the unseen row, formatted - not "any unseen row exists so
+        # mail everything" (a mutation assert_called_once alone would pass).
+        self.assertEqual(args[2]["milestones"], [formatMilestone(rows[1])])
+
+    def test_no_email_on_the_seeding_pass(self):
+        dash = self._dash()
+        seededRows = [
+            {"kind": "plays", "threshold": 1000, "detail": None, "achieved_at": 1.0, "seen": True},
+            {"kind": "streak", "threshold": 7, "detail": None, "achieved_at": 2.0, "seen": True},
+        ]
+        with patch("app.detectMilestonesDetailed", return_value=seededRows), \
+             patch("app.queue_email_notification") as mockQueue:
+            dash._detectMilestonesSafely(MagicMock(), "alice")
+
+        mockQueue.assert_not_called()
+
+    def test_no_email_when_markseen_import_backfill_pass(self):
+        dash = self._dash()
+        importedRows = [
+            {"kind": "plays", "threshold": 5000, "detail": None, "achieved_at": 3.0, "seen": True},
+        ]
+        with patch("app.detectMilestonesDetailed", return_value=importedRows), \
+             patch("app.queue_email_notification") as mockQueue:
+            dash._detectMilestonesSafely(MagicMock(), "alice")
+
+        mockQueue.assert_not_called()
+
+    def test_no_email_when_nothing_recorded(self):
+        dash = self._dash()
+        with patch("app.detectMilestonesDetailed", return_value=[]), \
+             patch("app.queue_email_notification") as mockQueue:
+            dash._detectMilestonesSafely(MagicMock(), "alice")
+
+        mockQueue.assert_not_called()
+
+    def test_no_email_when_recorded_rows_are_all_seen(self):
+        dash = self._dash()
+        allSeenRows = [
+            {"kind": "top_artist", "threshold": 0,
+             "detail": '{"id": "a1", "name": "A"}', "achieved_at": 4.0, "seen": True},
+        ]
+        with patch("app.detectMilestonesDetailed", return_value=allSeenRows), \
+             patch("app.queue_email_notification") as mockQueue:
+            dash._detectMilestonesSafely(MagicMock(), "alice")
+
+        mockQueue.assert_not_called()
 
 
 if __name__ == "__main__":

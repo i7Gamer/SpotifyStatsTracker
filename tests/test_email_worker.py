@@ -12,7 +12,7 @@ from services.email_worker import (
     EMAIL_MAX_SEND_ATTEMPTS, EMAIL_RETRY_DELAY_SECONDS,
 )
 from services.email_service import EMAIL_SENT, EMAIL_SKIPPED, EMAIL_FAILED
-from Database.queries.email_queries import EVENT_INVALID_COOKIES, EVENT_SHARE_REQUEST
+from Database.queries.email_queries import EVENT_INVALID_COOKIES, EVENT_SHARE_REQUEST, EVENT_MILESTONE_REACHED
 
 # A failure deadline for the cross-thread waits below, not a pace: each wait
 # returns as soon as the worker thread gets there.
@@ -274,6 +274,18 @@ def test_global_queue_email_notification(mock_send):
 
     # Helper function enqueues into global worker singleton
     queue_email_notification("test_user_w2", EVENT_INVALID_COOKIES)
+
+    from services.email_worker import EMAIL_WORKER
+    processed = EMAIL_WORKER.process_one()
+    assert processed is True
+
+
+@patch("services.email_worker.deliver_email_notification")
+def test_global_queue_email_notification_for_milestone_reached(mock_send):
+    mock_send.return_value = EMAIL_SENT
+
+    # Helper function enqueues into global worker singleton
+    queue_email_notification("test_user_w_milestone", EVENT_MILESTONE_REACHED, {"milestones": []})
 
     from services.email_worker import EMAIL_WORKER
     processed = EMAIL_WORKER.process_one()

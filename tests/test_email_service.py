@@ -30,6 +30,7 @@ from Database.queries.email_queries import (
     EVENT_INVALID_COOKIES,
     EVENT_API_KEY_FAILED,
     EVENT_SHARE_REQUEST,
+    EVENT_MILESTONE_REACHED,
 )
 
 
@@ -426,6 +427,63 @@ class TestRenderEventTemplate:
         _subject, _text_body, html_body = _render_event_template(
             EVENT_INVALID_COOKIES, "alice", {}, base_url="https://tracker.example.com/")
         assert "//login" not in html_body
+
+    def test_milestone_reached_one_milestone(self):
+        subject, text_body, html_body = _render_event_template(
+            EVENT_MILESTONE_REACHED, "alice",
+            {"milestones": [{"icon": "🎧", "label": "1,000 lifetime plays"}]})
+        assert "1,000 lifetime plays" in subject
+        assert "1,000 lifetime plays" in text_body
+        assert "1,000 lifetime plays" in html_body
+        assert 'href="#"' not in html_body
+
+    def test_milestone_reached_several_milestones(self):
+        milestones = [
+            {"icon": "🎧", "label": "1,000 lifetime plays"},
+            {"icon": "🔥", "label": "7-day listening streak"},
+        ]
+        subject, text_body, html_body = _render_event_template(
+            EVENT_MILESTONE_REACHED, "alice", {"milestones": milestones})
+        assert "2" in subject
+        for m in milestones:
+            assert m["label"] in text_body
+            assert m["label"] in html_body
+
+    def test_milestone_reached_label_escaped_in_html_only(self):
+        milestones = [{"icon": "👑", "label": "New #1 artist: <script>alert(1)</script>"}]
+        _subject, text_body, html_body = _render_event_template(
+            EVENT_MILESTONE_REACHED, "alice", {"milestones": milestones})
+        assert "<script>alert(1)</script>" in text_body   #< text/plain: raw
+        assert "<script>" not in html_body
+        assert "&lt;script&gt;" in html_body
+
+    def test_milestone_reached_link_present_with_base_url(self):
+        _subject, text_body, html_body = _render_event_template(
+            EVENT_MILESTONE_REACHED, "alice",
+            {"milestones": [{"icon": "🎧", "label": "1,000 lifetime plays"}]},
+            base_url="https://tracker.example.com")
+        assert 'href="https://tracker.example.com/#milestones"' in html_body
+        assert "https://tracker.example.com/#milestones" in text_body
+
+    def test_milestone_reached_link_absent_without_base_url(self):
+        _subject, _text_body, html_body = _render_event_template(
+            EVENT_MILESTONE_REACHED, "alice",
+            {"milestones": [{"icon": "🎧", "label": "1,000 lifetime plays"}]})
+        assert 'href="#"' not in html_body
+        assert "<a " not in html_body
+
+    def test_milestone_reached_empty_list_has_sane_copy(self):
+        subject, text_body, html_body = _render_event_template(
+            EVENT_MILESTONE_REACHED, "alice", {"milestones": []})
+        assert "alice" in text_body
+        assert "alice" in html_body
+        assert subject   #< no crash, non-empty subject
+
+    def test_milestone_reached_missing_context_key_has_sane_copy(self):
+        subject, text_body, html_body = _render_event_template(EVENT_MILESTONE_REACHED, "alice", {})
+        assert "alice" in text_body
+        assert "alice" in html_body
+        assert subject
 
 
 class TestSmtpTimeout:

@@ -25,7 +25,8 @@ from Database.backup import (
 from routes._htmx import isHtmxSwap
 from routes._xhr import declaresItselfXhr as _declaresItselfXhr
 from services.deploy_state import deployMismatch, sourceFingerprint
-from services.email_worker import EMAIL_WORKER
+from services.email_worker import EMAIL_WORKER, queue_email_notification
+from Database.queries.email_queries import EVENT_MILESTONE_REACHED
 from Database.repository import Repository
 from Database.Migrators.migrate import migrateIfNeeded
 from Database.secret_store import readOrCreateKeyFile, FLASK_SECRET_KEY_ENV_VAR, keyFingerprint
@@ -53,7 +54,9 @@ from services.genre_gate import (
 from services.taste_match import (
     _tasteMatchPercent, _markLinkExternally, _rankById, _sharedRankScore,
 )
-from services.milestones import detectMilestones, recalculateMilestoneDates
+from services.milestones import (
+    detectMilestonesDetailed, recalculateMilestoneDates, formatMilestone, EMAILED_MILESTONE_KINDS,
+)
 from routes.media import register as registerMediaRoutes
 from routes.admin import register as registerAdminRoutes
 from routes.charts import register as registerChartsRoutes
@@ -577,7 +580,15 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         import-only account with no live session first gets its milestones on
         its next cookie login. No-op when the admin kill switch is off (see
         isMilestonesEnabled) - the badge/section are hidden then too, so there's
-        no point recording new rows."""
+        no point recording new rows.
+
+        Also queues one milestone-reached email per pass listing every
+        crossing this pass recorded that wasn't already seen (seeding and
+        import-backfill passes record everything seen=True, so they stay
+        silent - same contract as the topbar badge). A pass that crosses
+        several thresholds at once still sends a single email; a second pass
+        within 24h is absorbed by the existing per-(user, event) cooldown in
+        deliver_email_notification, so this never doubles up."""
         if not self.repo.isMilestonesEnabled():
             return
         try:
@@ -602,9 +613,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if recalcEnabled and db.readProgress().get("status") == "running":
                 return
             pending = db.consumeMilestoneRecalcFlag() if recalcEnabled else False
-            recorded = detectMilestones(db, db.repo, username,
-                                        changeCache=self._milestoneChangeCache,
-                                        markSeen=pending)
+            rows = detectMilestonesDetailed(db, db.repo, username,
+                                            changeCache=self._milestoneChangeCache,
+                                            markSeen=pending)
+            recorded = len(rows)
             # Date re-derivation strictly after detection so import-crossed
             # rows exist first. Triggered by the end-of-batch flag or by any
             # recorded crossing - the latter turns "when this pass noticed"
@@ -619,6 +631,10 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if recalcEnabled and (pending or recorded > 0):
                 recalculateMilestoneDates(db.repo, username, db.tz,
                                           removeUnsupported=pending)
+            unseen = [r for r in rows if not r["seen"] and r["kind"] in EMAILED_MILESTONE_KINDS]
+            if unseen:
+                queue_email_notification(username, EVENT_MILESTONE_REACHED,
+                                         {"milestones": [formatMilestone(r) for r in unseen]})
         except Exception as e:
             logger.warning("Milestone detection failed for %s: %s", username, e)
 

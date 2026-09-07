@@ -13,12 +13,22 @@ logger = logging.getLogger(__name__)
 EVENT_INVALID_COOKIES = "invalid_cookies"
 EVENT_API_KEY_FAILED = "api_key_failed"
 EVENT_SHARE_REQUEST = "share_request"
+EVENT_MILESTONE_REACHED = "milestone_reached"
 
 VALID_NOTIFICATION_EVENTS = (
     EVENT_INVALID_COOKIES,
     EVENT_API_KEY_FAILED,
     EVENT_SHARE_REQUEST,
+    EVENT_MILESTONE_REACHED,
 )
+
+# Per-event default when a user has never touched the preference (no row in
+# user_notification_preferences). Every event not listed here defaults to True
+# (opt-out) - milestone_reached is opt-IN instead, so shipping the feature
+# doesn't start mailing existing users who never asked for it.
+NOTIFICATION_EVENT_DEFAULTS: dict[str, bool] = {
+    EVENT_MILESTONE_REACHED: False,
+}
 
 DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 86400  # 24 hours
 
@@ -28,7 +38,9 @@ class EmailQueries:
 
     def getUserNotificationPreference(self, username: str, event_type: str) -> bool:
         """Read a user's notification preference for event_type.
-        Defaults to True if unconfigured."""
+        Defaults to NOTIFICATION_EVENT_DEFAULTS.get(event_type, True) if
+        unconfigured - True (opt-out) for most events, False for the ones
+        listed there (currently just milestone_reached, opt-in)."""
         if event_type not in VALID_NOTIFICATION_EVENTS:
             logger.warning("Unknown notification event type: %s", event_type)
             return True
@@ -37,7 +49,7 @@ class EmailQueries:
             "SELECT enabled FROM user_notification_preferences WHERE username=? AND event_type=?",
             (username, event_type),
         ).fetchone()
-        return bool(row["enabled"]) if row is not None else True
+        return bool(row["enabled"]) if row is not None else NOTIFICATION_EVENT_DEFAULTS.get(event_type, True)
 
     def setUserNotificationPreference(self, username: str, event_type: str, enabled: bool) -> None:
         """Set a user's notification preference for event_type."""
@@ -63,7 +75,7 @@ class EmailQueries:
             "SELECT event_type, enabled FROM user_notification_preferences WHERE username=?",
             (username,),
         ).fetchall()
-        result = {event: True for event in VALID_NOTIFICATION_EVENTS}
+        result = {event: NOTIFICATION_EVENT_DEFAULTS.get(event, True) for event in VALID_NOTIFICATION_EVENTS}
         for r in rows:
             if r["event_type"] in result:
                 result[r["event_type"]] = bool(r["enabled"])

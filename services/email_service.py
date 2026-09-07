@@ -19,6 +19,7 @@ from Database.queries.email_queries import (
     EVENT_INVALID_COOKIES,
     EVENT_API_KEY_FAILED,
     EVENT_SHARE_REQUEST,
+    EVENT_MILESTONE_REACHED,
     DEFAULT_NOTIFICATION_COOLDOWN_SECONDS,
 )
 
@@ -57,6 +58,7 @@ _EVENT_LINK_PATHS = {
     EVENT_INVALID_COOKIES: "/login",
     EVENT_API_KEY_FAILED: "/profile/connections",
     EVENT_SHARE_REQUEST: "/profile/sharing",
+    EVENT_MILESTONE_REACHED: "/#milestones",
 }
 
 
@@ -364,6 +366,47 @@ def _render_event_template(
           <h2 style="color: #1db954;">New Data Sharing Request</h2>
           <p>Hello <strong>{htmlUsername}</strong>,</p>
           <p><strong>{html.escape(requester)}</strong> sent you a request to share listening statistics.</p>
+          <p>{cta}</p>
+        </div>
+        """
+    elif event_type == EVENT_MILESTONE_REACHED:
+        # context["milestones"] is [{icon, label, artistId?}, ...] - the same
+        # shape formatMilestone (services/milestones.py) returns, one entry
+        # per crossing this detection pass recorded. Kept possibly-empty
+        # rather than assumed non-empty: a defensive caller (or a future one)
+        # must get sane copy instead of a crash or a blank email.
+        milestones = context.get("milestones") or []
+        count = len(milestones)
+        if count == 1:
+            subject = f"Spotify Stats Tracker — Milestone Reached: {milestones[0].get('label', 'Milestone reached')}"
+        elif count > 1:
+            subject = f"Spotify Stats Tracker — {count} New Milestones Reached"
+        else:
+            subject = "Spotify Stats Tracker — Milestone Reached"
+
+        if milestones:
+            textLines = "\n".join(f"- {m.get('icon', '')} {m.get('label', '')}".strip() for m in milestones)
+            introText = f"You just reached:\n\n{textLines}\n\n"
+            itemsHtml = "".join(
+                f"<li>{html.escape(m.get('icon', ''))} {html.escape(m.get('label', ''))}</li>"
+                for m in milestones
+            )
+            bodyHtml = f"<ul>{itemsHtml}</ul>"
+        else:
+            introText = "You reached a new listening milestone.\n\n"
+            bodyHtml = "<p>You reached a new listening milestone.</p>"
+
+        text_body = (
+            f"Hello {username},\n\n{introText}"
+            + (f"See it on your dashboard: {link}" if link else "Log in to see it on your dashboard.")
+        )
+        cta = _ctaButton(link, "View Your Milestones") if link else \
+            "Log in to your Spotify Stats Tracker dashboard to see it."
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #121212; color: #ffffff;">
+          <h2 style="color: #1db954;">Milestone Reached!</h2>
+          <p>Hello <strong>{htmlUsername}</strong>,</p>
+          {bodyHtml}
           <p>{cta}</p>
         </div>
         """

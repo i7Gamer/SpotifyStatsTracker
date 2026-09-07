@@ -33,6 +33,14 @@ MILESTONE_KIND_LISTEN_TIME = "listen_time"
 MILESTONE_KIND_STREAK = "streak"
 MILESTONE_KIND_TOP_ARTIST = "top_artist"
 
+# Kinds the milestone-reached email covers. A separate constant (rather than
+# inlining all four kinds at the call site) so excluding one later - e.g.
+# top_artist, if a small/near-tied account makes it too frequent even behind
+# the 24h cooldown - is a one-line change in app.py's _detectMilestonesSafely.
+EMAILED_MILESTONE_KINDS = (
+    MILESTONE_KIND_PLAYS, MILESTONE_KIND_LISTEN_TIME, MILESTONE_KIND_STREAK, MILESTONE_KIND_TOP_ARTIST,
+)
+
 # Ascending thresholds. Detection records every threshold at/below the current
 # value; only ones crossed after a user's baseline notify (seen=0).
 MILESTONE_PLAYS_THRESHOLDS = (1000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000)
@@ -42,31 +50,33 @@ MILESTONE_STREAK_DAY_THRESHOLDS = (7, 30, 100, 365, 1000)
 MS_PER_HOUR = 1000 * 60 * 60
 
 
-def _detectThresholdMilestones(repo, username, kind, thresholds, currentValue, achievedAt, seen) -> int:
+def _detectThresholdMilestones(repo, username, kind, thresholds, currentValue, achievedAt, seen) -> list[dict]:
     """Record every not-yet-recorded threshold in `thresholds` (ascending) that
-    currentValue has reached. Returns how many rows were newly recorded."""
-    recorded = 0
+    currentValue has reached. Returns the newly recorded rows, each shaped like
+    a user_milestones row (see detectMilestonesDetailed)."""
+    recorded = []
     for threshold in thresholds:
         if currentValue < threshold:
             break  # ascending list - nothing further can be reached
         if not repo.hasThresholdMilestone(username, kind, threshold):
             repo.recordMilestone(username, kind, threshold, None, achievedAt, seen)
-            recorded += 1
+            recorded.append({"kind": kind, "threshold": threshold, "detail": None,
+                             "achieved_at": achievedAt, "seen": seen})
     return recorded
 
 
-def _detectTopArtistMilestone(repo, db, username, achievedAt, seen) -> int:
+def _detectTopArtistMilestone(repo, db, username, achievedAt, seen) -> list[dict]:
     """Record a top_artist milestone when the all-time #1 artist differs from
-    the last one recorded (or none has been recorded yet). Returns 1 if a row
-    was recorded, else 0."""
+    the last one recorded (or none has been recorded yet). Returns a
+    single-row list if one was recorded, else empty."""
     topArtists = db.getTopArtists(startDate=None, endDate=None, by="plays", limit=1)
     if not topArtists:
-        return 0
+        return []
     top = topArtists[0]
     artistId = top.get("id")
     artistName = top.get("name")
     if not artistId or not artistName:
-        return 0
+        return []
 
     latest = repo.getLatestMilestone(username, MILESTONE_KIND_TOP_ARTIST)
     if latest is not None:
@@ -75,26 +85,29 @@ def _detectTopArtistMilestone(repo, db, username, achievedAt, seen) -> int:
         except (ValueError, TypeError):
             prev = {}
         if prev.get("id") == artistId:
-            return 0  # unchanged #1 - nothing to record
+            return []  # unchanged #1 - nothing to record
 
-    repo.recordMilestone(
-        username, MILESTONE_KIND_TOP_ARTIST, 0,
-        json.dumps({"id": artistId, "name": artistName}), achievedAt, seen)
-    return 1
+    detail = json.dumps({"id": artistId, "name": artistName})
+    repo.recordMilestone(username, MILESTONE_KIND_TOP_ARTIST, 0, detail, achievedAt, seen)
+    return [{"kind": MILESTONE_KIND_TOP_ARTIST, "threshold": 0, "detail": detail,
+             "achieved_at": achievedAt, "seen": seen}]
 
 
-def detectMilestones(db, repo, username, changeCache=None, markSeen=False) -> int:
+def detectMilestonesDetailed(db, repo, username, changeCache=None, markSeen=False) -> list[dict]:
     """Detect and record any newly-reached milestones for `username`, returning
-    how many rows were recorded this pass.
+    the rows recorded this pass - each a {kind, threshold, detail, achieved_at,
+    seen} dict matching a user_milestones row, so formatMilestone(row) works on
+    it directly (a top_artist row's detail is the same JSON string
+    recordMilestone stores).
 
     On the user's first pass (no milestones_baseline_at yet) everything already
     achieved is recorded as seen and the baseline is stamped; afterwards new
-    crossings are recorded unseen (seen=0) so the topbar badge surfaces them.
+    crossings are recorded unseen (seen=False) so the topbar badge - and the
+    milestone-reached email in app.py's _detectMilestonesSafely - surface them.
     `markSeen=True` records this pass's crossings as already seen instead -
-    the import-backfill case (see _detectMilestonesSafely in app.py): crossings
-    surfaced by imported history are past achievements, so they get the same
-    no-notification contract as first-pass seeding rather than flooding the
-    badge.
+    the import-backfill case: crossings surfaced by imported history are past
+    achievements, so they get the same no-notification contract as first-pass
+    seeding rather than flooding the badge or mailing a backlog.
 
     `changeCache` is an optional mutable {username: (totalPlays, totalMs)} dict
     (the periodic background loop passes a per-process one). When supplied, a
@@ -114,13 +127,13 @@ def detectMilestones(db, repo, username, changeCache=None, markSeen=False) -> in
     # Idle-cycle short-circuit (see docstring). Never on the seeding pass - that
     # must record the already-achieved backlog once, even against a stale cache.
     if changeCache is not None and not seed and changeCache.get(username) == (totalPlays, totalMs):
-        return 0
+        return []
 
     totalHours = (totalMs or 0) // MS_PER_HOUR
     streak = db.getCurrentStreak()
     streakDays = streak.get("days", 0) if isinstance(streak, dict) else 0
 
-    recorded = 0
+    recorded: list[dict] = []
     recorded += _detectThresholdMilestones(
         repo, username, MILESTONE_KIND_PLAYS, MILESTONE_PLAYS_THRESHOLDS, totalPlays, now, seen)
     recorded += _detectThresholdMilestones(
@@ -134,6 +147,13 @@ def detectMilestones(db, repo, username, changeCache=None, markSeen=False) -> in
     if changeCache is not None:
         changeCache[username] = (totalPlays, totalMs)
     return recorded
+
+
+def detectMilestones(db, repo, username, changeCache=None, markSeen=False) -> int:
+    """How many milestone rows were recorded this pass - the count-only
+    contract every existing caller/test relies on. See detectMilestonesDetailed
+    for the actual detection logic and the per-row detail this discards."""
+    return len(detectMilestonesDetailed(db, repo, username, changeCache=changeCache, markSeen=markSeen))
 
 
 def resolveUserTimezone(repo, username):

@@ -15,11 +15,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from Database.repository import Repository
 from services.milestones import (
-    detectMilestones, formatMilestone,
+    detectMilestones, detectMilestonesDetailed, formatMilestone,
     nextMilestoneProgress, buildNextMilestones,
     MILESTONE_KIND_PLAYS, MILESTONE_KIND_LISTEN_TIME, MILESTONE_KIND_STREAK, MILESTONE_KIND_TOP_ARTIST,
     MILESTONE_PLAYS_THRESHOLDS, MILESTONE_STREAK_DAY_THRESHOLDS,
-    MS_PER_HOUR,
+    MS_PER_HOUR, EMAILED_MILESTONE_KINDS,
 )
 
 
@@ -242,6 +242,92 @@ class TestDetectMilestonesChangeCache(_RepoTestCase):
 
         self.assertEqual(recorded, 0)
         self.assertEqual((db.streakCalls, db.topArtistCalls), (0, 0))
+
+
+class TestDetectMilestonesDetailed(_RepoTestCase):
+    """detectMilestonesDetailed is the workhorse detectMilestones now wraps
+    (returning len(...) for the existing int contract) - the milestone-reached
+    email in app.py's _detectMilestonesSafely reads its row dicts directly, so
+    their shape and `seen` flags matter as much as the count."""
+
+    def test_returns_row_dicts_formatMilestone_compatible(self):
+        db = _FakeDb(plays=1200, topArtist={"id": "art1", "name": "Radiohead"})
+        rows = detectMilestonesDetailed(db, self.repo, self.USER)
+
+        self.assertGreater(len(rows), 0)
+        for row in rows:
+            self.assertIn("kind", row)
+            self.assertIn("threshold", row)
+            self.assertIn("detail", row)
+            self.assertIn("achieved_at", row)
+            self.assertIn("seen", row)
+            formatted = formatMilestone(row)   #< must not raise
+            self.assertTrue(formatted["label"])
+
+    def test_seed_pass_rows_are_all_seen(self):
+        db = _FakeDb(plays=1200, topArtist={"id": "art1", "name": "Radiohead"})
+        rows = detectMilestonesDetailed(db, self.repo, self.USER)
+
+        self.assertTrue(rows)
+        self.assertTrue(all(row["seen"] for row in rows))
+
+    def test_mark_seen_pass_rows_are_all_seen(self):
+        detectMilestonesDetailed(_FakeDb(plays=0), self.repo, self.USER)   #< baseline, nothing achieved
+
+        rows = detectMilestonesDetailed(_FakeDb(plays=1500), self.repo, self.USER, markSeen=True)
+
+        self.assertTrue(rows)
+        self.assertTrue(all(row["seen"] for row in rows))
+
+    def test_organic_crossing_rows_are_unseen(self):
+        detectMilestonesDetailed(_FakeDb(plays=0), self.repo, self.USER)   #< baseline, nothing achieved
+
+        rows = detectMilestonesDetailed(_FakeDb(plays=1500), self.repo, self.USER)
+
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["seen"])
+        self.assertEqual(rows[0]["kind"], MILESTONE_KIND_PLAYS)
+        self.assertEqual(rows[0]["threshold"], 1000)
+
+    def test_top_artist_row_detail_matches_stored_json(self):
+        rows = detectMilestonesDetailed(
+            _FakeDb(topArtist={"id": "art1", "name": "Radiohead"}), self.repo, self.USER)
+
+        topRows = [r for r in rows if r["kind"] == MILESTONE_KIND_TOP_ARTIST]
+        self.assertEqual(len(topRows), 1)
+        stored = self.repo.getLatestMilestone(self.USER, MILESTONE_KIND_TOP_ARTIST)
+        self.assertEqual(topRows[0]["detail"], stored["detail"])
+
+    def test_detectMilestones_still_returns_matching_int(self):
+        # Two identically-seeded repos so detectMilestones (int) and
+        # detectMilestonesDetailed (rows) can be compared without one call's
+        # side effects (hasThresholdMilestone dedup) affecting the other.
+        otherTmp = tempfile.TemporaryDirectory()
+        self.addCleanup(otherTmp.cleanup)
+        otherRepo = Repository(Path(otherTmp.name) / "milestones_other.db")
+        self.addCleanup(otherRepo.connectionManager.close)
+        otherRepo.upsertUser(self.USER, f"{self.USER}@example.com", createdAt=100.0)
+
+        detailedRows = detectMilestonesDetailed(
+            _FakeDb(plays=1200, topArtist={"id": "art1", "name": "Radiohead"}), otherRepo, self.USER)
+        countResult = detectMilestones(
+            _FakeDb(plays=1200, topArtist={"id": "art1", "name": "Radiohead"}), self.repo, self.USER)
+
+        self.assertEqual(countResult, len(detailedRows))
+
+    def test_empty_when_nothing_recorded(self):
+        detectMilestonesDetailed(_FakeDb(plays=0), self.repo, self.USER)   #< baseline
+
+        rows = detectMilestonesDetailed(_FakeDb(plays=0), self.repo, self.USER)
+
+        self.assertEqual(rows, [])
+
+
+class TestEmailedMilestoneKinds(unittest.TestCase):
+    def test_covers_every_milestone_kind(self):
+        self.assertEqual(
+            set(EMAILED_MILESTONE_KINDS),
+            {MILESTONE_KIND_PLAYS, MILESTONE_KIND_LISTEN_TIME, MILESTONE_KIND_STREAK, MILESTONE_KIND_TOP_ARTIST})
 
 
 class TestNextMilestoneProgress(unittest.TestCase):
