@@ -22,8 +22,10 @@
  *     + the listGeneration counter         hx-swap="outerHTML" on the button,
  *     which sits at the END of the list, so the batch that replaces it lands
  *     its rows exactly where the append used to put them. The counter went with
- *     it: the button inherits the container's hx-sync, so a sort change aborts
- *     a batch in flight rather than letting stale rows land in a fresh list.
+ *     it: the container's hx-sync="...:replace" aborts a batch in flight when
+ *     a sort change fires, rather than letting stale rows land in a fresh list,
+ *     while the button's own hx-sync="...:drop" makes a Show More yield to a
+ *     list change already in flight (see _play_log_batch.html for both halves).
  *
  * What could not move: the Top Songs / History tabs (a click that changes no
  * data, so there is no request for htmx to own), and the jump-to-page input,
@@ -66,9 +68,10 @@
       && document.activeElement === elt);
   }
 
-  // The button inherits the list's hx-sync="#detailHistoryResults:replace",
-  // so a sort/skips/pagination change firing while a batch is in flight
-  // aborts that batch rather than queuing behind it. None of these fire for
+  // A sort/skips/pagination change carries the list's
+  // hx-sync="#detailHistoryResults:replace", so one firing while a batch is
+  // in flight aborts that batch rather than queuing behind it (the button
+  // itself is ":drop" - _play_log_batch.html explains why). None of these fire for
   // the OTHER swap that then lands (a sort's own beforeRequest re-arms the
   // flag for itself if it applies), so clearing here only ever disarms a
   // batch that will never reach afterSettle - never a later request's own
