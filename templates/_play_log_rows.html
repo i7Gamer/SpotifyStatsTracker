@@ -50,6 +50,17 @@
         {% if play.get('contextName') %}
           <span class="track-label">From {{ play.get('contextName') }}</span>
         {% endif %}
+        {# Artist-only: an artist's one canonical song can still have plays
+           across several releases (single, album, compilation), which this
+           timeline otherwise drops entirely (see the "Known UX loss" note in
+           implementationPlan-2026-09-07.md, feature 4). The album page has no
+           equivalent gap - its tab heading already names the one album - so
+           this stays out of that branch. `play.album` is the track's own
+           catalog row (the same one _track_card.html reads), already on every
+           hydrated entry. #}
+        {% if kind is defined and kind == 'artist' and play.get('album') and play.get('album').get('name') %}
+          <span class="track-label">· {{ play.get('album').get('name') }}</span>
+        {% endif %}
       </div>
     </div>
   </article>

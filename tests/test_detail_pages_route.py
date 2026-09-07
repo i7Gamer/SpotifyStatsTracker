@@ -1662,11 +1662,13 @@ class TestAlbumHistoryTimeline(_DetailRouteTestBase):
 
         self.assertIn("No plays recorded yet", body)
 
-    def test_the_artist_page_is_not_affected(self):
-        """Deliberately album-only for now: an album is a fixed, small track set
-        where "only ever played track 3" is an ordinary state, and it is the
-        case that was asked for. The mechanism takes one flag, so artists can
-        join later."""
+    def test_the_artist_page_now_gets_the_same_treatment(self):
+        """SINGLE_TRACK_TIMELINE_KINDS extended this from album-only to
+        (album, artist) - see TestArtistHistoryTimeline below for the full
+        mirror of this class's coverage on the artist route. This one test
+        stays here as the album class's own regression guard: the mechanism
+        is one shared flag, so a change to it must not silently stop covering
+        artists too."""
         dash = self._makeApp()
         db = MagicMock()
         db.getArtist.return_value = {"id": "a1", "name": "Artist A", "url": "u", "imageId": "a1",
@@ -1682,8 +1684,199 @@ class TestAlbumHistoryTimeline(_DetailRouteTestBase):
             body = self._historyTab(
                 self._getPath(dash, db, "/artist/a1?view=history").get_data(as_text=True))
 
+        self.assertIn('class="timeline-container"', body)
+        self.assertNotIn('class="track-card', body)
+
+    def test_the_timeline_row_never_shows_an_album_name_on_the_album_page(self):
+        """The album-name addition to timeline rows (_play_log_rows.html) is
+        guarded to kind == "artist" - an album page already names the album in
+        the tab heading, so repeating it on every row would be noise. Guards
+        against the shared row partial regressing this page when the artist
+        branch is added."""
+        plays = self._plays((1784560000, 190000))
+        plays[0]["album"] = {"id": "alb1", "name": "Deluxe Reissue"}
+        body = self._body(1, plays)
+
+        self.assertNotIn("Deluxe Reissue", body)
+
+
+class TestArtistHistoryTimeline(_DetailRouteTestBase):
+    """The artist-page mirror of TestAlbumHistoryTimeline above
+    (SINGLE_TRACK_TIMELINE_KINDS = ("album", "artist")): an artist you have
+    only ever played ONE song from gets the timeline too, for the same reason
+    - consecutive rows would otherwise repeat that song's title, artist and
+    cover and bury what actually differs (when, and how much of it played).
+
+    One difference from the album page: an artist's one canonical song can
+    still have been played from several releases (single, album,
+    compilation) - the album page has no equivalent gap, since the tab is
+    already scoped to one album. _play_log_rows.html adds "· <album name>"
+    to each row for kind == "artist" when the entry carries one (see
+    TestArtistTimelineShowsAlbumName below)."""
+
+    def _artist(self, uniqueSongCount):
+        return {"id": "a1", "name": "Artist One", "url": "http://example.com/a1", "imageId": "a1",
+                "imageUrl": "", "plays": 5, "totalTimeListened": 50000,
+                "uniqueSongCount": uniqueSongCount, "firstListenedAt": 100}
+
+    def _plays(self, *specs):
+        """(playedAt, timePlayed) pairs, all of the same track."""
+        return [{"id": "t1", "name": "The Only Song", "artists": [], "duration": 200000,
+                 "playedAt": playedAt, "timePlayed": timePlayed, "isSkip": False}
+                for playedAt, timePlayed in specs]
+
+    def _db(self, uniqueSongCount, plays):
+        db = MagicMock()
+        db.getArtist.return_value = self._artist(uniqueSongCount)
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getEntriesCount.return_value = len(plays)
+        db.getEntriesFromNew.return_value = plays
+        return db
+
+    def _body(self, uniqueSongCount, plays, query="?view=history"):
+        """The History TAB only - see TestAlbumHistoryTimeline._body: the
+        hero is itself a .track-card, so a whole-page assertion would always
+        pass."""
+        dash = self._makeApp()
+        db = self._db(uniqueSongCount, plays)
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._getPath(dash, db, f"/artist/a1{query}").get_data(as_text=True)
+        return self._historyTab(body)
+
+    @staticmethod
+    def _historyTab(body):
+        start = body.index('data-category="history"')
+        return body[start:body.index('id="detailChartData"', start)]
+
+    def test_one_played_track_gets_the_timeline(self):
+        body = self._body(1, self._plays((1784560000, 190000), (1784540000, 190000)))
+
+        self.assertIn('class="timeline-container"', body)
+        self.assertIn("timeline-item", body)
+        self.assertNotIn('class="track-card', body)
+
+    def test_two_played_tracks_keep_the_cards(self):
+        """The normal artist page (several songs) is untouched."""
+        body = self._body(2, self._plays((1784560000, 190000), (1784540000, 190000)))
+
         self.assertIn('class="track-card', body)
         self.assertNotIn('class="timeline-container"', body)
+
+    def test_the_timeline_still_says_which_artist_it_is(self):
+        body = self._body(1, self._plays((1784560000, 190000)))
+
+        self.assertIn("History with Artist One", body)
+
+    def test_the_timeline_keeps_the_sort_toggle(self):
+        """Swapping the row rendering must not cost the tab its controls."""
+        body = self._body(1, self._plays((1784560000, 190000)))
+
+        self.assertIn("sort-toggle", body)
+        self.assertIn("Date ↓", body)
+
+    def test_the_timeline_keeps_numbered_pagination(self):
+        """This page pages its history; it does NOT grow it - the song
+        page's "Show more" batching belongs to that page's offset/limit
+        contract, and borrowing the timeline must not drag it along."""
+        from app import PAGE_SIZE
+        dash = self._makeApp()
+        db = self._db(1, self._plays((1784560000, 190000)))
+        db.getEntriesCount.return_value = PAGE_SIZE * 2 + 5
+
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._historyTab(
+                self._getPath(dash, db, "/artist/a1?view=history").get_data(as_text=True))
+
+        self.assertIn('class="pagination"', body)
+        self.assertIn("page=2", body)
+        self.assertNotIn("Show More Plays", body)
+
+    def test_the_timeline_labels_each_play(self):
+        """The same playType vocabulary the song page's timeline uses - it is
+        the same template, and _enrichSongTimelineEntries is what fills it."""
+        body = self._body(1, self._plays((1784560000, 190000), (1784540000, 20000)))
+
+        self.assertIn("play-type-full", body)
+        self.assertIn("play-type-partial", body)
+        self.assertIn("Partial • 10%", body)
+
+    def test_the_timeline_carries_its_month_headers_and_gaps(self):
+        """The two things the timeline adds over a bare list. The fixture is
+        newest-first, so the second (older) card's gap badge reads
+        "earlier"."""
+        threeHours = 10800
+        body = self._body(1, self._plays((1784560000, 190000), (1784560000 - threeHours, 190000)))
+
+        self.assertIn("timeline-date-header", body)
+        self.assertIn("timeline-gap-badge", body)
+        self.assertIn("3 hours earlier", body)
+
+    def test_the_htmx_list_swap_returns_the_timeline_too(self):
+        """The sort/page controls re-swap only the list, so that response has
+        to agree with the one the full body rendered - otherwise changing the
+        sort turns the timeline back into cards."""
+        dash = self._makeApp()
+        db = self._db(1, self._plays((1784560000, 190000)))
+
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            resp = self._getRaw(dash, db, "/artist/a1", headers=HX_LIST_HEADERS)
+
+        body = resp.get_data(as_text=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('class="timeline-container"', body)
+        self.assertNotIn('class="track-card', body)
+
+    def test_an_artist_with_no_plays_at_all_does_not_crash(self):
+        """uniqueSongCount comes from the artist's aggregate, which falls back
+        to a skip-ranked lookup for a skip-only artist - so it can report 1
+        while this list, which excludes skips, is empty. Mirrors
+        TestAlbumHistoryTimeline's identical disagreement case."""
+        body = self._body(1, [])
+
+        self.assertIn("No plays recorded yet", body)
+
+
+class TestArtistTimelineShowsAlbumName(_DetailRouteTestBase):
+    """The one deliberate difference from the album page's timeline (see the
+    "Known UX loss" note in implementationPlan-2026-09-07.md, feature 4): an
+    artist's one canonical song can still have plays across several releases
+    (single, album, compilation), which the timeline otherwise drops. Since
+    getEntriesFromNew's hydrated entries already carry the track's `album`
+    dict (the same one _track_card.html reads at line 218-224), this is a
+    template-only addition, guarded to kind == "artist" so the album page -
+    which already names its one album in the tab heading - is unchanged."""
+
+    def _db(self, plays):
+        db = MagicMock()
+        db.getArtist.return_value = {"id": "a1", "name": "Artist One", "url": "u", "imageId": "a1",
+                                     "imageUrl": "", "plays": 5, "totalTimeListened": 50000,
+                                     "uniqueSongCount": 1, "firstListenedAt": 100}
+        db.getArtistBio.return_value = None
+        db.getSongsStats.return_value = []
+        db.getListeningTimeSeries.return_value = []
+        db.getEntriesCount.return_value = len(plays)
+        db.getEntriesFromNew.return_value = plays
+        return db
+
+    @staticmethod
+    def _historyTab(body):
+        start = body.index('data-category="history"')
+        return body[start:body.index('id="detailChartData"', start)]
+
+    def test_the_album_name_appears_on_an_artist_timeline_row(self):
+        plays = [{"id": "t1", "name": "The Only Song", "artists": [], "duration": 200000,
+                  "playedAt": 1784560000, "timePlayed": 190000, "isSkip": False,
+                  "album": {"id": "alb1", "name": "The Single Version"}}]
+        dash = self._makeApp()
+        db = self._db(plays)
+
+        with patch.object(dash, "_attachGenres", side_effect=lambda db_, tracks, kind: tracks):
+            body = self._historyTab(
+                self._getPath(dash, db, "/artist/a1?view=history").get_data(as_text=True))
+
+        self.assertIn("The Single Version", body)
 
 
 class TestDetailPageDeferredBody(_DetailRouteTestBase):

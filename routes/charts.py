@@ -61,6 +61,15 @@ DETAIL_MORE_TARGET = "timelineActions"       #< "Show more": one appended batch
 #  overflowed sqlite3's bind into a 500 - see _detailHistoryContext.)
 MAX_DETAIL_HISTORY_PAGES = 10
 
+#< Entity kinds whose History tab swaps to the song page's timeline when the
+#  entity has only ever been heard via one track - see _entityDetailPage's
+#  singleTrackTimeline. Started album-only (a fixed, small track set where
+#  "only ever played track 3" is an ordinary state); artists joined
+#  2026-09-07 for the same reason - consecutive rows would otherwise repeat
+#  one title, artist and cover down the page regardless of which entity kind
+#  is being viewed.
+SINGLE_TRACK_TIMELINE_KINDS = ("album", "artist")
+
 
 def _detailSwapTarget():
     """Which region of a detail page an htmx request is asking to fill, or ""
@@ -1679,11 +1688,11 @@ def register(app, dashboard):
         # since it is fetched without skips - so the two cannot disagree about
         # how many songs are in it.
         #
-        # Albums only for now. An album is a fixed, small track set where "only
-        # ever played track 3" is an ordinary state; whether an artist page
-        # wants the same treatment is a separate question, and answering it yes
-        # later means dropping the kind check.
-        singleTrackTimeline = kind == "album" and entity.get("uniqueSongCount") == 1
+        # kind in SINGLE_TRACK_TIMELINE_KINDS: started album-only (an album is a
+        # fixed, small track set where "only ever played track 3" is an
+        # ordinary state), and now covers artists too - an artist with one
+        # canonical song has exactly the same repeating-card problem.
+        singleTrackTimeline = kind in SINGLE_TRACK_TIMELINE_KINDS and entity.get("uniqueSongCount") == 1
 
         listCtx = _detailHistoryContext(db, f"{kind}DetailPage", {urlIdKwarg: entityId, "view": "history"},
                                         groupByParam=groupByParam,
@@ -1697,7 +1706,7 @@ def register(app, dashboard):
         # cannot turn a timeline back into cards.
         if swapTarget == DETAIL_HISTORY_TARGET:
             return render_template(
-                listCtx["historyPartial"], username=username,
+                listCtx["historyPartial"], username=username, kind=kind,
                 itemName=entity.get("name", ""), **listCtx)
 
         groupBy = dashboard._resolveGroupBy(
@@ -1734,6 +1743,7 @@ def register(app, dashboard):
             view=dashboard._getDetailViewParam(),
             itemName=entity.get("name", ""),
             chartData={"timeSeries": timeSeries},
+            kind=kind,
             **{kind: entity},
             **listCtx,
         )
