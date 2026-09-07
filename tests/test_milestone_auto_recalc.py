@@ -143,6 +143,14 @@ class TestImportRaisesRecalcFlag(DatabaseTestCase):
         self.assertTrue(db.consumeMilestoneRecalcFlag())
 
 
+def _seenRows(count):
+    """`count` detection rows recorded as already seen - the shape
+    detectMilestonesDetailed returns, minus anything that would queue an
+    email (these tests pin the recalc wiring, not the notification)."""
+    return [{"kind": "plays", "threshold": index, "detail": None,
+             "achieved_at": 0.0, "seen": 1} for index in range(count)]
+
+
 class TestAutoRecalcWiring(AppTestCase):
     """_detectMilestonesSafely: detect first (so import-crossed rows exist),
     then re-derive dates when the import flag was raised or the pass recorded
@@ -166,7 +174,7 @@ class TestAutoRecalcWiring(AppTestCase):
         dash = self._makeApp()
         db = self._db(pending=True)
         calls = []
-        with patch("app.detectMilestones", side_effect=lambda *a, **k: calls.append("detect") or 0), \
+        with patch("app.detectMilestonesDetailed", side_effect=lambda *a, **k: calls.append("detect") or []), \
              patch("app.recalculateMilestoneDates", side_effect=lambda *a, **k: calls.append("recalc") or 0) as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
@@ -178,7 +186,7 @@ class TestAutoRecalcWiring(AppTestCase):
     def test_recorded_crossings_run_recalc_without_flag(self):
         dash = self._makeApp()
         db = self._db(pending=False)
-        with patch("app.detectMilestones", return_value=2), \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(2)), \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
@@ -189,7 +197,7 @@ class TestAutoRecalcWiring(AppTestCase):
     def test_quiet_pass_skips_recalc(self):
         dash = self._makeApp()
         db = self._db(pending=False)
-        with patch("app.detectMilestones", return_value=0), \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(0)), \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
@@ -199,7 +207,7 @@ class TestAutoRecalcWiring(AppTestCase):
         dash = self._makeApp()
         dash.repo.setMilestoneRecalcEnabled(False)
         db = self._db(pending=True)
-        with patch("app.detectMilestones", return_value=2), \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(2)), \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
@@ -210,7 +218,7 @@ class TestAutoRecalcWiring(AppTestCase):
         dash = self._makeApp()
         dash.repo.setMilestonesEnabled(False)
         db = self._db(pending=True)
-        with patch("app.detectMilestones") as mockDetect, \
+        with patch("app.detectMilestonesDetailed", return_value=[]) as mockDetect, \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
@@ -220,14 +228,14 @@ class TestAutoRecalcWiring(AppTestCase):
     def test_recalc_failure_does_not_stall_the_loop(self):
         dash = self._makeApp()
         db = self._db(pending=True)
-        with patch("app.detectMilestones", return_value=0), \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(0)), \
              patch("app.recalculateMilestoneDates", side_effect=RuntimeError("boom")):
             dash._detectMilestonesSafely(db, "alice")   #< must not raise
 
     def test_pending_flag_marks_crossings_seen(self):
         dash = self._makeApp()
         db = self._db(pending=True)
-        with patch("app.detectMilestones", return_value=0) as mockDetect, \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(0)) as mockDetect, \
              patch("app.recalculateMilestoneDates"):
             dash._detectMilestonesSafely(db, "alice")
 
@@ -240,7 +248,7 @@ class TestAutoRecalcWiring(AppTestCase):
         # and the end-of-batch flag keeps its one shot for settled data.
         dash = self._makeApp()
         db = self._db(pending=False, importing=True)
-        with patch("app.detectMilestones", return_value=3) as mockDetect, \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(3)) as mockDetect, \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
@@ -254,7 +262,7 @@ class TestAutoRecalcWiring(AppTestCase):
         dash = self._makeApp()
         dash.repo.setMilestoneRecalcEnabled(False)
         db = self._db(pending=False, importing=True)
-        with patch("app.detectMilestones", return_value=1) as mockDetect, \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(1)) as mockDetect, \
              patch("app.recalculateMilestoneDates"):
             dash._detectMilestonesSafely(db, "alice")
 
@@ -264,7 +272,7 @@ class TestAutoRecalcWiring(AppTestCase):
     def test_normal_pass_does_not_mark_seen(self):
         dash = self._makeApp()
         db = self._db(pending=False, importing=False)
-        with patch("app.detectMilestones", return_value=1) as mockDetect, \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(1)) as mockDetect, \
              patch("app.recalculateMilestoneDates"):
             dash._detectMilestonesSafely(db, "alice")
 
@@ -276,7 +284,7 @@ class TestAutoRecalcWiring(AppTestCase):
         dash = self._makeApp()
         dash.repo.setMilestoneRecalcEnabled(False)
         db = self._db(pending=True, importing=True)
-        with patch("app.detectMilestones", return_value=1) as mockDetect, \
+        with patch("app.detectMilestonesDetailed", return_value=_seenRows(1)) as mockDetect, \
              patch("app.recalculateMilestoneDates") as mockRecalc:
             dash._detectMilestonesSafely(db, "alice")
 
