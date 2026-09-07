@@ -28,9 +28,17 @@ const DEFAULT_THEME = 'theme-rose';
 function headScript(templatePath) {
   const html = fs.readFileSync(templatePath, 'utf8');
   const head = html.slice(html.indexOf('<head>'), html.indexOf('</head>'));
-  const match = /<script>([\s\S]*?)<\/script>/.exec(head);
-  assert.ok(match, `${templatePath}: no inline <script> in <head>`);
-  const source = match[1];
+  // Plain index slicing, not a tag regex: this extracts the ONE inline script
+  // from our own template, and a regex shaped like an HTML filter draws
+  // CodeQL's js/bad-tag-filter queue (uppercase, `</script >`, comments...)
+  // one complaint per scan - the same reason the Python inline-script gate
+  // moved to HTMLParser. Bare `<script>` (no attributes) is what the head's
+  // inline block is; the later `<script src=...>` tags never match it.
+  const lowered = head.toLowerCase();
+  const open = lowered.indexOf('<script>');
+  const close = open === -1 ? -1 : lowered.indexOf('</script', open);
+  assert.ok(open !== -1 && close !== -1, `${templatePath}: no inline <script> in <head>`);
+  const source = head.slice(open + '<script>'.length, close);
   assert.ok(source.includes('placeholderImgDataUri'), `${templatePath}: the placeholder line moved out of the head script`);
   return source.replace(/\{\{\s*placeholderImgDataUri\s*\|\s*tojson\s*\}\}/, JSON.stringify(PLACEHOLDER));
 }
