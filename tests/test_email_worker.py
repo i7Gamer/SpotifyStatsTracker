@@ -9,7 +9,9 @@ from unittest.mock import MagicMock, patch
 from Database.repository import Repository
 from services.email_worker import (
     EmailWorker, queue_email_notification, EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS,
+    EMAIL_MAX_SEND_ATTEMPTS, EMAIL_RETRY_DELAY_SECONDS,
 )
+from services.email_service import EMAIL_SENT, EMAIL_SKIPPED, EMAIL_FAILED
 from Database.queries.email_queries import EVENT_INVALID_COOKIES, EVENT_SHARE_REQUEST
 
 # A failure deadline for the cross-thread waits below, not a pace: each wait
@@ -118,9 +120,9 @@ def test_stopping_with_an_empty_queue_is_quiet(caplog):
     assert caplog.text == ""
 
 
-@patch("services.email_worker.send_email_notification")
+@patch("services.email_worker.deliver_email_notification")
 def test_email_worker_processes_queue(mock_send):
-    mock_send.return_value = True
+    mock_send.return_value = EMAIL_SENT
 
     worker = EmailWorker()
     worker.enqueue("test_user_w1", EVENT_INVALID_COOKIES, {"key": "val"})
@@ -133,7 +135,7 @@ def test_email_worker_processes_queue(mock_send):
     assert mock_send.call_args[0][2] == EVENT_INVALID_COOKIES
 
 
-@patch("services.email_worker.send_email_notification")
+@patch("services.email_worker.deliver_email_notification")
 def test_a_failing_send_is_logged_and_the_job_still_completes(mock_send, caplog):
     """The except/finally pair around one job, previously uncovered: a send
     that raises must be LOGGED rather than silently dropped, must still
@@ -150,6 +152,102 @@ def test_a_failing_send_is_logged_and_the_job_still_completes(mock_send, caplog)
     assert processed is True
     assert "Error processing email notification" in caplog.text
     assert worker._queue.unfinished_tasks == 0, "a failed send must still task_done() its item"
+
+
+class TestFailedSendsAreRetried:
+    """process_one used to drop a job after one attempt whatever the send
+    said. Two of the three events re-fire on their own; a share request does
+    not (createShareRequest answers "already_requested" the next time), so one
+    SMTP hiccup lost that mail for good (2026-09-07 review, item 13). Retried
+    a bounded number of times, spaced out, and only for a FAILED send - a
+    skipped one (cooldown, opt-out, notifications off) is a decision."""
+
+    def _worker(self, outcome):
+        worker = EmailWorker()
+        patcher = patch("services.email_worker.deliver_email_notification", return_value=outcome)
+        return worker, patcher
+
+    def test_a_failed_send_is_retried_after_the_delay(self):
+        worker, patcher = self._worker(EMAIL_FAILED)
+        worker.enqueue("alice", EVENT_SHARE_REQUEST, {"requester_username": "bob"})
+        clock = [1000.0]
+
+        with patcher as deliver, patch("services.email_worker.time.monotonic", side_effect=lambda: clock[0]):
+            assert worker.process_one() is True     #< attempt 1 fails, job re-queued
+            assert worker._queue.qsize() == 1
+            assert worker.process_one() is False    #< not due yet: left where it is, nothing sent
+            assert deliver.call_count == 1
+            clock[0] += EMAIL_RETRY_DELAY_SECONDS
+            assert worker.process_one() is True     #< attempt 2
+
+        assert deliver.call_count == 2
+        assert deliver.call_args.args[1:] == ("alice", EVENT_SHARE_REQUEST, {"requester_username": "bob"})
+
+    def test_it_gives_up_after_the_last_attempt_and_says_so(self, caplog):
+        worker, patcher = self._worker(EMAIL_FAILED)
+        worker.enqueue("alice", EVENT_SHARE_REQUEST)
+        clock = [1000.0]
+
+        with patcher as deliver, \
+             patch("services.email_worker.time.monotonic", side_effect=lambda: clock[0]), \
+             caplog.at_level("ERROR", logger="services.email_worker"):
+            for _ in range(EMAIL_MAX_SEND_ATTEMPTS):
+                assert worker.process_one() is True
+                clock[0] += EMAIL_RETRY_DELAY_SECONDS
+            assert worker.process_one() is False    #< gone, not re-queued again
+
+        assert deliver.call_count == EMAIL_MAX_SEND_ATTEMPTS
+        assert worker._queue.qsize() == 0
+        assert worker._queue.unfinished_tasks == 0
+        assert "alice" in caplog.text and EVENT_SHARE_REQUEST in caplog.text
+        assert str(EMAIL_MAX_SEND_ATTEMPTS) in caplog.text
+
+    def test_a_skipped_send_is_not_retried(self):
+        worker, patcher = self._worker(EMAIL_SKIPPED)
+        worker.enqueue("alice", EVENT_INVALID_COOKIES)
+
+        with patcher as deliver:
+            assert worker.process_one() is True
+
+        assert deliver.call_count == 1
+        assert worker._queue.qsize() == 0
+
+    def test_a_sent_mail_is_done(self):
+        worker, patcher = self._worker(EMAIL_SENT)
+        worker.enqueue("alice", EVENT_INVALID_COOKIES)
+
+        with patcher:
+            worker.process_one()
+
+        assert worker._queue.qsize() == 0
+        assert worker._queue.unfinished_tasks == 0
+
+    def test_a_retry_waiting_its_turn_does_not_hold_up_the_job_behind_it(self):
+        outcomes = {"alice": EMAIL_FAILED, "bob": EMAIL_SENT}
+        worker = EmailWorker()
+        worker.enqueue("alice", EVENT_SHARE_REQUEST)
+        worker.enqueue("bob", EVENT_SHARE_REQUEST)
+
+        with patch("services.email_worker.deliver_email_notification",
+                   side_effect=lambda repo, username, *_: outcomes[username]) as deliver, \
+             patch("services.email_worker.time.monotonic", return_value=1000.0):
+            assert worker.process_one() is True     #< alice fails, goes to the back
+            assert worker.process_one() is True     #< bob, right behind her, still goes out
+            assert worker.process_one() is False    #< alice again, not due
+
+        assert [call.args[1] for call in deliver.call_args_list] == ["alice", "bob"]
+        assert worker._queue.qsize() == 1
+
+    def test_the_shutdown_warning_still_counts_a_waiting_retry(self, caplog):
+        worker, patcher = self._worker(EMAIL_FAILED)
+        worker.enqueue("alice", EVENT_SHARE_REQUEST)
+        with patcher:
+            worker.process_one()
+
+        with caplog.at_level("WARNING", logger="services.email_worker"):
+            worker.stop()
+
+        assert f"{EVENT_SHARE_REQUEST}=1" in caplog.text
 
 
 def test_start_while_running_keeps_the_existing_thread():
@@ -170,9 +268,9 @@ def test_start_while_running_keeps_the_existing_thread():
         worker.stop()
 
 
-@patch("services.email_worker.send_email_notification")
+@patch("services.email_worker.deliver_email_notification")
 def test_global_queue_email_notification(mock_send):
-    mock_send.return_value = True
+    mock_send.return_value = EMAIL_SENT
 
     # Helper function enqueues into global worker singleton
     queue_email_notification("test_user_w2", EVENT_INVALID_COOKIES)

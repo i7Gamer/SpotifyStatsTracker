@@ -1,8 +1,12 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import ssl
+
 import pytest
 from unittest.mock import patch, MagicMock
+
+from config import SMTP_SKIP_TLS_VERIFY_ENV_VAR
 
 from Database.repository import Repository
 from services.email_service import (
@@ -12,8 +16,13 @@ from services.email_service import (
     save_instance_public_url,
     build_email_message,
     send_email_notification,
+    deliver_email_notification,
     send_test_email,
     _render_event_template,
+    _send_smtp_message,
+    EMAIL_SENT,
+    EMAIL_SKIPPED,
+    EMAIL_FAILED,
     _isValidFromEmail,
     _isValidPublicUrl,
 )
@@ -223,6 +232,111 @@ def test_send_test_email(mock_smtp_class):
     assert result is True
     assert err is None
     assert mock_server.send_message.called is True
+
+
+class TestSmtpTlsVerification:
+    """_send_smtp_message used to hand smtplib no SSL context, and the one
+    smtplib builds for itself (ssl._create_stdlib_context) verifies nothing -
+    CERT_NONE and no hostname check, measured on the 3.14 runtime this ships
+    on. Every SMTP credential and message then went to whoever answered on
+    that port (2026-09-07 review, item 3)."""
+
+    def _config(self, encryption):
+        return {"host": "smtp.example.com", "port": 465, "encryption": encryption,
+                "user": "smtp_user", "password": "smtp_password"}
+
+    @patch("smtplib.SMTP_SSL")
+    def test_implicit_tls_verifies_the_server(self, mock_ssl):
+        ok, err = _send_smtp_message(self._config("ssl"), MagicMock())
+
+        assert (ok, err) == (True, None)
+        context = mock_ssl.call_args.kwargs["context"]
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+
+    @patch("smtplib.SMTP")
+    def test_starttls_verifies_the_server(self, mock_smtp):
+        server = mock_smtp.return_value.__enter__.return_value
+
+        ok, _ = _send_smtp_message(self._config("tls"), MagicMock())
+
+        assert ok is True
+        context = server.starttls.call_args.kwargs["context"]
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+
+    @patch("smtplib.SMTP")
+    def test_no_encryption_never_starts_tls(self, mock_smtp):
+        server = mock_smtp.return_value.__enter__.return_value
+
+        _send_smtp_message(self._config("none"), MagicMock())
+
+        server.starttls.assert_not_called()
+
+    @patch("smtplib.SMTP_SSL")
+    def test_the_opt_out_keeps_a_self_signed_relay_working(self, mock_ssl, monkeypatch, caplog):
+        """A self-hoster on a relay with a self-signed certificate would
+        otherwise lose email on upgrade - the opt-out has to exist, and has to
+        say in the log that it is on."""
+        monkeypatch.setenv(SMTP_SKIP_TLS_VERIFY_ENV_VAR, "1")
+
+        with caplog.at_level("WARNING", logger="services.email_service"):
+            _send_smtp_message(self._config("ssl"), MagicMock())
+
+        context = mock_ssl.call_args.kwargs["context"]
+        assert context.verify_mode == ssl.CERT_NONE
+        assert context.check_hostname is False
+        assert SMTP_SKIP_TLS_VERIFY_ENV_VAR in caplog.text
+
+    @patch("smtplib.SMTP_SSL")
+    def test_a_false_opt_out_still_verifies(self, mock_ssl, monkeypatch):
+        monkeypatch.setenv(SMTP_SKIP_TLS_VERIFY_ENV_VAR, "0")
+
+        _send_smtp_message(self._config("ssl"), MagicMock())
+
+        assert mock_ssl.call_args.kwargs["context"].verify_mode == ssl.CERT_REQUIRED
+
+
+class TestDeliverOutcome:
+    """The worker retries a FAILED send and nothing else, so the service has to
+    say which of its Falses was a failure: a disabled/opted-out/cooling-down
+    send is a decision, not a fault (2026-09-07 review, item 13)."""
+
+    def _configuredRepo(self, username, enabled=True):
+        repo = Repository()
+        repo.upsertUser(username, f"{username}@example.com")
+        save_smtp_config(repo=repo, enabled=enabled, host="smtp.example.com", port=587,
+                         encryption="tls", user="u", password="p",
+                         from_email="noreply@example.com", from_name="N")
+        return repo
+
+    @patch("smtplib.SMTP")
+    def test_a_delivered_mail_is_sent(self, mock_smtp):
+        repo = self._configuredRepo("deliver_ok")
+
+        assert deliver_email_notification(repo, "deliver_ok", EVENT_INVALID_COOKIES) == EMAIL_SENT
+
+    @patch("smtplib.SMTP")
+    def test_an_smtp_error_is_a_failure(self, mock_smtp):
+        mock_smtp.return_value.__enter__.side_effect = OSError("connection refused")
+        repo = self._configuredRepo("deliver_fail")
+
+        assert deliver_email_notification(repo, "deliver_fail", EVENT_INVALID_COOKIES) == EMAIL_FAILED
+        assert send_email_notification(repo, "deliver_fail", EVENT_INVALID_COOKIES) is False
+
+    @patch("smtplib.SMTP")
+    def test_notifications_off_is_a_skip_not_a_failure(self, mock_smtp):
+        repo = self._configuredRepo("deliver_off", enabled=False)
+
+        assert deliver_email_notification(repo, "deliver_off", EVENT_INVALID_COOKIES) == EMAIL_SKIPPED
+        mock_smtp.assert_not_called()
+
+    @patch("smtplib.SMTP")
+    def test_the_cooldown_is_a_skip_not_a_failure(self, mock_smtp):
+        repo = self._configuredRepo("deliver_cool")
+        assert deliver_email_notification(repo, "deliver_cool", EVENT_INVALID_COOKIES) == EMAIL_SENT
+
+        assert deliver_email_notification(repo, "deliver_cool", EVENT_INVALID_COOKIES) == EMAIL_SKIPPED
 
 
 class TestRenderEventTemplate:

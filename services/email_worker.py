@@ -6,20 +6,40 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import TYPE_CHECKING, Any
+import time
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from Database.repository import Repository
 
-from services.email_service import get_smtp_config, send_email_notification
+from services.email_service import EMAIL_FAILED, deliver_email_notification, get_smtp_config
 
 logger = logging.getLogger(__name__)
 
 EMAIL_WORKER_POLL_INTERVAL_SECONDS = 2.0
+# A send the relay refused (a timeout, a dropped connection, a 4xx) is tried
+# this many times in all, this far apart, before the job is dropped with an
+# error line naming it. Bounded, because the queue has no consumer but this
+# thread and a relay that is down for good must not pin every later mail
+# behind one that will never go. Only a FAILED send comes back; a SKIPPED one
+# (see email_service) was a decision.
+EMAIL_MAX_SEND_ATTEMPTS = 3
+EMAIL_RETRY_DELAY_SECONDS = 60.0
 # How long stop() waits for the worker thread, which can be inside an SMTP
 # send. Part of the shutdown budget the compose file's stop_grace_period has to
 # cover (tests/test_compose_shutdown_budget.py).
 EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS = 3.0
+
+
+class _EmailJob(NamedTuple):
+    """One queued notification. `attempt` is the number of the send this job
+    is waiting to make (1 for a fresh enqueue); `notBefore` is the monotonic
+    time a retry becomes due, 0 for a job that can go right away."""
+    username: str
+    eventType: str
+    context: dict[str, Any]
+    attempt: int = 1
+    notBefore: float = 0.0
 
 
 class EmailWorker:
@@ -27,7 +47,7 @@ class EmailWorker:
 
     def __init__(self, repo: Repository | None = None):
         self._repo = repo
-        self._queue: queue.Queue[tuple[str, str, dict[str, Any]]] = queue.Queue()
+        self._queue: queue.Queue[_EmailJob] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -71,24 +91,49 @@ class EmailWorker:
 
     def enqueue(self, username: str, event_type: str, context: dict[str, Any] | None = None) -> None:
         """Enqueue an email notification job."""
-        self._queue.put((username, event_type, context or {}))
+        self._queue.put(_EmailJob(username, event_type, context or {}))
 
     def process_one(self) -> bool:
-        """Process a single job from the queue if present. Returns True if a job was processed."""
+        """Process a single job from the queue if present. Returns True if a
+        job was processed - a retry that is not yet due is put back at the tail
+        and counts as nothing processed, so an idle loop waits its interval
+        instead of spinning on it. The tail, not the head: a job queued behind
+        the waiting retry goes out on the next call rather than after it."""
         try:
-            username, event_type, context = self._queue.get_nowait()
+            job = self._queue.get_nowait()
         except queue.Empty:
+            return False
+
+        if job.notBefore > time.monotonic():
+            self._queue.put(job)
+            self._queue.task_done()
             return False
 
         try:
             from Database.repository import Repository
             repo = self._repo if self._repo is not None else Repository()
-            send_email_notification(repo, username, event_type, context)
+            outcome = deliver_email_notification(repo, job.username, job.eventType, job.context)
+            if outcome == EMAIL_FAILED:
+                self._retryOrDrop(job)
         except Exception as e:
-            logger.error("Error processing email notification for %s (%s): %s", username, event_type, e)
+            logger.error("Error processing email notification for %s (%s): %s", job.username, job.eventType, e)
         finally:
             self._queue.task_done()
         return True
+
+    def _retryOrDrop(self, job: _EmailJob) -> None:
+        """The send failed: queue the next attempt, or say the job is gone.
+        The service has already logged the SMTP error itself; these lines
+        carry the attempt count, which is the part it cannot know."""
+        if job.attempt >= EMAIL_MAX_SEND_ATTEMPTS:
+            logger.error("Giving up on notification email (%s) for %s after %d attempts",
+                         job.eventType, job.username, job.attempt)
+            return
+        logger.warning("Notification email (%s) for %s failed on attempt %d/%d - retrying in %.0fs",
+                       job.eventType, job.username, job.attempt, EMAIL_MAX_SEND_ATTEMPTS,
+                       EMAIL_RETRY_DELAY_SECONDS)
+        self._queue.put(job._replace(attempt=job.attempt + 1,
+                                     notBefore=time.monotonic() + EMAIL_RETRY_DELAY_SECONDS))
 
     def start(self) -> None:
         """Start the background worker thread."""
@@ -129,8 +174,8 @@ class EmailWorker:
         with self._queue.mutex:
             pending = list(self._queue.queue)
         counts: dict[str, int] = {}
-        for _username, eventType, _context in pending:
-            counts[eventType] = counts.get(eventType, 0) + 1
+        for job in pending:
+            counts[job.eventType] = counts.get(job.eventType, 0) + 1
         return counts
 
     def stop(self) -> None:

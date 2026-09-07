@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
+from config import SMTP_SKIP_TLS_VERIFY_ENV_VAR, TRUTHY_ENV_VALUES
 from Database.repository import Repository
 from Database.secret_store import encryptSecret, decryptSecret
 from Database.queries.email_queries import (
@@ -39,6 +42,13 @@ DEFAULT_SMTP_FROM_NAME = "Spotify Stats Tracker"
 # so without this a black-holed host holds whichever thread is sending - an
 # admin's /admin/test_email request thread, or the email worker - indefinitely.
 SMTP_TIMEOUT_SECONDS = 15
+
+# What deliver_email_notification says happened. The worker retries FAILED and
+# nothing else: SKIPPED is a decision (notifications off, the user opted out,
+# the cooldown, no address on file), not something a second attempt can change.
+EMAIL_SENT = "sent"
+EMAIL_SKIPPED = "skipped"
+EMAIL_FAILED = "failed"
 
 # Where each event's email should send the recipient, relative to
 # get_instance_public_url() - lives once here instead of being threaded
@@ -185,6 +195,28 @@ def build_email_message(
     return msg
 
 
+def _smtpTlsContext() -> ssl.SSLContext:
+    """The context both TLS arms below hand smtplib.
+
+    Handed explicitly because smtplib's own default is not one: with no
+    context, SMTP_SSL and starttls() build ssl._create_stdlib_context(), which
+    is CERT_NONE with hostname checking off (measured on the 3.14 runtime this
+    ships on), so the credentials and every message went to whoever answered
+    on that port. create_default_context() verifies the chain against the
+    system store and the hostname against the certificate.
+
+    The opt-out exists for a self-hosted relay on a self-signed certificate,
+    which the verified context would refuse - and it warns on every send, so
+    an instance left in that state keeps saying so in its log."""
+    context = ssl.create_default_context()
+    if os.environ.get(SMTP_SKIP_TLS_VERIFY_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES:
+        logger.warning("%s is set - sending mail without verifying the SMTP server's certificate",
+                       SMTP_SKIP_TLS_VERIFY_ENV_VAR)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 def _send_smtp_message(config: dict[str, Any], msg: MIMEMultipart) -> tuple[bool, str | None]:
     """Execute SMTP connection and transmit email message."""
     host = config["host"]
@@ -198,14 +230,15 @@ def _send_smtp_message(config: dict[str, Any], msg: MIMEMultipart) -> tuple[bool
 
     try:
         if encryption == "ssl":
-            with smtplib.SMTP_SSL(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
+            with smtplib.SMTP_SSL(host, port, timeout=SMTP_TIMEOUT_SECONDS,
+                                  context=_smtpTlsContext()) as server:
                 if user and password:
                     server.login(user, password)
                 server.send_message(msg)
         else:
             with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 if encryption == "tls":
-                    server.starttls()
+                    server.starttls(context=_smtpTlsContext())
                 if user and password:
                     server.login(user, password)
                 server.send_message(msg)
@@ -345,25 +378,35 @@ def _render_event_template(
 def send_email_notification(
     repo: Repository, username: str, event_type: str, context: dict[str, Any] | None = None
 ) -> bool:
-    """Send an event notification email to username, adhering to global and user settings and cooldown limits."""
+    """Whether an event notification email went out to username - see
+    deliver_email_notification for the three-way answer underneath."""
+    return deliver_email_notification(repo, username, event_type, context) == EMAIL_SENT
+
+
+def deliver_email_notification(
+    repo: Repository, username: str, event_type: str, context: dict[str, Any] | None = None
+) -> str:
+    """Send an event notification email to username, adhering to global and
+    user settings and cooldown limits. Answers EMAIL_SENT, EMAIL_SKIPPED or
+    EMAIL_FAILED: the worker retries a failure, and a skip is not one."""
     config = get_smtp_config(repo)
     if not config["enabled"] or not config["host"]:
-        return False
+        return EMAIL_SKIPPED
 
     # Check user preference
     if not repo.getUserNotificationPreference(username, event_type):
         logger.debug("User %s opted out of email notification for event %s", username, event_type)
-        return False
+        return EMAIL_SKIPPED
 
     # Check anti-spam cooldown
     if repo.isNotificationCooldownActive(username, event_type, cooldown_seconds=DEFAULT_NOTIFICATION_COOLDOWN_SECONDS):
         logger.debug("Cooldown active for user %s event %s, skipping email", username, event_type)
-        return False
+        return EMAIL_SKIPPED
 
     user_email = repo.getEmailForUsername(username)
     if not user_email:
         logger.warning("No email address on record for user %s", username)
-        return False
+        return EMAIL_SKIPPED
 
     ctx = context or {}
     base_url = get_instance_public_url(repo)
@@ -382,7 +425,6 @@ def send_email_notification(
     if success:
         repo.recordNotificationSent(username, event_type)
         logger.info("Notification email (%s) sent successfully to %s", event_type, username)
-        return True
-    else:
-        logger.error("Failed to send notification email (%s) to %s: %s", event_type, username, err)
-        return False
+        return EMAIL_SENT
+    logger.error("Failed to send notification email (%s) to %s: %s", event_type, username, err)
+    return EMAIL_FAILED

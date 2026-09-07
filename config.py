@@ -190,6 +190,12 @@ SPOTIFY_CALLBACK_URL_ENV_VAR = "SPOTIFY_CALLBACK_URL"
 # (see SpotifyDashboardApp.skipEmailVerification). That check is what stops
 # one user from claiming another's account, so this is off by default.
 SKIP_EMAIL_VERIFICATION_ENV_VAR = "SKIP_EMAIL_VERIFICATION"
+# Truthy: send notification mail over TLS WITHOUT verifying the relay's
+# certificate or hostname. Off by default - the verified context is what keeps
+# the SMTP credentials and every mail from going to whoever answers on that
+# port. For a self-hosted relay on a self-signed certificate only; the send
+# path logs a warning on every use so it cannot be forgotten.
+SMTP_SKIP_TLS_VERIFY_ENV_VAR = "SMTP_SKIP_TLS_VERIFY"
 # When set, the auto-importer only picks up dropped files whose name contains
 # this keyword; unset = import every dropped file.
 IMPORT_KEYWORD_ENV_VAR = "IMPORT_KEYWORD"
