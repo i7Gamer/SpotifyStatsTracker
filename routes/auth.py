@@ -48,6 +48,14 @@ AUTH_ENDPOINT_PATHS = frozenset({"/login", "/logout", "/register", "/reset-passw
 
 #< the one rejection all three cookie forms give, formatted with the email the
 #  cookies had to match - naming it is what makes the message actionable
+# What /spotify-authorize asks Spotify for. recently-played is the backfill
+# itself; user-read-email is what makes /v1/me carry the account's email, which
+# is the backfill's cross-account guard - without it the guard fell back to
+# comparing user ids (see _checkWebApiBackfill). A grant made before the email
+# scope was requested keeps working; it is verified by id until re-authorized.
+SPOTIFY_OAUTH_SCOPE = "user-read-recently-played user-read-email"
+REGISTRATION_CLOSED_ERROR = (
+    "There is no account for this email and registration is closed on this instance.")
 COOKIE_OWNERSHIP_ERROR = (
     "Couldn't verify that these cookies belong to {email}. "
     "Make sure you are logged into open.spotify.com with that account and copied all cookies."
@@ -250,6 +258,20 @@ def register(app, dashboard):
             return render_template(
                 "login.html", email=email, next=nextUrl, cookieError=True,
                 error=COOKIE_OWNERSHIP_ERROR.format(email=email))
+
+        # The registration switch closes the door to NEW accounts on every
+        # path that can mint one, and this form is one of them: /register's
+        # 404 used to be the only check, while these cookies reached
+        # get_or_create_user unguarded. Asked AFTER the cookies have proved
+        # they belong to `email`, so the answer "no account" only ever reaches
+        # the address's owner - before it, the form would confirm which
+        # emails are registered to anyone at all. Returning users are
+        # untouched: their row exists, so nothing is created.
+        if (not dashboard.repo.getUsernameForEmail(email)
+                and not dashboard.repo.isRegistrationEnabled()):
+            return render_template(
+                "login.html", email=email, next=nextUrl, cookieError=True,
+                error=REGISTRATION_CLOSED_ERROR)
 
         session.clear()   #< a login is a user switch - see the password branch above
         session.permanent = True
@@ -878,7 +900,7 @@ def register(app, dashboard):
         if not client_id:
             return _profileRedirect("profileConnectionsPage", PROFILE_FLASH_SPOTIFY, error="API Credentials not configured.")
 
-        scope = "user-read-recently-played"
+        scope = SPOTIFY_OAUTH_SCOPE
         # One-shot CSRF state - see SPOTIFY_OAUTH_STATE_SESSION_KEY's
         # comment. token_urlsafe output needs no URL-encoding.
         state = secrets.token_urlsafe(SPOTIFY_OAUTH_STATE_NUM_BYTES)

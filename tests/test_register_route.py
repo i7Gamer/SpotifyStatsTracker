@@ -74,6 +74,39 @@ class TestRegisterRoute(AppTestCase):
         self.assertEqual(postResp.status_code, 404)
         self.assertIsNone(dash.repo.getUsernameForEmail("alice@example.com"))
 
+    def test_disabled_registration_refuses_a_cookie_login_for_an_unknown_email(self):
+        """/register's 404 was the only registration check in the app, while
+        /login's cookies form reached get_or_create_user unguarded - anyone
+        with their own Spotify cookies could still mint an account with the
+        switch off (2026-09-07 review, item 1)."""
+        dash = self._makeApp()
+        dash.repo.setRegistrationEnabled(False)
+
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True),              patch.object(dash, 'get_user_db'):
+            resp = dash.app.test_client().post(
+                "/login", data={"email": "alice@example.com", "cookies": "sp_dc=abc"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"registration is closed", resp.data)
+        self.assertIsNone(dash.repo.getUsernameForEmail("alice@example.com"))
+        with dash.app.test_client().session_transaction() as sess:
+            self.assertNotIn("email", sess)
+
+    def test_disabled_registration_still_lets_an_existing_account_log_in_with_cookies(self):
+        """The switch closes the door to NEW accounts only - a returning user
+        whose password lapsed must still get in through the cookies form."""
+        dash = self._makeApp()
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True),              patch.object(dash, 'get_user_db'):
+            self._postRegister(dash, email="alice@example.com")
+        dash.repo.setRegistrationEnabled(False)
+
+        with patch.object(dash, '_verifyCookiesMatchEmail', return_value=True),              patch.object(dash, 'get_user_db'),              patch.object(dash, '_refresh_user_session'):
+            resp = dash.app.test_client().post(
+                "/login", data={"email": "alice@example.com", "cookies": "sp_dc=abc"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers["Location"].endswith("/"))
+
     def test_disabled_registration_hides_the_login_page_link(self):
         dash = self._makeApp()
         dash.repo.setRegistrationEnabled(False)
