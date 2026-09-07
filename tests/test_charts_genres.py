@@ -168,6 +168,19 @@ class ChartsGenresTestCase(AppTestCase):
         db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
         db.getReleaseDecadeDistribution.return_value = {}
         db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        #< a fully-populated shape (see tests/test_charts_htmx.py's BEHAVIOR_RAW) -
+        #  an unstubbed MagicMock does NOT crash buildListeningBehavior's
+        #  arithmetic (it supports division/iteration), so it would render
+        #  garbage silently rather than fail loudly
+        db.getListeningBehavior.return_value = {
+            "total": 10,
+            "shuffle": {"known": 4, "on": 3},
+            "offline": {"known": 0, "on": 0},
+            "incognito": {"known": 0, "on": 0},
+            "reasonEnd": [("fwdbtn", 3), (None, 6), ("trackdone", 1)],
+            "platforms": [("Android OS 13", 3), ("iOS 17.1", 1)],
+            "countries": [("US", 3), ("DE", 1)],
+        }
         #< the Charts payload carries these too; an unstubbed MagicMock is not
         #  JSON-serializable, so jsonify would 500 the whole route
         db.getMostSkippedSongs.return_value = []
@@ -393,6 +406,19 @@ class ChartsGenresTestCase(AppTestCase):
         self.assertIsNone(chartData(data)["genreDistribution"])
         db.getGenreCoverage.assert_not_called()
         db.getGenreDistribution.assert_not_called()
+
+    def test_the_listening_behavior_section_renders_a_real_percentage_too(self):
+        """Sanity check that the Listening Behavior card (feature 1) survives
+        sharing this page's MagicMock base with the genre-gate tests above -
+        it is a different base class from test_charts_htmx.py's, so its stub
+        and the route's actual rendering need their own pin here too."""
+        dash = self._makeApp()
+        db = self._makeDb(coverage=coverageDict(80, 60, 90), distribution={"rock": 1})
+
+        body = self._getData(dash, db).get_data(as_text=True)
+
+        self.assertIn("Listening behavior", body)
+        self.assertIn("75.0%", body)   #< the _makeDb stub's shuffle: known=4, on=3
 
 
 if __name__ == "__main__":

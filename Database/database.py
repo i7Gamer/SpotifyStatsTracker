@@ -1328,6 +1328,15 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         complete since partial can't be told apart), else partial."""
         return self.repo.getCompletionCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))
 
+    def getListeningBehavior(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None) -> dict:
+        """Raw material for the Charts page's Listening Behavior card - see
+        Repository.getBehavioralCounts for the shape and
+        services.listening_behavior.buildListeningBehavior for what turns it
+        into the card's labelled/bucketed dict. Un-hydrated on purpose, like
+        getCompletionStats above: this facade method stays a plain pass-
+        through so the maths lives in one pure, DB-free place."""
+        return self.repo.getBehavioralCounts(self.user, *self._dateRangeToTimestamps(startDate, endDate))
+
     def getSongsStats(self, startDate: datetime.datetime = None, endDate: datetime.datetime = None,
                        sortBy: str = "plays", limit: int | None = None, offset: int = 0,
                        trackId: str | None = None, artistId: str | None = None,

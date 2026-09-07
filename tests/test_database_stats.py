@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from conftest import DatabaseTestCase
 import Database.utils as utilsModule
+from services.listening_behavior import buildListeningBehavior
 
 
 class TestGetArtistsStatsDoesNotMutateCache(DatabaseTestCase):
@@ -603,6 +604,94 @@ class TestNewChartsStats(DatabaseTestCase):
     def test_explicit_ratio_empty_database_returns_zeros(self):
         db = self._makeDb({}, [])
         self.assertEqual(db.getExplicitRatio(), {"explicit": 0, "clean": 0})
+
+    def test_get_listening_behavior_known_and_on_counts_per_flag(self):
+        """One extras-less play (all-NULL, the shape every live-listener play
+        has) alongside two imported plays with behavioral columns set -
+        known/on must count only the populated rows, and the NULL reason_end/
+        platform/conn_country row must survive as its own group."""
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [{"id": "t1", "playedAt": 100, "timePlayed": 5000}]   #< all-NULL, like a live play
+        db = self._makeDb(tracks, entries)
+        db.repo.insertPlay(db.user, "t1", 200, 5000,
+                            extras={"shuffle": 1, "offline": 0, "incognito": 1,
+                                    "platform": "Android OS 13", "conn_country": "US",
+                                    "reason_end": "fwdbtn"})
+        db.repo.insertPlay(db.user, "t1", 300, 5000,
+                            extras={"shuffle": 0, "offline": 1, "incognito": 0,
+                                    "platform": "iOS 17.1", "conn_country": "DE",
+                                    "reason_end": "trackdone"})
+        db.repo.commit()
+
+        behavior = db.getListeningBehavior()
+
+        self.assertEqual(behavior["total"], 3)
+        self.assertEqual(behavior["shuffle"], {"known": 2, "on": 1})
+        self.assertEqual(behavior["offline"], {"known": 2, "on": 1})
+        self.assertEqual(behavior["incognito"], {"known": 2, "on": 1})
+        self.assertIn((None, 1), behavior["reasonEnd"])
+        self.assertIn(("fwdbtn", 1), behavior["reasonEnd"])
+        self.assertIn(("trackdone", 1), behavior["reasonEnd"])
+        self.assertEqual(sorted(behavior["platforms"], key=lambda p: p[0] or ""),
+                         sorted([(None, 1), ("Android OS 13", 1), ("iOS 17.1", 1)], key=lambda p: p[0] or ""))
+        self.assertEqual(sorted(behavior["countries"], key=lambda p: p[0] or ""),
+                         sorted([(None, 1), ("US", 1), ("DE", 1)], key=lambda p: p[0] or ""))
+
+    def test_get_listening_behavior_empty_database_returns_zeros(self):
+        db = self._makeDb({}, [])
+
+        behavior = db.getListeningBehavior()
+
+        self.assertEqual(behavior["total"], 0)
+        self.assertEqual(behavior["shuffle"], {"known": 0, "on": 0})
+        self.assertEqual(behavior["offline"], {"known": 0, "on": 0})
+        self.assertEqual(behavior["incognito"], {"known": 0, "on": 0})
+        self.assertEqual(behavior["reasonEnd"], [])
+        self.assertEqual(behavior["platforms"], [])
+        self.assertEqual(behavior["countries"], [])
+
+    def test_get_listening_behavior_respects_date_range_and_user(self):
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [{"id": "t1", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+        db.repo.upsertUser("otheruser", "other@example.com")
+        db.repo.insertPlay(db.user, "t1", 500, 5000, extras={"shuffle": 1})       #< before the range below
+        db.repo.insertPlay("otheruser", "t1", 1500, 5000, extras={"shuffle": 1})  #< in range, wrong user
+        db.repo.commit()
+
+        startDate = datetime.datetime.fromtimestamp(900, tz=datetime.timezone.utc)
+        behavior = db.getListeningBehavior(startDate=startDate)
+
+        self.assertEqual(behavior["total"], 1)   #< only the seeded all-NULL entry at playedAt=1000
+        self.assertEqual(behavior["shuffle"], {"known": 0, "on": 0})
+
+    def test_an_empty_range_reports_no_data(self):
+        """startTs == endTs - the half-open range matches nothing."""
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [{"id": "t1", "playedAt": 1000, "timePlayed": 5000}]
+        db = self._makeDb(tracks, entries)
+        sameInstant = datetime.datetime.fromtimestamp(1000, tz=datetime.timezone.utc)
+
+        behavior = db.getListeningBehavior(startDate=sameInstant, endDate=sameInstant)
+
+        self.assertEqual(behavior["total"], 0)
+
+    def test_real_rows_piped_through_buildListeningBehavior_render_expected_numbers(self):
+        """The route stub in test_charts_htmx.py/test_charts_genres.py is not
+        the only path through the maths (2026-09-07 review, feature 1) - real
+        SQL rows must produce the numbers the card actually renders."""
+        tracks = {"t1": {"id": "t1", "name": "Song", "artists": [], "duration": 100000}}
+        entries = [{"id": "t1", "playedAt": i, "timePlayed": 5000} for i in range(6)]  #< 6 all-NULL (live) plays
+        db = self._makeDb(tracks, entries)
+        for i in range(4):   #< 4 imported plays, 3 of them shuffled
+            db.repo.insertPlay(db.user, "t1", 100 + i, 5000, extras={"shuffle": 1 if i < 3 else 0})
+        db.repo.commit()
+
+        behavior = buildListeningBehavior(db.getListeningBehavior())
+
+        self.assertTrue(behavior["hasData"])
+        flag = behavior["flags"]["shuffle"]
+        self.assertEqual(flag, {"on": 3, "known": 4, "total": 10, "pct": 75.0, "knownPct": 40.0})
 
 
 if __name__ == "__main__":

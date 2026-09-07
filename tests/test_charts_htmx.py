@@ -36,8 +36,24 @@ from _charts_client import HX_HEADERS, chartData
 #< every series the page draws; the island has to carry all of them or a canvas
 #  silently renders its empty state
 CHART_SERIES_KEYS = ("timeSeries", "heatmap", "artistTrend", "explicitRatio",
-                     "decadeDistribution", "completionStats", "mostSkippedSongs",
-                     "mostSkippedArtists", "genreDistribution")
+                     "decadeDistribution", "completionStats", "listeningBehavior",
+                     "mostSkippedSongs", "mostSkippedArtists", "genreDistribution")
+
+#< a MagicMock db's getListeningBehavior is unstubbed by default across most of
+#  this file's tests - MagicMock supports the arithmetic buildListeningBehavior
+#  does on it (division, iteration) without crashing, so an unstubbed method
+#  would silently render garbage rather than fail loudly. This is a real,
+#  fully-populated shape (one flag known, one all-NULL, real reason/platform/
+#  country buckets) so tests can assert actual rendered numbers.
+BEHAVIOR_RAW = {
+    "total": 10,
+    "shuffle": {"known": 4, "on": 3},
+    "offline": {"known": 0, "on": 0},
+    "incognito": {"known": 0, "on": 0},
+    "reasonEnd": [("fwdbtn", 3), (None, 6), ("trackdone", 1)],
+    "platforms": [("Android OS 13", 3), ("iOS 17.1", 1)],
+    "countries": [("US", 3), ("DE", 1)],
+}
 
 
 class ChartsHtmxTestCase(AppTestCase):
@@ -52,6 +68,7 @@ class ChartsHtmxTestCase(AppTestCase):
         db.getExplicitRatio.return_value = {"explicit": 0, "clean": 0}
         db.getReleaseDecadeDistribution.return_value = {}
         db.getCompletionStats.return_value = {"skips": 0, "completes": 0, "partials": 0}
+        db.getListeningBehavior.return_value = dict(BEHAVIOR_RAW)
         db.getMostSkippedSongs.return_value = []
         db.getMostSkippedArtists.return_value = []
         db.repo.getUserSettings.return_value = {"default_dashboard_window": "month", "timezone": None}
@@ -103,8 +120,8 @@ class TestFragmentBranch(ChartsHtmxTestCase):
         body = self._fragment().get_data(as_text=True)
 
         for canvas in ("timeSeriesChart", "heatmapChart", "artistTrendChart", "explicitChart",
-                       "completionChart", "mostSkippedSongsChart", "mostSkippedArtistsChart",
-                       "decadeChart"):
+                       "completionChart", "behaviorReasonChart", "behaviorPlatformChart",
+                       "mostSkippedSongsChart", "mostSkippedArtistsChart", "decadeChart"):
             with self.subTest(canvas=canvas):
                 self.assertIn(canvas, body)
 
@@ -253,5 +270,74 @@ class TestShell(ChartsHtmxTestCase):
 
         self.assertNotIn("Custom range:", body)
         self.assertIn("Last Month", body)   #< the mocked default_dashboard_window
+
+
+class TestListeningBehaviorSection(ChartsHtmxTestCase):
+    """The Listening Behavior card (implementationPlan-2026-09-07.md, feature
+    1). The base class's db.getListeningBehavior stub (BEHAVIOR_RAW) is a
+    real, fully-populated shape - these assert the numbers the route/template
+    actually RENDER from it, not just that the section exists (a MagicMock db
+    would render garbage silently rather than crash - see the plan's note on
+    why bare status-200/section-presence assertions don't pin this)."""
+
+    def test_the_section_is_titled_and_subtitled(self):
+        body = self._fragment().get_data(as_text=True)
+
+        self.assertIn("Listening behavior", body)
+        self.assertIn("all plays in range", body)
+
+    def test_a_flag_tile_renders_its_actual_percentage(self):
+        """BEHAVIOR_RAW's shuffle is known=4, on=3 -> 75% of the known plays,
+        which are 4 of the range's 10 (40%). Percentages render with one
+        decimal place, matching every other percent in this template (see
+        e.g. the genre progress card's "0.0%")."""
+        body = self._fragment().get_data(as_text=True)
+
+        self.assertIn("75.0%", body)
+        self.assertIn("of 4 plays with this data", body)
+        self.assertIn("40.0% of 10", body)
+
+    def test_a_flag_with_no_known_data_says_so_instead_of_a_fake_percentage(self):
+        """BEHAVIOR_RAW's offline/incognito are known=0."""
+        body = self._fragment().get_data(as_text=True)
+
+        self.assertIn("No played offline data", body)
+        self.assertIn("No played in Incognito Mode data", body)
+
+    def test_the_reason_end_chart_carries_a_bucketed_label(self):
+        """"fwdbtn" -> "Skipped forward" (services/listening_behavior.py's
+        REASON_END_LABELS) - asserted through the JSON island since the label
+        rides in chart data, not markup."""
+        payload = chartData(self._fragment())
+
+        labels = [pair[0] for pair in payload["listeningBehavior"]["reasonEnd"]]
+        self.assertIn("Skipped forward", labels)
+
+    def test_the_platform_chart_carries_a_bucketed_label(self):
+        payload = chartData(self._fragment())
+
+        labels = [pair[0] for pair in payload["listeningBehavior"]["platforms"]]
+        self.assertIn("Android", labels)
+        self.assertIn("iOS", labels)
+
+    def test_the_how_plays_ended_chart_is_not_titled_skips(self):
+        """reason_end is independent of plays.is_skip - see the design note in
+        implementationPlan-2026-09-07.md, feature 1."""
+        body = self._fragment().get_data(as_text=True)
+
+        self.assertIn("How plays ended", body)
+
+    def test_no_data_at_all_shows_the_import_hint_not_empty_charts(self):
+        db = self._makeDb()
+        db.getListeningBehavior.return_value = {
+            "total": 5,
+            "shuffle": {"known": 0, "on": 0}, "offline": {"known": 0, "on": 0},
+            "incognito": {"known": 0, "on": 0}, "reasonEnd": [], "platforms": [], "countries": [],
+        }
+        body = self._fragment(db=db).get_data(as_text=True)
+
+        self.assertIn("Import your extended streaming history to unlock this", body)
+        self.assertNotIn("behaviorReasonChart", body)
+        self.assertNotIn("behaviorPlatformChart", body)
 
 

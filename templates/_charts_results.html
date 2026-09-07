@@ -60,6 +60,64 @@
   </div>
 </div>
 
+{# Built from plays.{shuffle,offline,incognito,reason_end,platform} - the
+   extended-streaming-history columns only the two import paths populate (the
+   live listener leaves them NULL). Aggregated over ALL plays in range, skips
+   included, same scope as Completion vs Skips above - this is NOT the
+   explicit-ratio card, which filters is_skip=0.
+
+   Unlike every other section on this page, a range can have plays but none of
+   THIS data (a live-only stretch) - hasData covers that in one flag, so the
+   hint below covers both "no plays" and "plays with none of this data" without
+   telling them apart (the copy would be identical either way). #}
+<div class="chart-section" style="margin-top: 2rem;">
+  <h2>Listening behavior</h2>
+  <p class="chart-subtitle">all plays in range</p>
+  {% if chartData.listeningBehavior.hasData %}
+    {# Every tile shows BOTH numbers: the share is always over KNOWN plays
+       (never total), and the parenthetical says how much of the range that
+       data actually covers - a range mixing imported and live plays must
+       never read as if the whole range were measured. #}
+    <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1rem 0 2rem;">
+      {% for flagName, flagLabel in [("shuffle", "shuffled"), ("offline", "played offline"), ("incognito", "played in Incognito Mode")] %}
+        {% set flag = chartData.listeningBehavior.flags[flagName] %}
+        <div class="chart-section" style="padding: 1rem;">
+          {% if flag.known %}
+            <p style="font-size: 1.3rem; margin: 0 0 0.25rem;"><strong>{{ flag.pct }}%</strong> {{ flagLabel }}</p>
+            <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin: 0;">
+              of {{ flag.known }} plays with this data ({{ flag.knownPct }}% of {{ flag.total }})
+            </p>
+          {% else %}
+            <p style="font-size: 1.3rem; margin: 0 0 0.25rem; color: var(--muted, #aaa);">No {{ flagLabel }} data</p>
+            <p style="font-size: 0.85rem; color: var(--muted, #aaa); margin: 0;">0 of {{ flag.total }} plays carry this</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    <div class="chart-section-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem;">
+      <div class="chart-section">
+        {# Deliberately NOT "Skips": reason_end says HOW a play ended
+           (skip-forward, track finished, app closed...) and is independent of
+           plays.is_skip, which is a duration threshold - a long play can still
+           end in a skip-forward event, and a live-recorded skip has no
+           reason_end at all. #}
+        <h2>How plays ended</h2>
+        <div class="chart-canvas-wrap">
+          <canvas id="behaviorReasonChart" role="img" aria-label="How plays ended"></canvas>
+        </div>
+      </div>
+      <div class="chart-section">
+        <h2>Platforms</h2>
+        <div class="chart-canvas-wrap" style="height: 250px;">
+          <canvas id="behaviorPlatformChart" role="img" aria-label="Plays by platform"></canvas>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <p class="chart-subtitle">Import your extended streaming history to unlock this</p>
+  {% endif %}
+</div>
+
 {# "Completion vs Skips" above answers how OFTEN you skip; these answer WHAT you
    skip. Which entries make the cut is decided by skip rate shrunk toward this
    listener's own average, so a track skipped once and never played can't take a

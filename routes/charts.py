@@ -30,6 +30,7 @@ from services.genre_gate import (
     emptyGenreCoverage, resolveGenreCoverage, genreGatePasses, resolveGenreDistribution,
     emptyBiographyCoverage, resolveBiographyCoverage, userHasLastfmKey,
 )
+from services.listening_behavior import buildListeningBehavior
 from services.milestones import buildNextMilestones, formatMilestone, MS_PER_HOUR
 from services.rank_movement import (
     PREVIOUS_WINDOW_SCAN_LIMIT, previousWindow, rankMovements,
@@ -1206,6 +1207,12 @@ def register(app, dashboard):
         # instead (see renderCategoryBarChart in charts.js).
         decadeDistribution = list(db.getReleaseDecadeDistribution(startDate=startDate, endDate=endDate).items())
         completionStats = db.getCompletionStats(startDate=startDate, endDate=endDate)
+        # Aggregated over ALL plays in range, skips included - same scope as
+        # completionStats above (this is not the explicit-ratio card, which
+        # filters is_skip=0). buildListeningBehavior does the bucketing/ratio
+        # maths; the route only fetches the raw counts and hands them over.
+        listeningBehavior = buildListeningBehavior(
+            db.getListeningBehavior(startDate=startDate, endDate=endDate))
         # "How often do I skip" is the donut above; these answer "what do I
         # skip". Ranked by shrunk rate - see Repository.getMostSkippedTracks.
         mostSkippedSongs = db.getMostSkippedSongs(
@@ -1264,6 +1271,7 @@ def register(app, dashboard):
                 "explicitRatio": explicitRatio,
                 "decadeDistribution": decadeDistribution,
                 "completionStats": completionStats,
+                "listeningBehavior": listeningBehavior,
                 "mostSkippedSongs": mostSkippedSongs,
                 "mostSkippedArtists": mostSkippedArtists,
                 "genreDistribution": genreDistribution,

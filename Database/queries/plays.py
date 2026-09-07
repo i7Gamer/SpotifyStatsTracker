@@ -1707,6 +1707,70 @@ class PlayQueries:
         ).fetchone()
         return {"skips": row["skips"], "completes": row["completes"], "partials": row["partials"]}
 
+    def getBehavioralCounts(self, username: str, startTs: float | None = None,
+                             endTs: float | None = None) -> dict:
+        """Raw material for the Charts page's Listening Behavior card
+        (services/listening_behavior.buildListeningBehavior does the labelling
+        and ratio maths - this returns un-bucketed rows).
+
+        Four reads, all on `plays` alone - no join, so idx_plays_user_time
+        (username, played_at) serves every one of them:
+          - scalars: the range's total play count, and for each of
+            shuffle/offline/incognito how many rows have it set at all
+            (`known`) and how many of those are 1 (`on`). Every listener-
+            recorded play leaves all three NULL (see BEHAVIORAL_COLUMNS'
+            docstring in Database/db.py), so `known` is never `total` in a
+            range mixing imported and live rows - that's the normal case,
+            which is why the ratio card divides by `known`, not `total`.
+          - a GROUP BY reason_end (the NULL row is kept as its own group,
+            not filtered - a live play's missing reason_end is itself
+            information the card reports, not noise to drop);
+          - a GROUP BY platform;
+          - a GROUP BY conn_country.
+        All three GROUP BYs come back as raw (value, count) pairs - no
+        label map here; bucketReasonEnd/bucketPlatform own that."""
+        params = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        scalarRow = self._conn().execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(shuffle IS NOT NULL), 0) AS shuffle_known,
+                COALESCE(SUM(shuffle = 1), 0) AS shuffle_on,
+                COALESCE(SUM(offline IS NOT NULL), 0) AS offline_known,
+                COALESCE(SUM(offline = 1), 0) AS offline_on,
+                COALESCE(SUM(incognito IS NOT NULL), 0) AS incognito_known,
+                COALESCE(SUM(incognito = 1), 0) AS incognito_on
+            FROM plays p
+            WHERE p.username = ?{rangeClause}
+            """,
+            params,
+        ).fetchone()
+
+        def _groupedCounts(column: str) -> list[tuple]:
+            groupParams = [username]
+            groupRangeClause = self._dateRangeClause(groupParams, startTs, endTs, column="p.played_at")
+            rows = self._conn().execute(
+                f"""
+                SELECT {column} AS value, COUNT(*) AS c
+                FROM plays p
+                WHERE p.username = ?{groupRangeClause}
+                GROUP BY {column}
+                """,
+                groupParams,
+            ).fetchall()
+            return [(row["value"], row["c"]) for row in rows]
+
+        return {
+            "total": scalarRow["total"],
+            "shuffle": {"known": scalarRow["shuffle_known"], "on": scalarRow["shuffle_on"]},
+            "offline": {"known": scalarRow["offline_known"], "on": scalarRow["offline_on"]},
+            "incognito": {"known": scalarRow["incognito_known"], "on": scalarRow["incognito_on"]},
+            "reasonEnd": _groupedCounts("reason_end"),
+            "platforms": _groupedCounts("platform"),
+            "countries": _groupedCounts("conn_country"),
+        }
+
     def getSkipStats(self, username: str, startTs: float | None = None, endTs: float | None = None,
                       trackId: str | None = None, artistId: str | None = None,
                       albumId: str | None = None) -> dict:

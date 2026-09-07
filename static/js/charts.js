@@ -479,6 +479,32 @@
       { height: 250, showLabels: true, emptyMessage: 'No listening history in this period.' });
   }
 
+  // reasonEnd/platforms both arrive as [label, count] pairs, already bucketed
+  // and sorted desc by services/listening_behavior.py - these two just draw
+  // them. Both degrade to CU's own empty state when the section has no data
+  // at all (hasData false keeps the canvases out of the DOM entirely, but a
+  // range that flips from has-data to none between loads still hits this).
+  function renderBehaviorReasonChart() {
+    CU.renderHorizontalBars(document.getElementById('behaviorReasonChart'),
+      (window.__chartData && window.__chartData.listeningBehavior && window.__chartData.listeningBehavior.reasonEnd) || [],
+      { emptyMessage: 'No reason-end data in this period.', valueSuffix: ' plays' });
+  }
+
+  function renderBehaviorPlatformChart() {
+    var canvas = document.getElementById('behaviorPlatformChart');
+    if (!canvas) return;
+    var behavior = window.__chartData && window.__chartData.listeningBehavior;
+    var platforms = (behavior && behavior.platforms) || [];
+
+    var slices = platforms.map(function (pair, i) {
+      return { label: pair[0], value: pair[1], color: PALETTE[i % PALETTE.length] };
+    });
+    var total = slices.reduce(function (sum, slice) { return sum + slice.value; }, 0);
+
+    CU.drawDonutChart(canvas, slices, total,
+      { height: 250, showLabels: true, emptyMessage: 'No platform data in this period.' });
+  }
+
   function renderDecadeChart() {
     CU.renderBarsFromPairs(document.getElementById('decadeChart'),
       (window.__chartData && window.__chartData.decadeDistribution) || [],
@@ -537,6 +563,8 @@
     renderComparisonMirror();
     renderExplicitChart();
     renderCompletionChart();
+    renderBehaviorReasonChart();
+    renderBehaviorPlatformChart();
     renderDecadeChart();
     renderMostSkippedCharts();
     renderGenreChart();
