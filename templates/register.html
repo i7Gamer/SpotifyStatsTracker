@@ -52,4 +52,10 @@
   </div>
 </div>
 
+{# A registration logs the new account in without passing through /login,
+   so it is a user switch on a shared browser exactly like a login is - the
+   previous account's htmx page snapshots have to go here too. See
+   static/js/session-reset.js. #}
+<script src="{{ url_for('static', filename='js/session-reset.js') }}"></script>
+
 {% endblock %}

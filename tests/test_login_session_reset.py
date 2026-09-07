@@ -41,6 +41,15 @@ class TestLoginPageClearsTheHtmxSnapshotCache(AppTestCase):
 
         self.assertIn(SCRIPT_RELATIVE_PATH, body)
 
+    def test_the_register_and_reset_pages_load_it_too(self):
+        """Both end in a logged-in session without passing through /login, so
+        a shared-browser account switch through either left the previous
+        account's snapshots restorable via Back (2026-09-07 review, item 6)."""
+        for path in ("/register", "/reset-password"):
+            with self.subTest(path=path):
+                body = self.client.get(path).get_data(as_text=True)
+                self.assertIn(SCRIPT_RELATIVE_PATH, body)
+
     def test_the_script_it_names_exists(self):
         """url_for would not have failed on a missing file, so the tag above can
         point at a 404 and the page still renders exactly the same."""
