@@ -69,8 +69,8 @@
     {% if has_api %}
       <p><strong>Spotify API Configuration:</strong> Saved</p>
       {% if is_authenticated and spotify_needs_reauth %}
-        <p><strong>OAuth Authorization:</strong> <span class="profile-status-bad">Authorization Expired - Missing Permission</span></p>
-        <p class="profile-hint">Spotify rejected the last backfill request because this authorization doesn't grant the recently-played permission. Re-authorize to fix it.</p>
+        <p><strong>OAuth Authorization:</strong> <span class="profile-status-bad">Authorization No Longer Accepted</span></p>
+        <p class="profile-hint">Spotify rejected the last backfill request: this authorization was revoked, has expired (Spotify authorizations last six months), or doesn't grant the recently-played permission. Re-authorize to fix it.</p>
         <a href="{{ url_for('spotifyAuthorize') }}" class="primary-button profile-spotify-button">Re-authorize with Spotify</a>
       {% elif is_authenticated %}
         <p><strong>OAuth Authorization:</strong> <span class="profile-status-good">Connected &amp; Authorized</span></p>

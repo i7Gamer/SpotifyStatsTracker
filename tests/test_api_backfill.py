@@ -16,6 +16,7 @@ from Database.Listeners.spotifyListener import (
     _refresh_spotify_access_token,
     _fetch_recently_played_from_web_api,
     _get_current_user_from_web_api,
+    REFRESH_TOKEN_REVOKED,
     _SCOPE_ERROR,
     SPOTIFY_WEB_API_TIMEOUT_SECONDS,
 )
@@ -768,6 +769,34 @@ class ApiBackfillTestCase(unittest.TestCase):
 
         on_scope_status_change.assert_called_once_with(True)
 
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=REFRESH_TOKEN_REVOKED)
+    def test_a_revoked_refresh_token_flags_reauth_at_once(self, mock_refresh, mock_fetch):
+        """No three-strike rule here: that threshold exists for a 403 that
+        Spotify has been seen to answer by mistake, and invalid_grant is not
+        that. One poll, one flag, and the user sees the re-authorize button
+        instead of a log line every fifteen minutes."""
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+
+        on_scope_status_change.assert_called_once_with(True)
+        mock_fetch.assert_not_called()
+
+    @patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api")
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
+    def test_a_transient_refresh_failure_leaves_the_flag_alone(self, mock_refresh, mock_fetch):
+        on_scope_status_change = MagicMock()
+        listener = self._makeListenerWithScopeCallback(on_scope_status_change)
+
+        with patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW):
+            listener._checkWebApiBackfill(MagicMock())
+
+        on_scope_status_change.assert_not_called()
+        mock_fetch.assert_not_called()
+
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="token123")
     def test_check_web_api_backfill_success_resets_scope_error_streak(self, mock_refresh):
         """A single successful poll between two scope errors resets the
@@ -1401,13 +1430,111 @@ class WebApiRateLimitTestCase(unittest.TestCase):
 
     @patch("Database.Listeners.spotifyListener.logger")
     @patch("requests.post")
-    def test_a_genuine_token_refresh_failure_is_still_an_error(self, mock_post, mock_logger):
-        """The other half of the split above: a 400 really is a broken grant."""
-        mock_post.return_value = self._response(400, {}, "invalid_grant")
+    def test_a_revoked_grant_is_an_error_and_a_verdict(self, mock_post, mock_logger):
+        """The other half of the split above: a 400 invalid_grant really is a
+        broken grant - revoked by the user, or past the six-month lifetime
+        Spotify gives refresh tokens - and it used to come back as the same
+        None a network blip does, so nothing ever flagged the account for
+        re-authorization (2026-09-07 review, item 8)."""
+        mock_post.return_value = self._response(
+            400, {}, '{"error":"invalid_grant","error_description":"Refresh token revoked"}')
+
+        self.assertIs(_refresh_spotify_access_token("rt", "cid", "secret"), REFRESH_TOKEN_REVOKED)
+
+        self.assertTrue(mock_logger.error.called)
+
+    @patch("Database.Listeners.spotifyListener.logger")
+    @patch("requests.post")
+    def test_a_bad_client_secret_is_an_error_but_not_the_users_grant(self, mock_post, mock_logger):
+        """invalid_client is the operator's credentials, not this account's
+        authorization - sending the user through re-auth would fix nothing."""
+        mock_post.return_value = self._response(
+            400, {}, '{"error":"invalid_client","error_description":"Invalid client secret"}')
 
         self.assertIsNone(_refresh_spotify_access_token("rt", "cid", "secret"))
 
         self.assertTrue(mock_logger.error.called)
+
+
+class WebApiIdentityTestCase(unittest.TestCase):
+    """The backfill's cross-account guard compared emails - and /v1/me only
+    carries one under the user-read-email scope, which the authorize URL never
+    asked for, so the comparison never ran and the fallback arm was written to
+    pass. The cookie session's own id (the account-settings `username`, which
+    IS the Spotify user id) and /me's `id` are two independent readings of the
+    same fact, so they are compared instead when the email is absent
+    (2026-09-07 review, item 2)."""
+
+    def _poll(self, meResponse, cookieUserId):
+        get_credentials = MagicMock(return_value={
+            "client_id": "cid", "client_secret": "cs", "refresh_token": "rt",
+        })
+        with patch("Database.Listeners.spotifyListener.Spotify") as mock_spotify_cls:
+            mock_sp = MagicMock()
+            mock_sp.current_user_recently_played.return_value = []
+            mock_spotify_cls.return_value = mock_sp
+            listener = Listener("dummy_cookie", email="alice@example.com",
+                                get_credentials=get_credentials)
+        listener._lastWebApiPollTime = 0
+        listener._authenticated_user_id = cookieUserId
+        with patch("Database.Listeners.spotifyListener._get_current_user_from_web_api",
+                   return_value=meResponse), \
+             patch("Database.Listeners.spotifyListener._fetch_recently_played_from_web_api",
+                   return_value=[]) as fetch, \
+             patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value="token123"), \
+             patch.object(listener, "_recordExternalIdentityCheck") as recorded, \
+             patch("Database.Listeners.spotifyListener.time.monotonic", return_value=_MONOTONIC_NOW), \
+             patch("Database.Listeners.spotifyListener.logger") as logger:
+            listener._checkWebApiBackfill(MagicMock())
+        errors = "\n".join(str(call.args[0]) % tuple(call.args[1:]) for call in logger.error.call_args_list)
+        return fetch.called, recorded.called, errors
+
+    def test_a_different_account_behind_the_token_is_refused_by_id(self):
+        fetched, recorded, log = self._poll({"id": "someoneelse", "display_name": "Bob"}, "alice")
+
+        self.assertFalse(fetched)
+        self.assertFalse(recorded)
+        self.assertIn("CONTAMINATION CHECK FAILED", log)
+        self.assertIn("someoneelse", log)
+        self.assertIn("alice", log)
+
+    def test_the_same_id_confirms_the_identity(self):
+        """Confirmed, not merely tolerated: it stands in for the cookie-side
+        validation the same way a matching email does."""
+        fetched, recorded, _ = self._poll({"id": "Alice", "display_name": "Alice"}, "alice")
+
+        self.assertTrue(fetched)
+        self.assertTrue(recorded)
+
+    def test_a_matching_email_still_wins_over_the_ids(self):
+        fetched, recorded, _ = self._poll(
+            {"id": "31newstyleid", "display_name": "Alice", "email": "alice@example.com"}, "alice")
+
+        self.assertTrue(fetched)
+        self.assertTrue(recorded)
+
+    def test_an_email_as_id_baseline_cannot_be_compared(self):
+        """Some account types get their email back AS the id from the
+        account-settings profile (see formatProfile) - /me's id is never that,
+        so the two are not comparable and the arm stays lenient."""
+        fetched, recorded, _ = self._poll({"id": "31newstyleid", "display_name": "Alice"}, "alice@example.com")
+
+        self.assertTrue(fetched)
+        self.assertFalse(recorded)
+
+    def test_no_baseline_at_all_stays_lenient(self):
+        """A listener built through a bot-check page has no cookie-side id
+        (see _captureIdentityBaseline's caller) - nothing to compare against."""
+        fetched, recorded, _ = self._poll({"id": "alice", "display_name": "Alice"}, None)
+
+        self.assertTrue(fetched)
+        self.assertFalse(recorded)
+
+    def test_a_me_answer_without_an_id_stays_lenient(self):
+        fetched, _, _ = self._poll({"display_name": "Alice"}, "alice")
+
+        self.assertTrue(fetched)
 
 
 class WebApiTimeoutTestCase(unittest.TestCase):

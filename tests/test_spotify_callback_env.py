@@ -10,7 +10,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app import SpotifyDashboardApp, SPOTIFY_OAUTH_STATE_SESSION_KEY
-from routes.auth import PROFILE_FLASH_SPOTIFY
+from routes.auth import PROFILE_FLASH_SPOTIFY, SPOTIFY_OAUTH_SCOPE
 from _app_factory import makeApp
 
 
@@ -87,6 +87,12 @@ class TestSpotifyCallbackEnv(SpotifyEnvTestCase):
             self.assertTrue(location.startswith("https://accounts.spotify.com/authorize?"))
             query = parse_qs(urlparse(location).query)
             self.assertEqual(query["redirect_uri"], ["http://localhost:5000/spotify-callback"])
+            # user-read-email is what makes /v1/me carry an email at all - without
+            # it the backfill's cross-account check had nothing to compare
+            # (2026-09-07 review, item 2).
+            self.assertEqual(query["scope"], [SPOTIFY_OAUTH_SCOPE])
+            self.assertIn("user-read-recently-played", SPOTIFY_OAUTH_SCOPE.split())
+            self.assertIn("user-read-email", SPOTIFY_OAUTH_SCOPE.split())
 
 
 @patch.dict(os.environ, {"SPOTIFY_CALLBACK_URL": "http://localhost:5000/spotify-callback"})
@@ -380,13 +386,13 @@ class TestProfilePageReauthStatus(SpotifyEnvTestCase):
 
     def test_shows_reauth_prompt_when_flagged(self):
         resp = self._getProfile({"needs_reauth": True})
-        self.assertIn(b"Authorization Expired - Missing Permission", resp.data)
+        self.assertIn(b"Authorization No Longer Accepted", resp.data)
         self.assertIn(b"Re-authorize with Spotify", resp.data)
 
     def test_shows_connected_when_not_flagged(self):
         resp = self._getProfile({"needs_reauth": False})
         self.assertIn(b"Connected &amp; Authorized", resp.data)
-        self.assertNotIn(b"Authorization Expired", resp.data)
+        self.assertNotIn(b"Authorization No Longer Accepted", resp.data)
 
     def test_missing_needs_reauth_key_defaults_to_connected(self):
         """A credentials dict without the key at all (e.g. a mock that

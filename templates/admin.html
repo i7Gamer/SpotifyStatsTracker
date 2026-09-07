@@ -87,7 +87,7 @@
           </td>
           <td>
             {% if u.spotify_api_status == 'Needs Re-Auth' %}
-              <span class="badge badge-orange" title="Spotify rejected the last backfill request as missing the recently-played permission - re-authorization required.">NEEDS RE-AUTH</span>
+              <span class="badge badge-orange" title="Spotify no longer accepts this user's authorization (revoked, expired after six months, or missing the recently-played permission) - re-authorization required.">NEEDS RE-AUTH</span>
             {% elif u.spotify_api_status == 'Configured' %}
               <span class="badge badge-success">CONFIGURED</span>
             {% else %}

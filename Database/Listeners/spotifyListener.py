@@ -280,6 +280,16 @@ WEB_API_BACKFILL_END_TIME_DEDUP_TOLERANCE_SECONDS = 10  #< max gap between a Web
 # failure (None) that's worth silently retrying on the next poll.
 _SCOPE_ERROR = object()
 
+# Sentinel returned by _refresh_spotify_access_token when accounts.spotify.com
+# answers the refresh with invalid_grant: the stored refresh token has been
+# revoked by the user, or has reached the six-month lifetime Spotify gives
+# refresh tokens (documented at developer.spotify.com, "Refreshing tokens").
+# Distinct from None (a network blip, a rate limit, a bad client secret),
+# because this one is definitive: nothing but re-authorizing brings the
+# backfill back, so the account is flagged on the first sighting rather
+# than logging the same error every poll until someone reads the log.
+REFRESH_TOKEN_REVOKED = object()
+
 # Spotify's recently-played endpoint has been observed to answer a handful of
 # polls with 403 "Insufficient client scope" even though the stored refresh
 # token does carry the scope (confirmed live: the very next poll, using the
@@ -508,6 +518,14 @@ def _isNoVerdictError(exc: Exception) -> bool:
     return NO_VERDICT_SERVER_ERROR_PATTERN.search(str(exc).lower()) is not None
 
 
+def _isComparableSpotifyUserId(value) -> bool:
+    """Whether `value` is a Spotify user id the backfill's identity check can
+    hold against another one: a non-empty string that is not an email address.
+    The account-settings profile hands some account types their email AS the
+    id (see formatProfile), and /v1/me's id is never that."""
+    return isinstance(value, str) and bool(value) and "@" not in value
+
+
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str,
                                    logUser: str | None = None) -> str | None:
     """`logUser` is the internal user key (e.g. "7kevinegger"), used only to
@@ -552,6 +570,12 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
             logger.warning(
                 "Spotify rate-limited the access-token refresh for user %s - it asked for %.0fs",
                 logUser, standDown)
+        elif resp.status_code == 400 and "invalid_grant" in (resp.text or ""):
+            logger.error(
+                "Spotify no longer accepts the stored refresh token for user %s (revoked, or past "
+                "its six-month lifetime) - re-authorization required: %s",
+                logUser, truncateForLog(resp.text))
+            return REFRESH_TOKEN_REVOKED
         else:
             logger.error("Failed to refresh Spotify access token for user %s: %s %s",
                          logUser, resp.status_code, truncateForLog(resp.text))
@@ -1650,6 +1674,17 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 logger.info("Running Spotify Web API recently-played backfill check... (user %s)", self.logUser)
             access_token = _refresh_spotify_access_token(
                 creds["client_id"], creds["client_secret"], creds["refresh_token"], logUser=self.logUser)
+            if access_token is REFRESH_TOKEN_REVOKED:
+                # Straight to the flag, no SCOPE_ERROR_CONFIRM_THRESHOLD: that
+                # streak exists for a 403 Spotify has been seen to answer by
+                # mistake, and a refused grant is not a flake. Cleared the same
+                # way the scope flag is - by the next definitive fetch.
+                if self.on_scope_status_change:
+                    try:
+                        self.on_scope_status_change(True)
+                    except Exception as e:
+                        logger.error("Failed to record Spotify reauth-needed status for user %s: %s", self.logUser, parseError(e))
+                return
             if not access_token:
                 logger.warning("Could not obtain access token for Web API backfill for user %s.", self.logUser)
                 return
@@ -1668,21 +1703,40 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                 logger.info("Web API user: %s (ID: %s, email: %s), Listener email: %s",
                            web_api_user_display, web_api_user_id, web_api_user_email, self.email)
 
-            # Validate that the access token belongs to the authenticated user. Since the cookie client
-            # may store user IDs differently than the Spotify Web API, check email first (most reliable),
-            # fall back to display name if email unavailable.
+            # Validate that the access token belongs to the authenticated user.
+            # The email is the strongest reading, but /v1/me only carries one
+            # under the user-read-email scope - grants made before the
+            # authorize URL asked for it (SPOTIFY_OAUTH_SCOPE) never have it,
+            # and for those the comparison used to be skipped outright, so the
+            # guard this comment describes never ran. Without an email, the
+            # ids are compared instead: the cookie session's
+            # _authenticated_user_id is the account-settings `username`, which
+            # is the same Spotify user id /v1/me reports - two independent
+            # readings of one fact, unlike the cookie-side id check, which
+            # baselines on itself (see _captureIdentityBaseline). Lenient only
+            # when there is genuinely nothing to compare: no baseline (a
+            # listener built through a bot-check page), no id in the answer,
+            # or a baseline that is the account's email standing in for its
+            # id, which /me's id never is.
             mismatch = False
             identityConfirmed = False  #< the comparison actually RAN and passed
+            cookieUserId = self._authenticated_user_id
             if self.email and web_api_user_email and self.email.lower() != web_api_user_email.lower():
                 mismatch = True
                 mismatch_reason = f"email mismatch: API has {web_api_user_email}, listener is {self.email}"
             elif self.email and web_api_user_email:
                 identityConfirmed = True
-            elif self.email and not web_api_user_email and web_api_user_display:
-                # Email validation failed (API response missing email), fall back to display name
-                # Only flag if listener email username doesn't roughly match display name
-                logger.debug("Web API response missing email, using display name as backup validation")
-                mismatch = False  # Can't prove mismatch without email, be lenient
+            elif (_isComparableSpotifyUserId(cookieUserId) and _isComparableSpotifyUserId(web_api_user_id)
+                  and cookieUserId.lower() != web_api_user_id.lower()):
+                mismatch = True
+                mismatch_reason = (f"user id mismatch: API has {web_api_user_id}, "
+                                   f"cookie session is {cookieUserId}")
+            elif _isComparableSpotifyUserId(cookieUserId) and _isComparableSpotifyUserId(web_api_user_id):
+                identityConfirmed = True
+            else:
+                logger.debug("Web API response carries no email and the ids cannot be compared "
+                             "(API: %r, cookie session: %r) - cannot prove a mismatch, being lenient",
+                             web_api_user_id, cookieUserId)
 
             if mismatch:
                 # Deliberately NOT fed into the validation cache as a False.
