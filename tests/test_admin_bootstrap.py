@@ -86,6 +86,37 @@ class TestAdminBootstrap(AppTestCase):
         dash = self._makeApp()
         self.assertEqual(dash.repo.getAdminUsernames(), [])
 
+    def test_the_first_account_on_an_empty_install_is_promoted_without_a_restart(self):
+        """Startup ran the promotion over an empty users table and nothing
+        re-ran it, so a fresh install had no admin until its next restart
+        (2026-09-07 review, item 7)."""
+        dash = self._makeApp()
+
+        username = dash.get_or_create_user("owner@example.com")
+
+        self.assertEqual(dash.repo.getAdminUsernames(), [username])
+
+    def test_a_second_account_does_not_become_admin(self):
+        dash = self._makeApp()
+        owner = dash.get_or_create_user("owner@example.com")
+
+        dash.get_or_create_user("friend@example.com")
+
+        self.assertEqual(dash.repo.getAdminUsernames(), [owner])
+
+    def test_admin_email_takes_over_when_that_account_arrives_second(self):
+        """ADMIN_EMAIL stays authoritative on this path too: until that
+        address registers nobody is promoted (the startup rule), and the
+        moment it does it is the only admin."""
+        with patch.dict(os.environ, {appModule.ADMIN_EMAIL_ENV_VAR: "owner@example.com"}):
+            dash = self._makeApp()
+            dash.get_or_create_user("friend@example.com")
+            self.assertEqual(dash.repo.getAdminUsernames(), [])
+
+            owner = dash.get_or_create_user("owner@example.com")
+
+        self.assertEqual(dash.repo.getAdminUsernames(), [owner])
+
 
 if __name__ == "__main__":
     unittest.main()

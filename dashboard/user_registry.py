@@ -82,9 +82,11 @@ class UserRegistryMixin:
         # happen to sanitize to the same username prefix (e.g. "alice@a.com" and
         # "alice@b.com") could otherwise both pass the uniqueness check before
         # either has actually created their row.
+        created = False
         with self._session_lock:
             username = self.repo.getUsernameForEmail(email)
             if not username:
+                created = True
                 # Create a new username from email prefix
                 prefix = email.split("@")[0]
                 sanitized = "".join(c for c in prefix if c.isalnum() or c in ("-", "_")).strip()
@@ -111,6 +113,14 @@ class UserRegistryMixin:
                     username = f"{sanitized}_{counter}"
                     counter += 1
 
+        if created:
+            # The startup promotion ran over an empty users table on a fresh
+            # install and nothing re-ran it, so the first account had no admin
+            # until the next restart. Same rule as boot (ADMIN_EMAIL
+            # authoritative, else the earliest user once), re-asked now that
+            # there is a user to ask it about. Outside the session lock: it is
+            # repo-only, and holds nothing the registry cares about.
+            self._ensureAdminExists()
         return username
 
     # ---- the registry itself -------------------------------------------------
