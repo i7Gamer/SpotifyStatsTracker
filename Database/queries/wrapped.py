@@ -16,6 +16,15 @@ class WrappedQueries:
         ).fetchone()
         return row[0] if row else None
 
+    def getCachedWrappedCalculatedAt(self, username: str, year: int) -> float | None:
+        """When the cached year was computed (wall-clock, as saved) - the
+        worker's past-year refresh reads it, see WRAPPED_PAST_YEAR_REFRESH_SECONDS."""
+        row = self._conn().execute(
+            "SELECT calculated_at FROM user_wrapped WHERE username = ? AND year = ?",
+            (username, year)
+        ).fetchone()
+        return row[0] if row else None
+
     def getCachedWrappedTotalPlays(self, username: str, year: int) -> int | None:
         row = self._conn().execute(
             "SELECT total_plays FROM user_wrapped WHERE username = ? AND year = ?",

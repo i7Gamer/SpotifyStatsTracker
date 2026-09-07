@@ -318,13 +318,16 @@ class TestDiscoveredLists(DatabaseTestCase):
             db._calculateAndSaveWrapped(2026, _utc(2026), _utc(2027),
                                         max_played_at=_ts(2026, 12, 31))
 
-        from Database.workers.wrapped_worker import WRAPPED_LIST_LIMIT
+        from Database.workers.wrapped_worker import WRAPPED_LIST_LIMIT, WRAPPED_POOL_METRICS
         for spy in (songsSpy, artistsSpy, albumsSpy):
             filteredCalls = [c for c in spy.call_args_list
                              if c.kwargs.get("firstListenedStart") == _utc(2026)
                              and c.kwargs.get("firstListenedEnd") == _utc(2027)
                              and c.kwargs.get("limit") == WRAPPED_LIST_LIMIT]
-            self.assertEqual(len(filteredCalls), 1, spy.call_args_list)
+            #< one capped, filtered call per pool metric (plays and time, see
+            #  WRAPPED_POOL_METRICS) - still never the unbounded hydration
+            self.assertEqual(len(filteredCalls), len(WRAPPED_POOL_METRICS), spy.call_args_list)
+            self.assertEqual(sorted(c.kwargs["sortBy"] for c in filteredCalls), sorted(WRAPPED_POOL_METRICS))
             unboundedCalls = [c for c in spy.call_args_list
                               if not c.args and "startDate" not in c.kwargs
                               and "firstListenedStart" not in c.kwargs]

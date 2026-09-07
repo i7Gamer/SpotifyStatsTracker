@@ -9,6 +9,7 @@ from conftest import DatabaseTestCase
 import app as appModule
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from Database.workers.wrapped_worker import WRAPPED_PAST_YEAR_REFRESH_SECONDS
 from _concurrency import WaiterCountingLock
 import Database.utils as utilsModule
 from Database.Migrators.migrate1_12_0 import Migrator as Migrator_1_12_0
@@ -389,6 +390,111 @@ class TestWrappedBackgroundWorker(DatabaseTestCase):
         cached2 = db.repo.getCachedWrapped(db.user, 2026)
         self.assertEqual(cached2["total_plays"], 2)
         self.assertEqual(cached2["max_played_at"], 1775000000)
+
+    def _utc(self, year, month, day):
+        return datetime.datetime(year, month, day, 12, tzinfo=datetime.timezone.utc).timestamp()
+
+    def _threeTracksOneOfThemLong(self):
+        """tA: most plays. tB: second most. tC: one play, but longer than
+        both of the others put together - #1 by time, last by plays."""
+        tracks = {t: {"id": t, "name": f"Song {t}", "artists": [{"id": f"a_{t}", "name": f"Artist {t}"}]}
+                  for t in ("tA", "tB", "tC")}
+        entries = ([{"id": "tA", "playedAt": self._utc(2026, 3, 1) + i * 100, "timePlayed": 10000} for i in range(3)]
+                   + [{"id": "tB", "playedAt": self._utc(2026, 3, 2) + i * 100, "timePlayed": 10000} for i in range(2)]
+                   + [{"id": "tC", "playedAt": self._utc(2026, 3, 3), "timePlayed": 3600000}])
+        db = self._makeDb(tracks, entries)
+        db.tz = datetime.timezone.utc
+        return db
+
+    def test_the_cached_pool_also_holds_the_top_by_listening_time(self):
+        """The cache stored the top WRAPPED_LIST_LIMIT by plays and the page's
+        time sort merely reordered that pool, so a track outside the top-N by
+        plays could never appear even as the year's #1 by time (2026-09-07
+        review, item 11). Both rankings are captured now and merged."""
+        db = self._threeTracksOneOfThemLong()
+
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0), \
+             patch("Database.workers.wrapped_worker.WRAPPED_LIST_LIMIT", 2):
+            db._checkAndRecalculateWrapped()
+
+        cached = db.repo.getCachedWrapped(db.user, 2026)
+        for column in ("top_songs", "discovered_songs_list"):
+            with self.subTest(column=column):
+                self.assertEqual({row["id"] for row in json.loads(cached[column])}, {"tA", "tB", "tC"})
+        for column in ("top_artists", "discovered_artists_list"):
+            with self.subTest(column=column):
+                self.assertEqual({row["id"] for row in json.loads(cached[column])}, {"a_tA", "a_tB", "a_tC"})
+        #< no double entry for a track that ranks in both pools
+        self.assertEqual(len(json.loads(cached["top_songs"])), 3)
+
+    def test_the_time_sorted_page_now_shows_the_real_number_one(self):
+        db = self._threeTracksOneOfThemLong()
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0), \
+             patch("Database.workers.wrapped_worker.WRAPPED_LIST_LIMIT", 2):
+            db._checkAndRecalculateWrapped()
+        from _app_factory import makeApp
+        dash = makeApp()
+
+        with dash.app.test_request_context("/wrapped"):
+            byTime = dash._buildWrappedContext(db, 2026, groupBy="month", limit=1,
+                                               sortBy="totalTimeListened", includeGenres=False)
+            byPlays = dash._buildWrappedContext(db, 2026, groupBy="month", limit=1,
+                                                sortBy="plays", includeGenres=False)
+
+        self.assertEqual(byTime["topSongs"][0]["id"], "tC")
+        self.assertEqual(byPlays["topSongs"][0]["id"], "tA")
+        self.assertEqual(byTime["exportTopSong"]["id"], "tA")   #< the export button stays most-played
+
+    def _dbWithATrackDiscoveredIn2024(self):
+        tracks = {"t1": {"id": "t1", "name": "Song 1", "artists": [{"id": "a1", "name": "Artist 1"}]}}
+        entries = [{"id": "t1", "playedAt": self._utc(2024, 6, 1) + i * 100, "timePlayed": 60000}
+                   for i in range(2)]
+        db = self._makeDb(tracks, entries)
+        db.tz = datetime.timezone.utc
+        return db
+
+    def _ageCachedYear(self, db, year, seconds):
+        db.repo._conn().execute(
+            "UPDATE user_wrapped SET calculated_at = calculated_at - ? WHERE username = ? AND year = ?",
+            (seconds, db.user, year))
+        db.repo.commit()
+
+    def _discoveredPlaysFor2024(self, db):
+        return json.loads(db.repo.getCachedWrapped(db.user, 2024)["discovered_songs_list"])[0]["plays"]
+
+    def test_a_past_years_discovery_counts_follow_later_listening(self):
+        """Discovery lists carry LIFETIME play counts by design, but the
+        freshness check only looked at the year's own plays - so a 2026
+        listen of a song discovered in 2024 changed 2024's numbers and nothing
+        ever rebuilt 2024 (2026-09-07 review, item 12). A past year with
+        plays recorded since it was computed is rebuilt again - at most once
+        a day, which is what keeps this from rebuilding every past year on
+        every cycle of active listening."""
+        db = self._dbWithATrackDiscoveredIn2024()
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
+            db._checkAndRecalculateWrapped()
+            self.assertEqual(self._discoveredPlaysFor2024(db), 2)
+
+            #< a live play: recorded, and played, after the year was computed
+            db.repo.insertPlay(db.user, "t1", time.time(), 60000, "listener")
+            db._checkAndRecalculateWrapped()
+            self.assertEqual(self._discoveredPlaysFor2024(db), 2)   #< computed minutes ago: waits
+
+            self._ageCachedYear(db, 2024, WRAPPED_PAST_YEAR_REFRESH_SECONDS + 1)
+            db._checkAndRecalculateWrapped()
+
+        self.assertEqual(self._discoveredPlaysFor2024(db), 3)
+
+    def test_a_past_year_with_nothing_new_since_is_left_alone_however_old(self):
+        db = self._dbWithATrackDiscoveredIn2024()
+        with patch.object(db, "WRAPPED_YEAR_DELAY_SECONDS", 0):
+            db._checkAndRecalculateWrapped()
+            self._ageCachedYear(db, 2024, 30 * WRAPPED_PAST_YEAR_REFRESH_SECONDS)
+
+            with patch.object(db, "_calculateAndSaveWrapped", wraps=db._calculateAndSaveWrapped) as spy:
+                db._checkAndRecalculateWrapped()
+
+        spy.assert_not_called()
 
     def test_boundary_play_does_not_cause_perpetual_recalculation(self):
         """A play landing exactly at a year's end boundary (midnight Jan 1 of

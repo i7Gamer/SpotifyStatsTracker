@@ -22,6 +22,19 @@ from Database.dbmodule import dbmod as _dbmod
 # The Wrapped page's "top 100" lists, and the discovery lists rendered beside
 # them: one cap spelled once rather than six literals free to drift apart.
 WRAPPED_LIST_LIMIT = 100
+# The two rankings a cached pool is captured under. The page re-sorts the pool
+# by whichever metric the user picks (see wrapped_builder._resortByMetric) and
+# can only ever show what the capture included - so both are captured and
+# merged, or the year's #1 by listening time is absent whenever it sits
+# outside the top WRAPPED_LIST_LIMIT by plays (a long track played rarely).
+WRAPPED_POOL_METRICS = ("plays", "totalTimeListened")
+# A PAST year's discovery lists carry lifetime play counts (see the comment at
+# the discoveries step), which later listening keeps changing while the
+# year's own play count - the freshness signal - stands still. A past year is
+# therefore also rebuilt once plays have been recorded since it was computed,
+# but no more often than this: rebuilding every past year on every cycle of
+# active listening is the cost that signal was chosen to avoid.
+WRAPPED_PAST_YEAR_REFRESH_SECONDS = 24 * 60 * 60
 
 
 class WrappedWorkerMixin:
@@ -86,12 +99,31 @@ class WrappedWorkerMixin:
 
     def _wrappedCacheNeedsRecalc(self, year: int, yearStart: datetime.datetime, yearEnd: datetime.datetime, max_played_at: float):
         """Compares the cached (max_played_at, play_count) snapshot for a year
-        against live values. Returns (isStale, cached_max, cached_total, current_total)."""
+        against live values. Returns (isStale, cached_max, cached_total, current_total).
+
+        A past year is stale on one more count - see
+        WRAPPED_PAST_YEAR_REFRESH_SECONDS."""
         current_total = self.repo.getPlayCountInPeriod(self.user, yearStart.timestamp(), yearEnd.timestamp())
         cached_max = self.repo.getCachedWrappedMaxPlayedAt(self.user, year)
         cached_total = self.repo.getCachedWrappedTotalPlays(self.user, year)
         isStale = cached_max is None or cached_total is None or cached_max < max_played_at or cached_total != current_total
+        if not isStale:
+            isStale = self._pastYearDiscoveriesAreStale(year, yearEnd)
         return isStale, cached_max, cached_total, current_total
+
+    def _pastYearDiscoveriesAreStale(self, year: int, yearEnd: datetime.datetime) -> bool:
+        """Whether a year that is over has had plays recorded since its cache
+        was computed, that computation being at least
+        WRAPPED_PAST_YEAR_REFRESH_SECONDS old. Both halves, or it is not
+        worth a rebuild: nothing new means the lifetime counts stand, and a
+        fresh computation already holds whatever landed before it."""
+        nowTs = _dbmod.time.time()
+        if yearEnd.timestamp() > nowTs:
+            return False
+        calculatedAt = self.repo.getCachedWrappedCalculatedAt(self.user, year)
+        if calculatedAt is None or nowTs - calculatedAt < WRAPPED_PAST_YEAR_REFRESH_SECONDS:
+            return False
+        return self.repo.getPlayCountInPeriod(self.user, calculatedAt, nowTs) > 0
 
     def _checkAndRecalculateWrapped(self, stop_event: threading.Event | None = None) -> None:
         """Checks for each year if there is new data and triggers recalculation if needed."""
@@ -169,10 +201,16 @@ class WrappedWorkerMixin:
         timeSeriesWeek = self.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="week")
         timeSeriesMonth = self.getListeningTimeSeries(startDate=yearStart, endDate=yearEnd, groupBy="month")
 
-        # 6. Top 100 lists
-        topSongs = self.getTopSongs(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
-        topArtists = self.getTopArtists(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
-        topAlbums = self.getTopAlbums(startDate=yearStart, endDate=yearEnd, by="plays", limit=WRAPPED_LIST_LIMIT)
+        # 6. Top 100 lists - the top WRAPPED_LIST_LIMIT under EACH metric in
+        #    WRAPPED_POOL_METRICS, merged (see there). Plays-ranked first, so
+        #    the pool's own order is still the plays ranking the export button
+        #    and the default sort read it as.
+        topSongs = self._pooledByEveryMetric(
+            lambda by: self.getTopSongs(startDate=yearStart, endDate=yearEnd, by=by, limit=WRAPPED_LIST_LIMIT))
+        topArtists = self._pooledByEveryMetric(
+            lambda by: self.getTopArtists(startDate=yearStart, endDate=yearEnd, by=by, limit=WRAPPED_LIST_LIMIT))
+        topAlbums = self._pooledByEveryMetric(
+            lambda by: self.getTopAlbums(startDate=yearStart, endDate=yearEnd, by=by, limit=WRAPPED_LIST_LIMIT))
 
         # 7. Discoveries lists. The same lifetime aggregates as always -
         #    ranking and displayed counts stay LIFETIME numbers, and an entity
@@ -182,15 +220,15 @@ class WrappedWorkerMixin:
         #    hydrated every entity ever played, three times, to keep 100 rows
         #    each - and the current year recalculates on every worker cycle
         #    that saw new plays, i.e. every 15 minutes of active listening.
-        discoveredSongsList = self.getSongsStats(
-            sortBy="plays", limit=WRAPPED_LIST_LIMIT,
-            firstListenedStart=yearStart, firstListenedEnd=yearEnd)
-        discoveredArtistsList = self.getArtistsStats(
-            sortBy="plays", limit=WRAPPED_LIST_LIMIT,
-            firstListenedStart=yearStart, firstListenedEnd=yearEnd)
-        discoveredAlbumsList = self.getAlbumsStats(
-            sortBy="plays", limit=WRAPPED_LIST_LIMIT,
-            firstListenedStart=yearStart, firstListenedEnd=yearEnd)
+        discoveredSongsList = self._pooledByEveryMetric(
+            lambda by: self.getSongsStats(sortBy=by, limit=WRAPPED_LIST_LIMIT,
+                                          firstListenedStart=yearStart, firstListenedEnd=yearEnd))
+        discoveredArtistsList = self._pooledByEveryMetric(
+            lambda by: self.getArtistsStats(sortBy=by, limit=WRAPPED_LIST_LIMIT,
+                                            firstListenedStart=yearStart, firstListenedEnd=yearEnd))
+        discoveredAlbumsList = self._pooledByEveryMetric(
+            lambda by: self.getAlbumsStats(sortBy=by, limit=WRAPPED_LIST_LIMIT,
+                                           firstListenedStart=yearStart, firstListenedEnd=yearEnd))
 
         data = {
             "calculated_at": _dbmod.time.time(),
@@ -223,6 +261,21 @@ class WrappedWorkerMixin:
             _dbmod.logger.info(
                 "[WrappedWorker-%s] Year %d recalculated across an invalidation; discarded",
                 self.user, year)
+
+    @staticmethod
+    def _pooledByEveryMetric(fetch) -> list:
+        """`fetch(metric)` for each of WRAPPED_POOL_METRICS, concatenated in
+        that order with an entity that ranks under more than one metric kept
+        once, at its first (plays-ranked) position."""
+        pool: list = []
+        seen: set = set()
+        for metric in WRAPPED_POOL_METRICS:
+            for item in fetch(metric):
+                if item["id"] in seen:
+                    continue
+                seen.add(item["id"])
+                pool.append(item)
+        return pool
 
     def recalculateWrappedForYear(self, year: int) -> None:
         """Calculate and cache wrapped stats for a year immediately (synchronously).
