@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_MESSAGE
 from _app_factory import AppTestCase
+from Database.repository import IMAGE_KIND_ARTIST
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
 from conftest import wrappedCachedRow
@@ -1383,6 +1384,47 @@ class TestSharedImageRoutes(ShareLinkRoutesTestCase):
         self.assertEqual(resp.status_code, 200)
         readOnlyDb.lazyFetchArtistImage.assert_called_once()
         self.assertEqual(readOnlyDb.lazyFetchArtistImage.call_args.args[0], "art1")
+
+    @patch('routes.wrapped.sendCacheableImage')
+    @patch('routes.wrapped.os.path.exists', return_value=False)
+    def test_a_missing_file_forgets_its_stale_ok_row_before_the_fetch(self, mock_exists, mock_send):
+        """lazyFetchArtistImage trusts an 'ok' images row without looking at
+        the disk, so after a database restored without its Media folder the
+        authenticated route forgets the row first (_forgetMissingImage) and
+        this one did not - shared pages kept broken artwork for good
+        (2026-09-07 review, item 14). Forgotten BEFORE the fetch, or the
+        fetch still refuses."""
+        mock_send.return_value = Response("OK")
+        token = self._createLink()
+        self._seedPlayedArtist("art1")
+        readOnlyDb = self._makeDb()
+        client = self.dash.app.test_client()
+
+        with patch.object(self.dash, '_getReadOnlyUserDb', return_value=readOnlyDb):
+            client.get(f"/shared/{token}/img/artists/art1.jpeg")
+
+        readOnlyDb.repo.forgetImageStatus.assert_called_once_with("art1", IMAGE_KIND_ARTIST)
+        order = [str(c) for c in readOnlyDb.mock_calls]
+        forgetAt = next(i for i, c in enumerate(order) if "forgetImageStatus" in c)
+        fetchAt = next(i for i, c in enumerate(order) if "lazyFetchArtistImage" in c)
+        self.assertLess(forgetAt, fetchAt)
+
+    @patch('routes.wrapped.sendCacheableImage')
+    @patch('routes.wrapped.os.path.exists', return_value=False)
+    def test_an_id_the_owner_never_played_is_not_forgotten_either(self, mock_exists, mock_send):
+        """The same gate that keeps the fetch off arbitrary ids keeps the
+        write off them: an anonymous request must not touch images rows for
+        artists outside the owner's listening data."""
+        mock_send.return_value = Response("OK")
+        token = self._createLink()
+        self._seedPlayedArtist("art1")
+        readOnlyDb = self._makeDb()
+        client = self.dash.app.test_client()
+
+        with patch.object(self.dash, '_getReadOnlyUserDb', return_value=readOnlyDb):
+            client.get(f"/shared/{token}/img/artists/notplayed99.jpeg")
+
+        readOnlyDb.repo.forgetImageStatus.assert_not_called()
 
     @patch('routes.wrapped.sendCacheableImage')
     @patch('routes.wrapped.os.path.exists', return_value=False)

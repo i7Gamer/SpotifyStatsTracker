@@ -26,7 +26,7 @@ from config import (
     SHARE_LINK_MAX_PER_BUCKET, RATE_LIMIT_ERROR_MESSAGE,
 )
 from Database.database import Database
-from Database.repository import Repository
+from Database.repository import IMAGE_KIND_ARTIST, Repository
 from Database.utils import msToString, now
 
 
@@ -384,6 +384,12 @@ def register(app, dashboard):
             if (len(parts) == 2 and parts[0].isalnum()
                     and dashboard.repo.getPlayedArtistIds(link["username"], [parts[0]])):
                 db = dashboard._getReadOnlyUserDb(link["username"])
+                # The file is not on disk, so an 'ok' images row for it is
+                # stale (a database restored without its Media folder) and
+                # lazyFetchArtistImage would honour it forever - forgotten
+                # first, as the authenticated route's _forgetMissingImage
+                # does. Inside the played-ids gate above: this is a write.
+                db.repo.forgetImageStatus(parts[0], IMAGE_KIND_ARTIST)
                 db.lazyFetchArtistImage(parts[0], Path(imagePath))
 
         resp = sendCacheableImage(imageDir, filename)
