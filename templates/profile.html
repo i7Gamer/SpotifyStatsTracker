@@ -79,7 +79,12 @@
         themeSelector.addEventListener('change', (e) => {
           const newTheme = e.target.value;
           document.documentElement.className = newTheme;
-          localStorage.setItem('spotify-stats-theme', newTheme);
+          try {
+            localStorage.setItem('spotify-stats-theme', newTheme);
+          } catch (err) {
+            //< blocked site data: the theme still applies to this page, it just
+            //  will not survive a reload - same guard as the layout <head>
+          }
         });
       })();
     </script>

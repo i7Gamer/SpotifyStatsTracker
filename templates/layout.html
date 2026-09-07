@@ -6,8 +6,18 @@
   <head>
     <script>
       (function() {
-        const savedTheme = localStorage.getItem('spotify-stats-theme') || 'theme-rose';
-        document.documentElement.className = savedTheme;
+        // Reading localStorage THROWS, not returns null, when a browser blocks
+        // site data (Firefox "block all cookies", Safari with storage off, a
+        // storage-partitioned frame) - and the throw used to abort this whole
+        // script before the placeholder line below ran, so every failed cover
+        // then requested GET /undefined. tests/test_layout_head_bootstrap.js.
+        var savedTheme = null;
+        try {
+          savedTheme = localStorage.getItem('spotify-stats-theme');
+        } catch (err) {
+          savedTheme = null;
+        }
+        document.documentElement.className = savedTheme || 'theme-rose';
       })();
 
       // Shown in place of a track/artist/album cover that 404s or fails to
