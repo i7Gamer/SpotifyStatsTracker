@@ -57,6 +57,36 @@ logger = logging.getLogger(__name__)
 MANUAL_BACKUP_SYNC_WAIT_SECONDS = 20
 
 
+def _pushWithoutBackfill(pushEnabled: bool, backfillEnabled: bool, users: list[dict]) -> dict | None:
+    """The push-listener warning section's payload - see
+    implementationPlan-2026-09-07.md section 3.
+
+    Returns None when there's nothing to warn about, {"backfillDisabled":
+    True} when every push listener is unprotected because the global Web API
+    backfill toggle is off, or {"usernames": [...]} naming which push
+    listeners lack a working API backfill of their own.
+
+    `users` carries the already-computed per-user values from adminPage's own
+    loop: each entry is {"username", "cookies_json", "hasApi", "needsReauth"}.
+    A user counts as "exposed" only if they actually have a listener
+    (cookies_json - push only runs for stored-cookie users, NOT
+    dashboard.user_databases, which also covers accounts merely viewed
+    through a share/compare link) and either lack API credentials entirely or
+    have credentials Spotify has stopped honouring (needsReauth) -
+    stored-but-dead credentials protect nobody."""
+    if not pushEnabled:
+        return None
+    if not backfillEnabled:
+        return {"backfillDisabled": True}
+    exposed = [
+        {"username": u["username"], "hasCookies": True,
+         "hasApi": u["hasApi"], "needsReauth": u["needsReauth"]}
+        for u in users
+        if u.get("cookies_json") and (not u["hasApi"] or u["needsReauth"])
+    ]
+    return {"usernames": exposed} if exposed else None
+
+
 def _listenerSessionLedger(health: dict, tz) -> dict | None:
     """The Worker Health card's listener-session entry for one user: sessions
     built since process start, plus a "when - why" line for the last rebuild
@@ -118,6 +148,10 @@ def register(app, dashboard):
         # One grouped scan for every user's play/skip counts instead of a
         # getPlaysCount()+getSkipCount() pair per user (2*N queries).
         countsByUser = dashboard.repo.getPlayAndSkipCountsByUser()
+        # The push-warning section's input: only the per-user fields
+        # _pushWithoutBackfill actually needs, collected as the loop below
+        # computes them anyway (see its own has_api/needs_reauth).
+        pushExposureCandidates = []
         for u in dashboard.repo.getAllUsersDetails():
             u_username = u["username"]
             u_email = u["email"]
@@ -145,6 +179,10 @@ def register(app, dashboard):
 
             has_api = bool(u["spotify_client_id"] and u["spotify_refresh_token"])
             needs_reauth = bool(u.get("spotify_needs_reauth"))
+            pushExposureCandidates.append({
+                "username": u_username, "cookies_json": u["cookies_json"],
+                "hasApi": has_api, "needsReauth": needs_reauth,
+            })
 
             # Per-user background worker statuses for the Worker Health panel.
             # consecutive_failures/failure_rate/last_error are only populated
@@ -256,6 +294,11 @@ def register(app, dashboard):
                 "skips_count": countsByUser.get(u_username, {}).get("skips", 0),
                 "created_at": created_date_str,
             })
+
+        push_listener_enabled = dashboard.repo.isPushListenerEnabled()
+        spotify_backfill_enabled = dashboard.repo.isSpotifyApiBackfillEnabled()
+        push_backfill_warning = _pushWithoutBackfill(
+            push_listener_enabled, spotify_backfill_enabled, pushExposureCandidates)
 
         listener_summary: dict[str, int] = {}
         for u in users_list:
@@ -405,8 +448,9 @@ def register(app, dashboard):
             restart_enabled=restart_enabled,
             users_list=users_list,
             admin_count=len(dashboard.repo.getAdminUsernames()),
-            spotify_backfill_enabled=dashboard.repo.isSpotifyApiBackfillEnabled(),
-            push_listener_enabled=dashboard.repo.isPushListenerEnabled(),
+            spotify_backfill_enabled=spotify_backfill_enabled,
+            push_listener_enabled=push_listener_enabled,
+            push_backfill_warning=push_backfill_warning,
             lastfm_backfill_enabled=dashboard.repo.isLastfmGenreBackfillEnabled(),
             sharing_enabled=dashboard.repo.isDataSharingEnabled(),
             inherited_genres_enabled=dashboard.repo.isInheritedGenresEnabled(),

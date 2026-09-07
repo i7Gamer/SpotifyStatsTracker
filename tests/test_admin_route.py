@@ -603,6 +603,123 @@ class TestAdminListenerSessionLedger(AdminRouteTestBase):
         self.assertNotIn(b"alice: 4", resp.data)
 
 
+class TestPushWithoutBackfillHelper(unittest.TestCase):
+    """_pushWithoutBackfill: the pure decision behind the push-listener warning
+    section - see implementationPlan-2026-09-07.md section 3. "Exposed" means
+    a user has a listener (cookies_json) AND either lacks API credentials
+    entirely or has credentials Spotify no longer honours (needsReauth) -
+    stored-but-dead credentials protect nobody."""
+
+    def test_push_disabled_returns_none_regardless_of_backfill_or_users(self):
+        from routes.admin import _pushWithoutBackfill
+        exposedUser = [{"username": "bob", "cookies_json": '{"a":1}', "hasApi": False, "needsReauth": False}]
+        self.assertIsNone(_pushWithoutBackfill(False, False, exposedUser))
+        self.assertIsNone(_pushWithoutBackfill(False, True, exposedUser))
+
+    def test_push_on_and_global_backfill_off_warns_regardless_of_users(self):
+        from routes.admin import _pushWithoutBackfill
+        self.assertEqual(_pushWithoutBackfill(True, False, []), {"backfillDisabled": True})
+
+    def test_push_on_and_backfill_on_lists_only_exposed_usernames(self):
+        from routes.admin import _pushWithoutBackfill
+        users = [
+            {"username": "alice", "cookies_json": '{"a":1}', "hasApi": True, "needsReauth": False},
+            {"username": "bob", "cookies_json": '{"a":1}', "hasApi": False, "needsReauth": False},
+        ]
+        result = _pushWithoutBackfill(True, True, users)
+        self.assertEqual([u["username"] for u in result["usernames"]], ["bob"])
+
+    def test_push_on_and_backfill_on_but_no_exposed_users_returns_none(self):
+        from routes.admin import _pushWithoutBackfill
+        users = [{"username": "alice", "cookies_json": '{"a":1}', "hasApi": True, "needsReauth": False}]
+        self.assertIsNone(_pushWithoutBackfill(True, True, users))
+
+    def test_needs_reauth_user_is_exposed_even_with_stored_credentials(self):
+        from routes.admin import _pushWithoutBackfill
+        users = [{"username": "alice", "cookies_json": '{"a":1}', "hasApi": True, "needsReauth": True}]
+        result = _pushWithoutBackfill(True, True, users)
+        self.assertEqual([u["username"] for u in result["usernames"]], ["alice"])
+
+    def test_import_only_user_without_cookies_is_never_exposed(self):
+        """No cookies_json means no listener at all - push never runs for
+        this account regardless of how bad its API credentials are."""
+        from routes.admin import _pushWithoutBackfill
+        users = [{"username": "carol", "cookies_json": None, "hasApi": False, "needsReauth": False}]
+        self.assertIsNone(_pushWithoutBackfill(True, True, users))
+
+
+class TestPushBackfillWarningSection(AdminRouteTestBase):
+    """The /admin push-listener warning section, directly under the
+    deploy-mismatch block - see implementationPlan-2026-09-07.md section 3.
+
+    Every username already appears in the main users table regardless of
+    exposure, so assertIn(username, resp.data) alone proves nothing - every
+    assertion here slices to the warning section's own container first."""
+
+    def _warningSection(self, resp):
+        self.assertIn(b'id="push-backfill-warning"', resp.data)
+        after = resp.data.split(b'id="push-backfill-warning"', 1)[1]
+        return after.split(b'</section>', 1)[0]
+
+    def test_no_section_when_push_is_disabled(self):
+        dash = self._makeApp()
+        dash.repo.setPushListenerEnabled(False)
+        resp = self._getAdmin(dash, isAdmin=True)
+        self.assertNotIn(b'id="push-backfill-warning"', resp.data)
+
+    def test_backfill_disabled_wording_when_the_global_toggle_is_off(self):
+        dash = self._makeApp()
+        dash.repo.setPushListenerEnabled(True)
+        dash.repo.setSpotifyApiBackfillEnabled(False)
+        resp = self._getAdmin(dash, isAdmin=True)
+        section = self._warningSection(resp)
+        self.assertIn(b"disabled", section.lower())
+
+    def test_user_without_any_credentials_is_listed(self):
+        # bob, the base fixture's second user, has cookies but no Spotify API
+        # credentials at all.
+        dash = self._makeApp()
+        dash.repo.setPushListenerEnabled(True)
+        dash.repo.setSpotifyApiBackfillEnabled(True)
+        resp = self._getAdmin(dash, isAdmin=True)
+        section = self._warningSection(resp)
+        self.assertIn(b"bob", section)
+        self.assertNotIn(b"alice", section)   #< alice has valid, live credentials
+
+    def test_user_with_credentials_but_needing_reauth_is_listed(self):
+        dash = self._makeApp()
+        dash.repo.setPushListenerEnabled(True)
+        dash.repo.setSpotifyApiBackfillEnabled(True)
+        users = [dict(self._MOCK_USERS[0], spotify_needs_reauth=True)]   #< alice only
+        resp = self._getAdmin(dash, isAdmin=True, users=users)
+        section = self._warningSection(resp)
+        self.assertIn(b"alice", section)
+
+    def test_import_only_user_is_never_listed(self):
+        dash = self._makeApp()
+        dash.repo.setPushListenerEnabled(True)
+        dash.repo.setSpotifyApiBackfillEnabled(True)
+        users = self._MOCK_USERS + [{
+            "username": "carol", "email": "carol@example.com",
+            "cookies_json": None,
+            "spotify_client_id": None, "spotify_refresh_token": None,
+            "lastfm_api_key": None, "created_at": 1718000002.0, "is_admin": False,
+        }]
+        resp = self._getAdmin(dash, isAdmin=True, users=users)
+        section = self._warningSection(resp)
+        self.assertIn(b"bob", section)      #< still exposed, keeps the section rendered
+        self.assertNotIn(b"carol", section)
+
+    def test_user_with_valid_credentials_is_never_listed(self):
+        dash = self._makeApp()
+        dash.repo.setPushListenerEnabled(True)
+        dash.repo.setSpotifyApiBackfillEnabled(True)
+        resp = self._getAdmin(dash, isAdmin=True)   #< base fixture: alice valid, bob exposed
+        section = self._warningSection(resp)
+        self.assertNotIn(b"alice", section)
+        self.assertIn(b"bob", section)
+
+
 class TestAdminSkipSettings(AdminRouteTestBase):
     def test_non_admin_post_is_forbidden(self):
         dash = self._makeApp()

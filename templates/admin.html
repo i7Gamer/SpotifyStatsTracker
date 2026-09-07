@@ -32,6 +32,35 @@
 </section>
 {% endif %}
 
+{# Push listening (an experimental Spotify websocket) only recovers plays
+   while the process is up; without a working Web API backfill, anything
+   missed while the listener is briefly down or the session is offline is
+   gone for good. Warn about it here, right beside the deploy-mismatch
+   banner, since both are "something is quietly wrong" notices. #}
+{% if push_backfill_warning %}
+<section class="card" id="push-backfill-warning">
+  <h2>Push listening is on without a full backfill safety net</h2>
+  {% if push_backfill_warning.backfillDisabled %}
+  <p class="admin-worker-note">
+    The Spotify API backfill is disabled instance-wide, so every push listener is unprotected: a play missed while
+    the push channel is briefly down, or made while offline, is only ever recovered by that backfill - with it off,
+    those plays are gone for good. Enable it below, or disable push listening until you do.
+  </p>
+  {% else %}
+  <p class="admin-worker-note">
+    These push listeners have no working Spotify API backfill of their own (missing credentials, or credentials
+    Spotify no longer honours) - offline sessions of theirs are only ever recovered by that backfill, so anything
+    missed while they were offline is gone for good.
+  </p>
+  <div class="admin-worker-row">
+    {% for u in push_backfill_warning.usernames %}
+    <span class="badge badge-warning" title="{{ 'Needs Re-Auth' if u.needsReauth else 'No Spotify API credentials configured' }}">{{ u.username }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if error %}
 <section class="card" style="border: 1px solid var(--danger, #e05252); padding: 1rem 1.5rem; min-height: auto; width: fit-content; max-width: 100%;">
   <p style="margin: 0; color: var(--danger, #e05252);">{{ error }}</p>
