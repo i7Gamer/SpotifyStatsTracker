@@ -729,6 +729,40 @@ class TestSongDetailRoute(_DetailRouteTestBase):
         db.getListeningTimeSeries.assert_not_called()
         db.getHourOfDayHeatmap.assert_not_called()
 
+    def test_show_more_drops_itself_behind_a_list_change_in_flight(self):
+        """The button used to INHERIT the container's hx-sync
+        "#detailHistoryResults:replace". That is right in one direction only:
+        a sort/skips/page change must abort a batch in flight (stale rows
+        must not append into a fresh list). In the other direction it was
+        wrong - a Show More activated while a sort change was in flight
+        (keyboard: the fade's pointer-events:none only blocks the mouse)
+        ABORTED the sort, and the batch, computed from the pre-sort offset,
+        landed on the old ordering while the URL never followed. `drop` on the
+        same queue makes the button yield: its request is ignored while any
+        list change is in flight, and the container's `replace` still aborts a
+        batch when a change arrives. An attribute test pins the attribute; the
+        abort/drop semantics were checked in a browser."""
+        from bs4 import BeautifulSoup
+        dash = self._makeApp()
+        db = MagicMock()
+        db.getSong.return_value = self._song()
+        db.getEntriesCount.return_value = 120
+        db.getEntriesFromNew.return_value = [self._playEntry() for _ in range(50)]
+        #< the body render also draws the charts island
+        db.getListeningTimeSeries.return_value = []
+        db.getHourOfDayHeatmap.return_value = [[{"totalTimeListened": 0, "plays": 0} for _ in range(24)] for _ in range(7)]
+
+        with patch.object(dash, "_embedSongsTextElements", side_effect=lambda songs: songs):
+            listHtml = self._getRaw(dash, db, "/song/t1?offset=0",
+                                    headers=HX_LIST_HEADERS).get_data(as_text=True)
+            pageHtml = self._getRaw(dash, db, "/song/t1",
+                                    headers=HX_BODY_HEADERS).get_data(as_text=True)
+
+        button = BeautifulSoup(listHtml, "html.parser").select_one("#showMorePlaysBtn")
+        container = BeautifulSoup(pageHtml, "html.parser").select_one("#detailHistoryResults")
+        self.assertEqual(button["hx-sync"], "#detailHistoryResults:drop")
+        self.assertEqual(container["hx-sync"], "#detailHistoryResults:replace")
+
     def test_the_play_log_limit_is_clamped(self):
         """?limit had no ceiling at all - the one pagination parameter in the
         codebase that didn't - so ?limit=500000 fetched and rendered half a

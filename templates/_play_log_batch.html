@@ -12,10 +12,22 @@
    the button disappear by simply not being there. No client-side append,
    offset bookkeeping or "remove the actions div" branch survives.
 
-   The "list was re-sorted while this was in flight" guard moved too: the
-   button inherits hx-sync="#detailHistoryResults:replace" from the container
-   (see _detail_history_container.html), so a sort/page change aborts a batch
-   mid-request instead of letting stale rows append into a fresh list. #}
+   The "list was re-sorted while this was in flight" guard moved too, and it
+   has two halves on ONE queue (the container's, see
+   _detail_history_container.html). A sort/skips/page change carries the
+   container's hx-sync="#detailHistoryResults:replace", so it ABORTS a batch
+   mid-request instead of letting stale rows append into a fresh list. The
+   button used to inherit that same `replace`, which was wrong in the other
+   direction: a Show More activated while a sort change was in flight (by
+   keyboard - the fade's pointer-events:none only stops the mouse) aborted the
+   SORT, and the batch, computed from the pre-sort offset, appended to the old
+   ordering while the URL never followed. The button's own
+   hx-sync="#detailHistoryResults:drop" below makes it yield instead: its
+   request is simply ignored while any list change is in flight (nothing
+   fires, so detail-history.js's focus arm never sets either), and the
+   container's `replace` still wins the reverse race. `queue last` was the
+   wrong answer here - a queued batch would still carry the pre-change
+   offset onto the re-sorted list. #}
 {# The rows themselves live in _play_log_rows.html, shared with the album
    History tab's timeline (see _detail_history_timeline.html) - that page frames
    the same rows with a pagination strip instead of the control below. #}
@@ -43,6 +55,7 @@
             hx-swap="outerHTML"
             hx-indicator="#timelineActions"
             hx-disabled-elt="this"
+            hx-sync="#detailHistoryResults:drop"
             hx-replace-url="false">
       Show More Plays ({{ nextBatchSize }})
     </button>
