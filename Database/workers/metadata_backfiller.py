@@ -17,6 +17,7 @@ import threading
 # imported: database.py imports this file's mixin, so importing it back by name
 # made the cycle break whichever module was imported first (see Database/dbmodule.py).
 from Database.dbmodule import dbmod as _dbmod
+from Database.db import SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON
 #< a direct import, unlike _dbmod above: Database.utils imports nothing but the
 #  standard library, so it cannot take part in the cycle _dbmod exists to break
 from Database.rate_limit import retryAfterSeconds
@@ -443,8 +444,38 @@ class MetadataBackfillMixin:
                 self.user, self._backfillTokenFailures)
             self.setSpotifyNeedsReauth(True)
 
+    def _repairFallbackTrackMetadata(self, rawTracks: list[dict]) -> int:
+        """Reuse full catalog/history responses without fetching or recording plays.
+
+        Incomplete responses must leave the marker intact so the existing
+        catalog queue can retry. Artwork URLs are stored by upsertTrack; no
+        image download or other network work belongs in this repair.
+        """
+        tracks = []
+        for raw in rawTracks:
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            if raw.get("created_reason") in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
+                continue
+            try:
+                album = raw.get("album") or {}
+                artists = raw.get("artists") or album.get("artists") or []
+                if (not (raw.get("name") or "").strip()
+                        or (raw.get("duration_ms") or 0) <= 0
+                        or not album.get("id") or not (album.get("name") or "").strip()
+                        or not artists
+                        or any(not artist.get("id") or not (artist.get("name") or "").strip()
+                               for artist in artists)
+                        or not (raw.get("external_urls") or {}).get("spotify")):
+                    continue
+                tracks.append(_dbmod.Client.formatTrack(raw, embedPlaybackInfo=False))
+            except (KeyError, TypeError, ValueError, AttributeError) as error:
+                _dbmod.logger.warning("Cannot repair fallback metadata for track %s: %s",
+                                      raw["id"], _dbmod.parseError(error))
+        return self.repo.repairFallbackTracks(tracks)
+
     def _backfillTrackIsrcs(self, getAccessToken, stop_event: threading.Event) -> None:
-        """Fill in tracks.isrc from GET /v1/tracks, one batch per backfill cycle.
+        """Fill ISRCs and repair fallback tracks from one catalog batch per cycle.
 
         Web-API only, with no cookie-client fallback - and that is a property of
         the data, not an omission. The pathfinder client cannot expose ISRCs at
@@ -528,20 +559,27 @@ class MetadataBackfillMixin:
 
             headers = {"Authorization": f"Bearer {access_token}"}
             isrcByTrackId = {}
+            trackMetadata = []
 
             def _recordIsrc(track_id, resp):
                 #< a track Spotify HAS but has no ISRC for is still ANSWERED,
                 #  and _spendCatalogBatch counts it attempted either way -
                 #  re-asking every cycle forever is what the bulk form's null
                 #  entries meant. Only the value is conditional
-                isrc = (resp.json().get("external_ids") or {}).get("isrc")
+                payload = resp.json()
+                isrc = (payload.get("external_ids") or {}).get("isrc")
                 if isrc:
                     isrcByTrackId[track_id] = isrc
+                # Do not attach a relinked release's metadata to the requested
+                # id. Existing ISRC handling remains independent of this repair.
+                if payload.get("id") == track_id:
+                    trackMetadata.append(payload)
 
             batch = self._spendCatalogBatch("tracks", target_ids, headers,
                                             stop_event, _recordIsrc)
 
             self.repo.updateTrackIsrcs(isrcByTrackId)
+            self._repairFallbackTrackMetadata(trackMetadata)
             self.repo.markTracksIsrcAttempted(batch.attempted)
 
             if batch.firstFailure is not None:

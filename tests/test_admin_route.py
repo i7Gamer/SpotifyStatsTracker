@@ -12,6 +12,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from app import SpotifyDashboardApp
 from _app_factory import AppTestCase
+from Database.db import SPOTIFY_TRACK_ID_LENGTH
+from Database.utils import timeToInt
 
 _INSIGHTS_PATCHES = {
     "getCatalogGenreCoverage": {
@@ -406,6 +408,68 @@ class TestAdminUserSettings(AdminRouteTestBase):
         self.assertFalse(dash.repo.isTagsEnabled())
         self._post(dash, "/admin/user_settings", isAdmin=True, data={"tags": "1"})
         self.assertTrue(dash.repo.isTagsEnabled())
+
+    def test_toggle_off_reports_invalid_topology_and_preserves_merge_state(self):
+        """A corrupt merge graph must be reported through the settings page.
+
+        The repository validates the restore topology before writing, so this
+        route test exercises the real atomic failure with a cycle rather than
+        replacing the repository method with a mock.
+        """
+        from urllib.parse import unquote_plus
+
+        dash = self._makeApp()
+        track_a = "A" * SPOTIFY_TRACK_ID_LENGTH
+        track_b = "B" * SPOTIFY_TRACK_ID_LENGTH
+        decision_at = timeToInt("2026-01-01T00:00:00Z")
+        conn = dash.repo._conn()
+        with conn:
+            conn.execute("INSERT INTO albums (id, name, url) VALUES (?, ?, ?)",
+                         ("merge-album", "Merge album", ""))
+            conn.executemany(
+                "INSERT INTO tracks (id, name, url, album_id, canonical_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(track_a, "Track A", "", "merge-album", None),
+                 (track_b, "Track B", "", "merge-album", None)],
+            )
+            conn.executemany("UPDATE tracks SET canonical_id=? WHERE id=?",
+                             [(track_b, track_a), (track_a, track_b)])
+            conn.execute(
+                "INSERT INTO track_merge_decisions "
+                "(track_id, canonical_id, reason, decided_at, decided_by, "
+                "carried_canonical_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (track_a, track_b, "manual-merge", decision_at, "alice", track_b),
+            )
+        dash.repo.setTrackMergeEnabled(True)
+
+        response = self._post(dash, "/admin/user_settings", isAdmin=True,
+                              data={})
+        redirect_path = response.headers["Location"]
+        location = unquote_plus(redirect_path)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("tab=settings", location)
+        self.assertIn("Track merge could not be disabled", location)
+        self.assertIn("some saved merges need repair", location)
+        self.assertIn("Other user settings were saved", location)
+        self.assertFalse(dash.repo.isDataSharingEnabled())
+        self.assertTrue(dash.repo.isTrackMergeEnabled())
+        self.assertEqual(
+            conn.execute("SELECT canonical_id FROM tracks WHERE id=?",
+                         (track_a,)).fetchone()["canonical_id"],
+            track_b,
+        )
+        self.assertEqual(
+            conn.execute("SELECT carried_canonical_id FROM track_merge_decisions "
+                         "WHERE track_id=?", (track_a,)).fetchone()["carried_canonical_id"],
+            track_b,
+        )
+        rendered = self._getAdmin(dash, path=redirect_path)
+        self.assertEqual(rendered.status_code, 200)
+        body = rendered.data.decode()
+        self.assertIn("Track merge could not be disabled", body)
+        self.assertIn("some saved merges need repair", body)
+        self.assertIn('name="track_merge" value="1" checked', body)
 
 
 class TestAdminUserSettingsHints(AdminRouteTestBase):

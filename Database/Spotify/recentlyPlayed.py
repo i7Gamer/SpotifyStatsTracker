@@ -360,15 +360,14 @@ def _applyPushedState(self, manager, callback) -> None:
     _state would corrupt what getConnectPlayerState (Now Playing, the
     missed-track cross-check) reads next.
 
-    Track detection sits INSIDE the guard: the callback resolves track
-    metadata, so it can raise (track()'s retry ladder re-raising, a rate
-    limit), and the push loop has no other containment - an escape here killed
-    the thread with `run` still True, freezing _state so the account read as
-    idle until the 6h stale hard-timeout rebuilt it. The poll loop guards its
-    _applyStateToTracking call the same way (its catch-all would otherwise
-    escalate a callback failure into a full reconnect). The failed play
-    is retried, not dropped: lastPlayedUid only advances after the callback
-    returns (see _applyStateToTracking).
+    Track detection sits INSIDE the guard because an unexpected callback
+    failure must not kill the push thread with `run` still True and freeze
+    its cached state. The poll loop guards its _applyStateToTracking call the
+    same way. Ordinary catalog lookup failures are handled by the Spotify
+    callback itself: it records fallback metadata with the original play
+    facts, allowing tracking to advance. For other callback failures,
+    lastPlayedUid advances only after a successful return; a subsequent
+    observation can retry (see _applyStateToTracking).
 
     Nothing adopted yet is a no-op, not a fault, and the guard lives HERE
     rather than at the call sites: connect_device() can reply with no

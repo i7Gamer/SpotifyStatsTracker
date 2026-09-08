@@ -466,8 +466,9 @@ class ListenerMixin:
         return grouped
 
     def _reconcileWithWebApiHistory(self, apiItems: list[dict]) -> None:
-        """Remove PROVABLE duplicate local plays: Web API backfill copies of a
-        play another source already recorded. Both the live listener and the
+        """Repair fallback metadata, then remove PROVABLE duplicate local plays:
+        Web API backfill copies of a play another source already recorded.
+        Both the live listener and the
         backfill can capture the same instant with different timestamps
         (Spotify's played_at field is documented as inconsistent about whether
         it reports a track's start or end time, per spotify/web-api#1083 - see
@@ -506,6 +507,15 @@ class ListenerMixin:
         below) - so it can't touch older history."""
         if not apiItems:
             return
+
+        # Confirmed plays never reach appendTrackData's duplicate guard. This
+        # full snapshot still supplies their metadata, without changing any
+        # original listening facts. A repair failure must not block cleanup.
+        try:
+            self._repairFallbackTrackMetadata([item.get("track") for item in apiItems])
+        except Exception as error:
+            _dbmod.logger.warning("Web API metadata repair failed for user %s: %s",
+                                  self.user, _dbmod.parseError(error))
 
         apiTimes = [
             _dbmod.timeToInt(item["played_at"])

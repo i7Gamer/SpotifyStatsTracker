@@ -97,6 +97,21 @@ class UserQueries:
         row = conn.execute("SELECT email FROM users WHERE username=?", (username,)).fetchone()
         return row["email"] if row else None
 
+    def getNullEmailUsernameNoCase(self, username: str) -> str | None:
+        """Return the stored spelling of a matching legacy username.
+
+        Uses the same SQLite NOCASE comparison as username allocation. Python's
+        broader Unicode case folding can report matches that SQLite did not use
+        to reject the unsuffixed candidate.
+        """
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT username FROM users "
+            "WHERE username=? COLLATE NOCASE AND email IS NULL",
+            (username,),
+        ).fetchone()
+        return row["username"] if row else None
+
     # ---- Per-user: display name ------------------------------------------------
     # The editable label standing in for the immutable username key (see the
     # users table comment in Database/db.py). NULL = "display as the username",

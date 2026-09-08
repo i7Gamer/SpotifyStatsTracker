@@ -13,13 +13,16 @@ keep passing.
 """
 import os
 import sys
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from dashboard.user_registry import UserRegistryMixin
+from Database.repository import Repository
 
 _DATABASE_PATCH = "dashboard.user_registry.Database"
 
@@ -114,6 +117,117 @@ class TestRegistryNeedsNoApp(unittest.TestCase):
             self.assertFalse(host.is_user_logged_in(email))
 
         self.assertNotIn(email, host._login_cache)
+
+
+class TestLegacyAccountAllocationWarning(unittest.TestCase):
+    def _host(self, repo):
+        host = _BareHost(repo)
+        host._ensureAdminExists = MagicMock()
+        return host
+
+    def test_warns_when_suffixing_past_case_insensitive_null_email_username(self):
+        repo = MagicMock()
+        repo.getUsernameForEmail.return_value = None
+        repo.createUserIfNameAvailable.side_effect = [False, True]
+        repo.getNullEmailUsernameNoCase.return_value = "Alice"
+        host = self._host(repo)
+
+        with patch("dashboard.user_registry.logger.warning") as warning:
+            username = host.get_or_create_user("alice@example.com")
+
+        self.assertEqual(username, "alice_1")
+        warning.assert_called_once()
+        rendered = warning.call_args.args[0] % warning.call_args.args[1:]
+        self.assertIn("Alice", rendered)
+        self.assertIn("alice_1", rendered)
+        self.assertIn("README", rendered)
+        self.assertNotIn("alice@example.com", rendered)
+
+    def test_different_email_username_collision_does_not_warn(self):
+        repo = MagicMock()
+        repo.getUsernameForEmail.return_value = None
+        repo.createUserIfNameAvailable.side_effect = [False, True]
+        repo.getNullEmailUsernameNoCase.return_value = None
+        host = self._host(repo)
+
+        with patch("dashboard.user_registry.logger.warning") as warning:
+            username = host.get_or_create_user("alice@example.com")
+
+        self.assertEqual(username, "alice_1")
+        warning.assert_not_called()
+
+    def test_existing_email_login_does_not_warn(self):
+        repo = MagicMock()
+        repo.getUsernameForEmail.return_value = "Alice"
+        host = self._host(repo)
+
+        with patch("dashboard.user_registry.logger.warning") as warning:
+            username = host.get_or_create_user("alice@example.com")
+
+        self.assertEqual(username, "Alice")
+        repo.createUserIfNameAvailable.assert_not_called()
+        repo.getNullEmailUsernameNoCase.assert_not_called()
+        warning.assert_not_called()
+
+    def test_failed_diagnostic_lookup_does_not_fail_successful_allocation(self):
+        repo = MagicMock()
+        repo.getUsernameForEmail.return_value = None
+        repo.createUserIfNameAvailable.side_effect = [False, True]
+        repo.getNullEmailUsernameNoCase.side_effect = RuntimeError("database read failed")
+        host = self._host(repo)
+
+        with patch("dashboard.user_registry.logger.warning") as warning, \
+             patch("dashboard.user_registry.logger.exception") as diagnosticError:
+            username = host.get_or_create_user("alice@example.com")
+
+        self.assertEqual(username, "alice_1")
+        warning.assert_not_called()
+        diagnosticError.assert_called_once()
+
+
+class TestLegacyUsernameLookup(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = Repository(Path(self._tmpdir.name) / "test.db")
+
+    def tearDown(self):
+        self.repo.connectionManager.close()
+        self._tmpdir.cleanup()
+
+    def test_matches_ascii_case_and_only_null_email_rows(self):
+        self.repo.upsertUser("Alice", None)
+        self.repo.upsertUser("Bob", "owner@example.com")
+
+        self.assertEqual(self.repo.getNullEmailUsernameNoCase("alice"), "Alice")
+        self.assertIsNone(self.repo.getNullEmailUsernameNoCase("bob"))
+
+    def test_uses_sqlite_nocase_instead_of_python_unicode_casefold(self):
+        self.repo.upsertUser("Straße", None)
+
+        self.assertIsNone(self.repo.getNullEmailUsernameNoCase("STRASSE"))
+
+    def test_documented_reassociation_guards_and_rollback(self):
+        # Execute the actual maintenance example against disposable accounts:
+        # a case-variant email on a suffixed account must block reassociation.
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+        recovery = readme.split("### Recover a legacy account", 1)[1]
+        script = recovery.split("```sql")[2].split("```", 1)[0]
+        statements = [statement.strip() for statement in script.split(";") if statement.strip()]
+        conn = self.repo._conn()
+        for legacyEmail, conflictingEmail, expectedUpdates in (
+                (None, None, 1), (None, "OWNER@example.com", 0),
+                ("existing@example.com", None, 0)):
+            with self.subTest(legacyEmail=legacyEmail, conflictingEmail=conflictingEmail):
+                with conn:
+                    conn.execute("DELETE FROM users")
+                self.repo.upsertUser("ExactLegacyName", legacyEmail)
+                if conflictingEmail:
+                    self.repo.upsertUser("ExactLegacyName_1", conflictingEmail)
+                before = [tuple(row) for row in conn.execute("SELECT * FROM users ORDER BY username")]
+                results = [conn.execute(statement).fetchall() for statement in statements]
+                self.assertEqual(results[-2][0]["rows_updated"], expectedUpdates)
+                conn.rollback()
+                self.assertEqual([tuple(row) for row in conn.execute("SELECT * FROM users ORDER BY username")], before)
 
 
 class TestRegistryDoesNotImportFlask(unittest.TestCase):

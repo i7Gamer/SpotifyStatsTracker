@@ -230,6 +230,31 @@ class TrackQueries:
                     (track["id"], artist["id"], position),
                 )
 
+    def repairFallbackTracks(self, tracks: list[dict]) -> int:
+        """Replace existing fallback catalog rows with formatted real metadata.
+
+        Owns a short write transaction, like the catalog backfiller's other
+        repairs. Recheck the marker under its lock: a concurrent live play or
+        import may already have supplied better data. Never inserts a new track
+        or writes plays, including their historical skip classification.
+        """
+        if not tracks:
+            return 0
+        conn = self._conn()
+        repaired = 0
+        with conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            for track in tracks:
+                if track.get("created_reason") in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
+                    continue
+                row = conn.execute("SELECT created_reason FROM tracks WHERE id=?", (track["id"],)).fetchone()
+                if row is None or row["created_reason"] not in (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON):
+                    continue
+                self.upsertTrack(track)
+                repaired += 1
+        return repaired
+
     def getTrack(self, trackId: str) -> dict | None:
         conn = self._conn()
         trackRow = conn.execute("SELECT * FROM tracks WHERE id=?", (trackId,)).fetchone()
@@ -800,7 +825,11 @@ class TrackQueries:
             )
 
     def getTracksMissingIsrc(self, limit: int) -> list[str]:
-        """Real Spotify tracks with no ISRC recorded yet.
+        """Real Spotify tracks missing ISRC or still carrying fallback metadata.
+
+        A fallback remains eligible even if an earlier ISRC-only lookup
+        succeeded. The worker uses that same response to repair its catalog
+        metadata, within the existing retry window and request budget.
 
         Fabricated ids are excluded by length: the export importer's surrogate
         is a bare 32-char md5 of "name::artist" with no prefix to test for, so
@@ -854,7 +883,7 @@ class TrackQueries:
         rows = conn.execute(
             """
             SELECT id FROM tracks
-            WHERE (isrc IS NULL OR isrc = '')
+            WHERE (isrc IS NULL OR isrc = '' OR created_reason IN (?, ?))
               AND LENGTH(id) = ?
               AND (isrc_attempted_at IS NULL OR isrc_attempted_at < ?)
             ORDER BY ((LOWER(tracks.name),
@@ -871,7 +900,8 @@ class TrackQueries:
             )) DESC
             LIMIT ?
             """,
-            (SPOTIFY_TRACK_ID_LENGTH, retryCutoff, limit),
+            (SYNTHETIC_FALLBACK_REASON, RESTRICTED_FALLBACK_REASON,
+             SPOTIFY_TRACK_ID_LENGTH, retryCutoff, limit),
         ).fetchall()
         return [row["id"] for row in rows]
 

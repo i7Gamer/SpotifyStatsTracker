@@ -672,7 +672,16 @@ def register(app, dashboard):
                            f"{summary['merged'] + groupCount} release(s) collapsed into "
                            f"{groupCount} song(s); {summary['merged']} duplicate(s) removed.")
             else:
-                undone = dashboard.repo.unmergeAllIsrcMerges(disableSetting=True)
+                try:
+                    undone = dashboard.repo.unmergeAllIsrcMerges(disableSetting=True)
+                except ValueError as error:
+                    logger.warning("Track merge disable rejected: %s", error)
+                    errorMessage = (
+                        "Track merge could not be disabled because some saved merges "
+                        "need repair. Other user settings were saved.")
+                    return redirect(url_for(
+                        "adminPage", tab="settings",
+                        error=errorMessage))
                 message = (f"User settings saved. Track merge disabled: "
                            f"{undone} track(s) unmerged; manual decisions kept.")
         return redirect(url_for("adminPage", tab="settings", message=message))
