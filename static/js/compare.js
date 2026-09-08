@@ -33,6 +33,7 @@
 
 //< the form htmx watches, and the queue every request on this page joins
 var COMPARE_FORM_ID = 'compareFilters';
+var COMPARE_SORT_ID = 'sortBy';
 //< the JSON island the trend chart is repainted from. Only the full refresh
 //  carries one - a sort change renders an identical chart, so it does not
 var COMPARE_TREND_DATA_ID = 'compareTrendData';
@@ -69,6 +70,9 @@ if (typeof window !== 'undefined') {
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
+  // A failed or replaced full request leaves the form ahead of the rendered
+  // summary. The next sort must finish that refresh before using narrow swaps.
+  var compareNeedsFullRefresh = false;
 
   // Called from the Time Period select's onchange. Both this and htmx's own
   // listener sit on that select (the form's trigger names it with `from:`), and
@@ -86,12 +90,14 @@ if (typeof document !== 'undefined') {
   // page to gain: it used to fetch an inverted range and render an empty
   // comparison with no explanation.
   //
-  // Scoped to the FORM's own requests. A boosted counterpart badge carries its
+  // Scoped to the form and its separate sort control. A counterpart badge carries its
   // whole query in its href and must keep working even while the Time Period
   // select sits on a half-entered custom range - which is exactly the state
   // that blocks a form request.
   document.body.addEventListener('htmx:configRequest', function (evt) {
-    if (!evt.detail.elt || evt.detail.elt.id !== COMPARE_FORM_ID) return;
+    if (!evt.detail.elt) return;
+    var origin = evt.detail.elt.id;
+    if (origin !== COMPARE_FORM_ID && origin !== COMPARE_SORT_ID) return;
     var problem = HtmxFilters.rangeProblemFromDom();
     HtmxFilters.showRangeError(problem);
     if (problem !== HtmxFilters.RANGE_OK) {
@@ -99,6 +105,15 @@ if (typeof document !== 'undefined') {
       return;
     }
     pruneCompareAutoParams(evt.detail.parameters);
+    var fullRefresh = origin === COMPARE_FORM_ID || compareNeedsFullRefresh;
+    if (origin === COMPARE_SORT_ID && fullRefresh) {
+      var form = byId(COMPARE_FORM_ID);
+      evt.detail.path = (form && form.getAttribute('hx-get')) || window.location.pathname;
+      delete evt.detail.parameters.scope;
+    }
+    // htmx returns this same config object in afterRequest.requestConfig.
+    evt.detail.compareFullRefresh = fullRefresh;
+    if (fullRefresh) compareNeedsFullRefresh = true;
   });
 
   //< cover-art fade-ins are handled once for the whole app in
@@ -145,6 +160,10 @@ if (typeof document !== 'undefined') {
   document.body.addEventListener('htmx:responseError', reportCompareFailure);
   document.body.addEventListener('htmx:sendError', reportCompareFailure);
   document.body.addEventListener('htmx:afterRequest', function (evt) {
+    if (evt.detail && evt.detail.successful && evt.detail.requestConfig &&
+        evt.detail.requestConfig.compareFullRefresh) {
+      compareNeedsFullRefresh = false;
+    }
     //< a later success is what clears a stale banner; Retry clears its own
     if (evt.detail && evt.detail.successful && window.AjaxStatus) {
       window.AjaxStatus.clearBanner();

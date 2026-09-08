@@ -298,15 +298,14 @@ class GenresPageTestCase(AppTestCase):
         self.assertNotIn('id="genres-overview-data"', body)
         db.getGenreArtistCounts.assert_not_called()
 
-    def test_a_fragment_request_when_locked_swaps_nothing(self):
-        # 204 is htmx's "no swap": the gate is all-time and stable, so this only
-        # happens if it flipped under a live page, and leaving the placeholders
-        # up beats replacing them with something that could ask again.
+    def test_a_fragment_request_when_locked_redirects_to_the_full_shell(self):
+        # The full shell explains the changed gate without another deferred request.
         dash = self._makeApp()
         db = self._makeDb(coverage=coverageDict(10, 10, 10))
         resp = self._getData(dash, db, query="?genre=rock")
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(resp.get_data(as_text=True), "")
+        self.assertIn("genre=rock", resp.headers.get("HX-Redirect", ""))
 
     def test_genre_query_override(self):
         dash = self._makeApp()

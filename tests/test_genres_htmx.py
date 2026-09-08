@@ -21,10 +21,8 @@ things /history did not, and both are pinned here:
 The unlock GATE is unchanged and re-asserted here from the htmx side: a
 disabled instance and a locked library still render a shell with no htmx wiring
 at all, so the second request is never issued. If the gate flips to locked
-underneath a live page, a full swap is answered with 204 (no swap, placeholders
-stay - the same "do not risk a reload loop" call the old ok:false branch made)
-and a chip swap with HX-Redirect to the full page render, which is the
-detailFallbackUrl recovery path the old loader took by hand.
+underneath a live page, both swap targets navigate to the locked full shell
+with HX-Redirect. That shell makes no deferred request, so it cannot loop.
 
 The page CONTENT (gate thresholds, groupBy resolution, genre selection, query
 scoping) is covered by tests/test_genres_page.py against the same fragment
@@ -355,6 +353,19 @@ class TestShell(GenresHtmxTestCase):
 
 
 class TestGateStillDecidesTheShell(GenresHtmxTestCase):
+    def test_admin_disabling_genres_navigates_an_already_open_page_to_the_locked_shell(self):
+        dash = self._makeApp()
+        db = self._makeDb()
+        self.assertIn("hx-get", self._request(dash, db).get_data(as_text=True))
+        dash.repo.setLastfmGenreBackfillEnabled(False)
+        response = self._request(dash, db, query="?genre=jazz&interval=week", headers=HX_HEADERS)
+        target = response.headers.get("HX-Redirect", "")
+        self.assertIn("genre=jazz", target)
+        self.assertIn("interval=week", target)
+        shell = self._request(dash, db, query=target.removeprefix("/genres")).get_data(as_text=True)
+        self.assertIn("turned off for this instance", shell)
+        self.assertNotIn("hx-get", shell)
+
     """The unlock gate is unchanged by the migration: it decides what the shell
     renders, and a shell with no htmx wiring never makes the second request."""
 
@@ -375,18 +386,23 @@ class TestGateStillDecidesTheShell(GenresHtmxTestCase):
         self.assertNotIn("hx-get", body)
         self.assertNotIn("htmx.min.js", body)
 
-    def test_a_full_swap_against_a_locked_gate_leaves_the_page_alone(self):
-        """The gate is all-time and stable, so this should not happen once the
-        shell rendered unlocked. 204 is htmx's "no swap": the placeholders stay
-        rather than being replaced by something that might ask again."""
+    def test_a_full_swap_against_a_locked_gate_navigates_to_the_explanation(self):
+        """The locked full shell has no deferred request, so navigation cannot loop."""
         dash = self._makeApp()
 
-        resp = self._request(dash, self._makeDb(coverage=coverageDict(10, 10, 10)),
-                             headers=HX_HEADERS)
+        db = self._makeDb(coverage=coverageDict(10, 10, 10))
+        query = "?genre=jazz&interval=custom&startDate=2026-08-01&endDate=2026-08-31&groupBy=week"
+        resp = self._request(dash, db, query=query, headers=HX_HEADERS)
 
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(resp.get_data(as_text=True), "")
-        self.assertIsNone(resp.headers.get("HX-Redirect"))
+        target = resp.headers.get("HX-Redirect", "")
+        for parameter in query[1:].split("&"):
+            self.assertIn(parameter, target)
+        self.assertTrue(target.startswith("/genres?"))
+        shell = self._request(dash, db, query=target.removeprefix("/genres")).get_data(as_text=True)
+        self.assertIn("Genre insights unlock", shell)
+        self.assertNotIn("hx-get", shell)
 
     def test_a_chip_swap_against_a_locked_gate_falls_back_to_the_full_page(self):
         """The deliberate recovery path the old loader took by hand
@@ -403,5 +419,3 @@ class TestGateStillDecidesTheShell(GenresHtmxTestCase):
         self.assertIn("genre=jazz", target)
         self.assertIn("interval=week", target)
         self.assertEqual(resp.get_data(as_text=True), "")
-
-

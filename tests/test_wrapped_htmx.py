@@ -395,23 +395,13 @@ class TestShareLinkRowStructure(WrappedHtmxTestCase):
 
 
 class TestGenreCardIsNotRecomputedPerFilterChange(WrappedHtmxTestCase):
-    """The genre card's data depends on the YEAR and nothing else, so a trend-
-    bucket / items-per-category / sort change must not pay for it.
+    """Same-year presentation filters preserve the genre card's last rendering.
 
-    Collapsing the old `?ajax=true&type=chart|lists` partial modes into one
-    fragment made every filter change run getGenreCoverage + getGenreDistribution
-    again - two year-scoped aggregations for a card whose content could not have
-    moved. The fix is not a cache: the filter form cannot change the year (its
-    year input is hidden and rewritten out of band, and the year badges are
-    links outside the form), so a request the FORM makes is exactly the case
-    where the card is already correct. It marks itself, and the response sends
-    an hx-preserve stub, which makes htmx keep the card already on the page.
-
-    Deliberately NOT solved by caching coverage per (user, year): the numbers
-    grow while the Last.fm backfill runs and the admin's inherited-genres toggle
-    moves them retroactively, which is why _buildWrappedContext computes them
-    live and never from the user_wrapped cache. This keeps them live and just
-    stops asking when the answer cannot have changed."""
+    Library coverage and settings can change while that card is on screen.
+    The accepted cost/freshness tradeoff skips its two aggregations on filter
+    changes and recomputes on reload or year navigation. The card is never read
+    from user_wrapped, and a full render must never emit a hollow preserve stub.
+    """
 
     #< what the form sends, and only the form: see wrapped.html's hx-headers
     FILTER_CHANGE = dict(HX_HEADERS, **{"X-Wrapped-Filter-Change": "1"})

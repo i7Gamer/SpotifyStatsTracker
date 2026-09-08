@@ -37,12 +37,9 @@ def register(app, dashboard):
     FILTER_CHANGE_HEADER = "X-Wrapped-Filter-Change"
 
     def _genreCardIsAlreadyCorrect():
-        """True when this request cannot have moved the genre card, so its two
-        year-scoped aggregations are skipped and the card on the page is left
-        alone (see _wrapped_results.html's hx-preserve stub).
+        """Preserve the same-year card across presentation filter changes.
 
-        The card's data depends on the YEAR and nothing else. The filter form
-        cannot change the year: its only year input is the hidden field that is
+        The filter form cannot change the year: its only year input is the hidden field that is
         rewritten out of band after a badge click, and the year badges are
         boosted links OUTSIDE the form. So "the filter form made this request"
         is exactly "the year is the one already on screen".
@@ -51,11 +48,11 @@ def register(app, dashboard):
         therefore no card to preserve - a full render carrying a stray marker
         would otherwise produce a page whose genre card is a permanent hole.
 
-        Deliberately not a cache keyed on (user, year): coverage grows while the
-        Last.fm backfill runs and the admin's inherited-genres toggle moves it
-        retroactively, which is why _buildWrappedContext computes it live and
-        never from the user_wrapped cache. This keeps it live and only stops
-        asking when the answer cannot have changed."""
+        Coverage and settings can change in the meantime. This deliberately
+        trades same-session freshness for avoiding two year-scoped aggregations
+        on every limit/sort/bucket change. Reload or year navigation recomputes
+        the card from current data, independently of the user_wrapped cache.
+        """
         return bool(isHtmxSwap()
                     and request.headers.get(FILTER_CHANGE_HEADER))
 

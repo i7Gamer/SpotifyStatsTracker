@@ -96,9 +96,9 @@
   </div>
 </section>
 
-{# The genre card is the one region here whose data depends on the YEAR alone -
-   it costs two year-scoped aggregations (coverage + distribution) that no
-   trend-bucket / items-per-category / sort change can move.
+{# The genre card ignores presentation filters but can change with library
+   coverage and settings. Preserve it on same-year filter changes to avoid two
+   year-scoped aggregations; reload or year navigation refreshes its data.
 
    So a filter change sends this stub instead. htmx's hx-preserve keeps the
    element ALREADY on the page and discards the incoming one (it moves the live

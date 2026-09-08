@@ -237,17 +237,10 @@ def register(app, dashboard):
         detailOnly = request.headers.get("HX-Target") == GENRE_EXPLORE_ID
 
         if not genreUnlocked:
-            # The gate is all-time and stable, so a live page whose shell
-            # rendered unlocked should never land here. The two shapes recover
-            # differently, exactly as the old ok:false branches did:
-            #  - a drill-down swap navigates to the full page render, which is
-            #    the one that can explain why (the old detailFallbackUrl);
-            #  - a full swap does nothing at all. 204 is htmx's "no swap", so
-            #    the placeholder stays rather than being replaced by something
-            #    that could ask again and loop.
-            if detailOnly:
-                return Response(status=204, headers={"HX-Redirect": viewUrl(genre=requestedGenre)})
-            return Response(status=204)
+            # An admin toggle or coverage change can lock an open page. The
+            # full shell explains the gate and contains no deferred request,
+            # so navigation recovers both swap targets without a reload loop.
+            return Response(status=204, headers={"HX-Redirect": viewUrl(genre=requestedGenre)})
 
         distribution = resolveGenreDistribution(db, startDate, endDate, GENRE_PAGE_LIST_LIMIT)
         genreNames = list(distribution.keys())
