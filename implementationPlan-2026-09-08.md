@@ -78,3 +78,22 @@ The duration-history refresh and complete Wrapped revision remain explicit follo
 ## Independent plan review
 
 Completed before application edits: GPT-5.6 Sol and GPT-5.6 Luna, both with high reasoning, independently challenged this plan and the source. Accepted corrections: atomic allocation against display-name changes; database-authoritative backfill; source-level metadata fallback instead of retention buffers; private planner guard state and applied counts; atomic disable/revert; explicit skip-only cache/transaction outcomes; concrete Compare failure recovery; complete Genres redirect assertions; and Wrapped test-comment corrections. Both approved subject to these incorporated corrections. No blocking design objection remains.
+
+## Implementation record
+
+The accepted scope is implemented in local commits; nothing was pushed:
+
+| Commit | Result |
+| --- | --- |
+| `26fb1df` | Protect NULL-email accounts; reserve usernames atomically against both NOCASE namespaces. |
+| `97775db` | Revalidate manual verdicts and original pointers; restore final merge roots and disable the toggle atomically. |
+| `c2ac8b4` | Use database-confirmed backfill deduplication and preserve playback through metadata fallback. |
+| `18c96dc` | Correct is_skip-only duplicates/import matches and stop catalog batches after nested cooldowns. |
+| `a3159f6` | Include earlier changes in the same merge batch when revalidating later destinations. |
+| `711170c` | Guard Compare sorts, recover failed/interrupted full requests, navigate locked Genres pages, and document Wrapped preservation. |
+
+Additional regression cases found during implementation: a newly arrived unmerged plain release must still be eligible to replace a remaster head; an earlier automatic group must not move a later group's destination unnoticed. Both have reproductions and passing tests. The public preview shape stays unchanged and reports candidate counts, while apply reports only applied groups.
+
+Eleven controlled mutation checks detected deliberately disabled fixes: atomic name reservation, manual-merge revalidation, final restoration destinations, database acknowledgement, metadata fallback, skip-only duplicate correction, both import transaction modes, catalog cooldown, Compare date guarding, Compare recovery, and Genres navigation. Every mutated file was restored in a finally block. Final clean validation: **6,573 tests passed, 4,975 subtests passed, eight tests skipped**, in 113.13 seconds; all **37 JavaScript test files**, **Ruff** and **ESLint** passed. Temporary reproduction tests and mutation scripts were removed; the committed regression tests remain.
+
+Accepted residual behavior: duration repair alone does not rewrite historical skip flags or refresh every dependent cache; re-saving admin skip settings remains the existing bulk remedy. Placeholder playback metadata remains approximate until repaired. Same-year Wrapped presentation filters preserve the displayed genre card until reload/year navigation. Explicit legacy email reassociation remains an operator procedure requiring ownership verification, rather than a new admin UI. No live exposure check or production-data mutation was performed in this implementation.
