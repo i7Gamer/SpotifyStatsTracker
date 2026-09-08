@@ -478,7 +478,8 @@ class ImportMixin:
         matching the original inline branch's `continue`."""
         data_differs = (
             existing_play["time_played"] != time_played or
-            existing_play["played_at"] != played_at
+            existing_play["played_at"] != played_at or
+            existing_play["is_skip"] != isSkip
         )
         # Behavioral columns the import can fill/correct on the
         # matched row - a non-null import value wins, a None
@@ -513,6 +514,8 @@ class ImportMixin:
                 changes.append(f"played_at corrected from {int(existing_play['played_at'])} to {int(played_at)}")
             if existing_play["time_played"] != time_played:
                 changes.append(f"time_played corrected from {existing_play['time_played']}ms to {time_played}ms")
+            if existing_play["is_skip"] != isSkip:
+                changes.append(f"is_skip corrected from {existing_play['is_skip']} to {isSkip}")
 
             _dbmod.logger.info(
                 "Updated import play for track %s: %s",

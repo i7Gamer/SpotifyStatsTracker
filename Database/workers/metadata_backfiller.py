@@ -259,7 +259,7 @@ class MetadataBackfillMixin:
         consecutiveFailures = 0
 
         for entityId in ids:
-            if stop_event.is_set():
+            if stop_event.is_set() or _dbmod.time.time() < self._catalogBackoffUntil:
                 break
 
             rateLimited = False
