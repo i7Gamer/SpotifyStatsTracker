@@ -19,6 +19,8 @@ MERGE_REVIEW_PAGE_LIMIT = 50
 #  is a decision LOG rather than a work queue: nothing in it needs answering,
 #  so it can be trimmed harder if it ever grows past reading.
 MERGE_DISMISSED_PAGE_LIMIT = 50
+# Stay below SQLite's portable parameter limit when guarding a large plan.
+MERGE_GUARD_QUERY_BATCH_SIZE = 900
 
 # A trailing " - X" or "(X)" title segment is a version marker - packaging,
 # not identity - when it contains one of these. "live" is deliberately NOT
@@ -1080,7 +1082,7 @@ class TrackQueries:
 
         Idempotent: a second run merges nothing and rewrites nothing. Returns
         {"groups", "merged"} - groups considered, tracks newly pointed."""
-        plan = self._planIsrcMerges()
+        plan = self._planIsrcMerges(includeGuardState=True)
         if not plan["groups"]:
             return {"groups": 0, "merged": 0}
 
@@ -1094,13 +1096,35 @@ class TrackQueries:
             #  those reads run in autocommit, and a manual merge re-pointing a
             #  dependent between read and write strands it one hop from its
             #  group. The PLAN above stays outside on purpose: the run is
-            #  single-flighted (claimTrackMergeRun), and a manual verdict
-            #  landing in the plan-apply gap is exactly what these in-lock
-            #  re-reads absorb.
+            #  single-flighted (claimTrackMergeRun). Revalidate the original
+            #  pointer snapshot and manual pins before applying its decisions.
             if not conn.in_transaction:
                 conn.execute("BEGIN IMMEDIATE")
+            plannedIds = list({trackId for group in plan["groups"]
+                               for trackId in group["expectedPointers"]})
+            currentPointers = {}
+            pinned = set()
+            for offset in range(0, len(plannedIds), MERGE_GUARD_QUERY_BATCH_SIZE):
+                batch = plannedIds[offset:offset + MERGE_GUARD_QUERY_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in batch)
+                for row in conn.execute(
+                        "SELECT t.id, t.canonical_id, d.decided_by, d.reason FROM tracks t "
+                        "LEFT JOIN track_merge_decisions d ON d.track_id=t.id "
+                        f"WHERE t.id IN ({placeholders})", batch):
+                    currentPointers[row["id"]] = row["canonical_id"]
+                    if row["decided_by"] is not None and row["reason"] != "manual-reject":
+                        pinned.add(row["id"])
             for group in plan["groups"]:
                 canonicalId = group["canonical"]["trackId"]
+                expected = group["expectedPointers"]
+                changed = {trackId for trackId, pointer in expected.items()
+                           if trackId in pinned or trackId not in currentPointers
+                           or currentPointers[trackId] != pointer}
+                if canonicalId in changed or group["reHeadedFrom"] in changed:
+                    continue
+                members = [member for member in group["members"] if member["trackId"] not in changed]
+                if not members:
+                    continue
                 canonicals.append(canonicalId)
                 if group["reHeadedFrom"]:
                     #< the one canonical that arrives pointing somewhere: it was
@@ -1116,7 +1140,7 @@ class TrackQueries:
                                  (canonicalId,))
                     conn.execute("DELETE FROM track_merge_decisions "
                                  "WHERE track_id=? AND decided_by IS NULL", (canonicalId,))
-                for member in group["members"]:
+                for member in members:
                     #< a member can be a manual merge's own anchor (the planner
                     #  only sees ISRC-carrying tracks, so a hand-merged remaster
                     #  pointing at this member is invisible to it). Its
@@ -1192,18 +1216,18 @@ class TrackQueries:
             #  this run just made.
             self.deleteCachedWrappedForTracks(
                 self._mergeGroupTrackIds(conn, canonicals))
-        return {"groups": len(plan["groups"]), "merged": merged}
+        return {"groups": len(canonicals), "merged": merged}
 
     def previewMergeTracksByIsrc(self) -> dict:
         """What a run WOULD do, without doing it.
 
-        Same planner, no writes - so the answer on the admin page is the answer,
-        not an estimate of it. A merge is global and moves every account's
+        Same planner, no writes. Concurrent manual verdicts can make a later
+        run skip changed candidates. A merge is global and moves every account's
         numbers at once; being able to look first is what makes turning it on a
         decision rather than a leap."""
         return self._planIsrcMerges()
 
-    def _planIsrcMerges(self) -> dict:
+    def _planIsrcMerges(self, *, includeGuardState: bool = False) -> dict:
         """The groups a run would act on, and which track each would fold into.
 
         Split out so the preview and the run cannot drift: one of them being
@@ -1250,6 +1274,7 @@ class TrackQueries:
         #  duplicate set entirely, which is why the lookups below tolerate a
         #  miss rather than indexing
         names = {row["id"]: row["name"] for row in rows}
+        originalPointers = {row["id"]: row["canonical_id"] for row in rows}
 
         byIsrc = {}
         for row in rows:
@@ -1317,6 +1342,13 @@ class TrackQueries:
                              "plays": m["play_count"]} for m in toMerge],
                 "plays": sum(m["play_count"] for m in toMerge),
             })
+            if includeGuardState:
+                # Members retain the pointers from the original planner rows.
+                # A promoted head may be a member OR a newly arrived root.
+                # Destinations outside the snapshot must remain roots.
+                expected = {m["id"]: m["canonical_id"] for m in toMerge}
+                expected[canonicalId] = originalPointers.get(canonicalId)
+                groups[-1]["expectedPointers"] = expected
 
         #< biggest first, so the admin preview leads with what matters
         groups.sort(key=lambda g: -g["plays"])
@@ -1397,7 +1429,7 @@ class TrackQueries:
         #  appears in - both sides of the split move, so the scope is the group
         self.deleteCachedWrappedForTracks(group)
 
-    def unmergeAllIsrcMerges(self) -> int:
+    def unmergeAllIsrcMerges(self, *, disableSetting: bool = False) -> int:
         """Undo everything the MATCHER did, leaving every human verdict alone.
 
         The full-revert half of reversibility. Nothing a merge writes is
@@ -1410,9 +1442,39 @@ class TrackQueries:
         carried_canonical_id fixes: a manual merge the matcher re-homed points
         at the matcher's head, and leaving it there keeps a piece of the
         matcher's work standing past the off edge. Those go back to the release
-        the person picked."""
+        the person picked. disableSetting atomically turns the admin toggle
+        off with the revert; invalid topology leaves both unchanged."""
         conn = self._conn()
         with conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            pointers = {row["id"]: row["canonical_id"] for row in conn.execute(
+                "SELECT id, canonical_id FROM tracks")}
+            decisions = conn.execute(
+                "SELECT track_id, canonical_id, reason, decided_by, carried_canonical_id "
+                "FROM track_merge_decisions").fetchall()
+            carried = {}
+            for decision in decisions:
+                trackId = decision["track_id"]
+                if decision["decided_by"] is None and decision["reason"] == "isrc":
+                    pointers[trackId] = None
+                elif decision["carried_canonical_id"] is not None:
+                    carried[trackId] = decision["canonical_id"]
+                    pointers[trackId] = decision["canonical_id"]
+            # Resolve against ALL final edges before writing any restoration.
+            # A carried target may itself be restored later in row order.
+            restoredPointers = {}
+            for trackId, target in carried.items():
+                seen = {trackId}
+                while target is not None:
+                    if target in seen or target not in pointers:
+                        raise ValueError("Cannot restore manual merges: invalid canonical topology")
+                    seen.add(target)
+                    nextTarget = pointers[target]
+                    if nextTarget is None:
+                        break
+                    target = nextTarget
+                restoredPointers[trackId] = target
             cur = conn.execute(
                 """
                 UPDATE tracks SET canonical_id=NULL WHERE id IN (
@@ -1423,21 +1485,15 @@ class TrackQueries:
             )
             conn.execute(
                 "DELETE FROM track_merge_decisions WHERE decided_by IS NULL AND reason='isrc'")
-            #< AFTER the matcher rows are gone, so a verdict restored onto a
-            #  release the matcher had re-headed lands on a track that no longer
-            #  points anywhere - one hop, which is all any reader resolves
-            restored = conn.execute(
-                """
-                UPDATE tracks SET canonical_id = (
-                    SELECT d.canonical_id FROM track_merge_decisions d
-                    WHERE d.track_id = tracks.id
-                )
-                WHERE id IN (SELECT track_id FROM track_merge_decisions
-                             WHERE carried_canonical_id IS NOT NULL)
-                """
-            ).rowcount
+            conn.executemany("UPDATE tracks SET canonical_id=? WHERE id=?",
+                             [(target, trackId) for trackId, target in restoredPointers.items()])
+            restored = len(restoredPointers)
             conn.execute("UPDATE track_merge_decisions SET carried_canonical_id=NULL "
                          "WHERE carried_canonical_id IS NOT NULL")
+            if disableSetting:
+                conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                             (TRACK_MERGE_SETTING_KEY, APP_SETTING_FALSE))
         if cur.rowcount or restored:
             #< either arm moves numbers frozen inside cached Wrapped years: a
             #  cleared merge splits a group, a restored one re-forms a different

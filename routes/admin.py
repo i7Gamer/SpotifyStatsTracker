@@ -656,8 +656,8 @@ def register(app, dashboard):
         mergeWanted = request.form.get("track_merge") == "1"
         message = "User settings saved."
         if mergeWanted != dashboard.repo.isTrackMergeEnabled():
-            dashboard.repo.setTrackMergeEnabled(mergeWanted)
             if mergeWanted:
+                dashboard.repo.setTrackMergeEnabled(True)
                 summary = dashboard.repo.mergeTracksByIsrc()
                 #< this IS the day's pass, so the backfiller's next claim waits
                 #  a full interval instead of repeating it minutes from now
@@ -672,7 +672,7 @@ def register(app, dashboard):
                            f"{summary['merged'] + groupCount} release(s) collapsed into "
                            f"{groupCount} song(s); {summary['merged']} duplicate(s) removed.")
             else:
-                undone = dashboard.repo.unmergeAllIsrcMerges()
+                undone = dashboard.repo.unmergeAllIsrcMerges(disableSetting=True)
                 message = (f"User settings saved. Track merge disabled: "
                            f"{undone} track(s) unmerged; manual decisions kept.")
         return redirect(url_for("adminPage", tab="settings", message=message))
