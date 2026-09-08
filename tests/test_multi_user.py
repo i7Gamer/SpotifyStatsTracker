@@ -63,26 +63,23 @@ class TestMultiUser(unittest.TestCase):
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
-    def test_get_or_create_user_adopts_orphaned_username_with_no_email(self, mock_migrate, mock_check, mock_version, mock_secret):
-        """A username that already exists with no email on record (e.g. a
-        migration whose users_map.json didn't know this user's email) must be
-        claimed by the first login that sanitizes to it, not shadowed by a new
-        sibling account that leaves its existing history stranded."""
+    def test_get_or_create_user_preserves_orphaned_username_with_no_email(self, mock_migrate, mock_check, mock_version, mock_secret):
+        """An email prefix proves no ownership of an existing legacy account."""
         app = SpotifyDashboardApp()
         app.repo.upsertUser("timorzipa", None)
 
         username = app.get_or_create_user("timorzipa@gmail.com")
 
-        self.assertEqual(username, "timorzipa")
-        self.assertEqual(app.repo.getUsernameForEmail("timorzipa@gmail.com"), "timorzipa")
+        self.assertEqual(username, "timorzipa_1")
+        self.assertEqual(app.repo.getUsernameForEmail("timorzipa@gmail.com"), "timorzipa_1")
+        self.assertIsNone(app.repo.getEmailForUsername("timorzipa"))
 
     @patch(_SECRET_KEY_PATCH, return_value='test-secret-key')
     @patch('app.SpotifyDashboardApp.startVersionCheck_thread')
     @patch('app.SpotifyDashboardApp.checkLogin_thread')
     @patch('app.migrateIfNeeded')
     def test_get_or_create_user_still_suffixes_on_a_real_email_collision(self, mock_migrate, mock_check, mock_version, mock_secret):
-        """A username that already belongs to a DIFFERENT, known email must not
-        be claimed - only a truly orphaned (no-email) username is fair game."""
+        """A username belonging to a different email remains occupied."""
         app = SpotifyDashboardApp()
         app.repo.upsertUser("alice", "alice@other.com")
 

@@ -43,6 +43,27 @@ class UserQueries:
                 (username, email, createdAt if createdAt is not None else time.time()),
             )
 
+    def createUserIfNameAvailable(self, username: str, email: str) -> bool:
+        """Atomically reserve a login name against both displayed identities.
+
+        The predicate runs inside the INSERT's write lock, just like
+        setDisplayName's guarded UPDATE. Migration upserts remain unchanged.
+        """
+        conn = self._conn()
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO users (username, email, created_at)
+                SELECT :username, :email, :created_at
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM users
+                    WHERE username = :username COLLATE NOCASE
+                       OR display_name = :username COLLATE NOCASE)
+                """,
+                {"username": username, "email": email, "created_at": time.time()},
+            )
+        return cur.rowcount > 0
+
     def getUsernameForEmail(self, email: str) -> str | None:
         """Case-insensitive on the STORED side (`COLLATE NOCASE`), not on the
         input: emails are written to the row as the user typed them at
