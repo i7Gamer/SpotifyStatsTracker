@@ -1138,6 +1138,7 @@ class TrackQueries:
                     #  question (see rule 1) and is not this run's to discard.
                     conn.execute("UPDATE tracks SET canonical_id=NULL WHERE id=?",
                                  (canonicalId,))
+                    currentPointers[canonicalId] = None
                     conn.execute("DELETE FROM track_merge_decisions "
                                  "WHERE track_id=? AND decided_by IS NULL", (canonicalId,))
                 for member in members:
@@ -1155,6 +1156,7 @@ class TrackQueries:
                             (member["trackId"],)).fetchall():
                         conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
                                      (canonicalId, row["id"]))
+                        currentPointers[row["id"]] = canonicalId
                         #< a MATCHER row's target is the matcher's to rewrite; a
                         #  PERSON's is not. Overwriting it in place destroyed the
                         #  release they chose (track_id is the PK - there is no
@@ -1174,6 +1176,9 @@ class TrackQueries:
                             (canonicalId, canonicalId, row["id"]))
                     conn.execute("UPDATE tracks SET canonical_id=? WHERE id=?",
                                  (canonicalId, member["trackId"]))
+                    # A later group can share this destination through an
+                    # older pointer. Revalidate against our own writes too.
+                    currentPointers[member["trackId"]] = canonicalId
                     #< decided_by=NULL in the UPDATE arm too: the one manual
                     #  row this can land on is a manual-reject (rule 1 keeps
                     #  every other kind out of `members`), and the override

@@ -69,6 +69,19 @@ class TestMergePlanRevalidation(ManualRestoreTestCase):
         assert self._canonical(db, "B") == "C"
         assert self._canonical(db, "C") is None
 
+    def test_an_earlier_group_cannot_move_a_later_groups_destination(self):
+        db = self._db()
+        self._track(db, "A", isrc="ISRC1", name="Song", plays=3)
+        self._track(db, "B", isrc="ISRC1", name="Song - 2005 Remaster", plays=2)
+        self._track(db, "C", isrc="ISRC2", name="Song", plays=0)
+        self._track(db, "D", isrc="ISRC2", name="Song", plays=1)
+        # An older automatic group can outlive a metadata correction to ISRC.
+        self._mergedUnderThePlaysOnlyRule(db, "B", "C")
+        assert len(db.repo.previewMergeTracksByIsrc()["groups"]) == 2
+        assert db.repo.mergeTracksByIsrc() == {"groups": 1, "merged": 1}
+        assert self._canonical(db, "D") is None
+        self._assertNoChains(db)
+
 
 class TestFinalMergeRestoration(ManualRestoreTestCase):
     def test_multiple_carried_decisions_restore_the_final_group_in_any_order(self):
