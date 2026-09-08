@@ -486,8 +486,17 @@ class Spotify:
 
     def _addToRecentlyPlayed(self, trackUri, playedAt, contextUri, timePlayed):
         """The RecentlyPlayedManager's play-finished callback: resolve metadata
-        and append to the local buffer the listener drains."""
-        track = self.track(trackUri)
+        and append to the local buffer the listener drains.
+
+        Catalog failures must not hide the next observed track or inflate this
+        play's duration during retries. Keep the event with placeholder metadata;
+        a later successful lookup can repair it through upsertTrack.
+        """
+        try:
+            track = self.track(trackUri)
+        except Exception as error:  # noqa: BLE001 - preserve the observed play when metadata is unavailable
+            logger.warning("Could not describe finished track %s; recording fallback metadata: %s", trackUri, error)
+            track = fallbackTrackRecord(normalizeSpotifyId(trackUri))
         self.recentlyPlayed.append({
             "track": track,
             "played_at": playedAt,

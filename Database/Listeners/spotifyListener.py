@@ -1619,7 +1619,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
         Kept as a callback rather than a repo handle so the listener still knows
         nothing about the database (same contract as get_credentials /
         get_recorded_track_ids). No callback, no usable timestamps, or a failing
-        lookup all degrade to the in-memory caches alone: announcing an
+        lookup return no confirmations: announcing an
         already-recorded play is harmless (appendTrackData's guard drops it),
         whereas suppressing a genuinely missing one would lose it for good."""
         if not self.get_recorded_play_times or not items:
@@ -1647,7 +1647,7 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
                     (float(playedAt), float(listenerCreatedAt) if listenerCreatedAt is not None else None))
             return recorded
         except Exception as e:
-            logger.debug("Backfill dedup database lookup failed, judging on the in-memory caches alone: %s",
+            logger.debug("Backfill dedup database lookup failed, conservatively reoffering plays: %s",
                          parseError(e))
             return {}
 
@@ -1788,25 +1788,18 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
             if not items:
                 return
 
-            # Compare Web API items against everything recorded so far - both
-            # the live listener's own cache AND this function's own cache from
-            # a previous poll (kept separate from recentlyPlayed_Z1, which is
-            # exclusively owned by the live-listener path - see webApiRecentlyPlayed_Z1's
-            # own comment in __init__).
-            # Keyed by track id, not a flat set of timestamps: see the
-            # is_recorded test below for why a timestamp alone cannot answer
-            # "was THIS play recorded". The two caches spell the id differently
-            # (the live listener's fallback rows carry track.track_id, the Web
-            # API's carry track.id), so _itemTrackId reads both.
-            # Each entry is a (played_at, listener_created_at) pair; the caches
-            # only know played_at, so their second element is always None (only
-            # the database can say when a listener row was inserted).
+            # Production supplies the database confirmation callback. Both
+            # caches contain observations/offers, including failed inserts, so
+            # neither can acknowledge persistence. A failed lookup reoffers
+            # conservatively; the database's insert guard still deduplicates.
+            # Keep cache-only behavior for embedders without a provider.
             recorded_timestamps: dict = {}
-            for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1:
-                trackId = _itemTrackId(item)
-                if not item.get("played_at") or not trackId:
-                    continue
-                recorded_timestamps.setdefault(trackId, set()).add((timeToInt(item.get("played_at")), None))
+            if not self.get_recorded_play_times:
+                for item in self.recentlyPlayed_Z1 + self.webApiRecentlyPlayed_Z1:
+                    trackId = _itemTrackId(item)
+                    if not item.get("played_at") or not trackId:
+                        continue
+                    recorded_timestamps.setdefault(trackId, set()).add((timeToInt(item.get("played_at")), None))
             # Both caches above live and die with this listener object, and a
             # listener is rebuilt on every stale-feed reconnect (1,568 times in
             # 11 days for 3 users) - webApiRecentlyPlayed_Z1 starts empty, and
@@ -1922,9 +1915,9 @@ class Listener:  #< one user's live playback watcher: cookie session + Web API b
 
             # Replace webApiRecentlyPlayed_Z1 (NOT recentlyPlayed_Z1 - that
             # cache belongs to the live listener) with this batch so it holds
-            # exactly the last batch checked - only plays not in this batch
-            # get treated as new/missed on the next run. Entries missing a
-            # track ID or played_at are skipped entirely.
+            # exactly the last batch checked for cache-only callers. Production
+            # checks database confirmations again next time, so failed offers
+            # in this snapshot cannot suppress a retry. Invalid entries are skipped.
             self.webApiRecentlyPlayed_Z1 = [
                 {
                     "track": item.get("track"),
