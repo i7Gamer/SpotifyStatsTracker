@@ -19,6 +19,7 @@ import unittest
 from _app_factory import AppTestCase
 from _headings import assertHeadingOrder
 from test_css_class_references import _parseRules, _readFile, _CSS_PATH
+from test_charts_htmx import ChartsHtmxTestCase
 from test_genres_page import GenresPageTestCase, coverageDict
 from test_history_htmx import HistoryHtmxTestCase, HX_HEADERS
 from test_top_list_default_window import TopListWindowTestCase, TOP_LIST_PATHS
@@ -32,6 +33,8 @@ _LOGGED_OUT_PATHS = ("/login", "/register", "/reset-password")
 #< the two pages that had no h1 of their own
 _DASHBOARD_PATH = "/"
 _HISTORY_PATH = "/history"
+_BEHAVIOR_CHILD_HEADINGS = ("How plays ended", "Platforms")
+_CHART_HEADING_MARGINS = {"margin-top": "0", "margin-bottom": "4px"}
 
 
 class TestLoggedOutPages(AppTestCase):
@@ -63,6 +66,63 @@ class TestTopPages(TopListWindowTestCase):
         for path in TOP_LIST_PATHS:
             with self.subTest(path=path):
                 assertHeadingOrder(self, self._shell(path) + self._list(path), path)
+
+
+class TestCharts(ChartsHtmxTestCase):
+    def _renderedCharts(self, *, hasData=True):
+        soup = bs4.BeautifulSoup(self._shell(), "html.parser")
+        db = self._makeDb()
+        if not hasData:
+            db.getListeningBehavior.return_value = {}
+        fragment = bs4.BeautifulSoup(self._fragment(db=db).get_data(as_text=True), "html.parser")
+        card = soup.find(id="chartsCard")
+        card.clear()
+        card.extend(list(fragment.contents))
+        return soup
+
+    def test_charts_with_and_without_behavior_data_have_a_complete_outline(self):
+        for hasData in (True, False):
+            with self.subTest(hasData=hasData):
+                assertHeadingOrder(self, str(self._renderedCharts(hasData=hasData)), "/charts")
+
+    def test_behavior_chart_headings_are_children_of_listening_behavior(self):
+        soup = self._renderedCharts()
+        behavior = soup.find("h2", string="Listening behavior").parent
+        for title in _BEHAVIOR_CHILD_HEADINGS:
+            with self.subTest(title=title):
+                heading = behavior.find(re.compile(r"^h[1-6]$"), string=title)
+                self.assertIsNotNone(heading)
+                self.assertEqual(heading.name, "h3")
+
+    def test_child_heading_margins_match_the_chart_card_and_stay_scoped(self):
+        soup = self._renderedCharts()
+        children = [soup.find(re.compile(r"^h[1-6]$"), string=title)
+                    for title in _BEHAVIOR_CHILD_HEADINGS]
+        # Exercise the proposed semantic markup even before the template move:
+        # this must fail independently when only the h2 -> h3 change lands.
+        for heading in children:
+            heading.name = "h3"
+        control = soup.find("h2", string="Listening behavior")
+        unrelated = bs4.BeautifulSoup(
+            '<section class="card"><div class="chart-section"><h3>Outside chart</h3></div></section>',
+            "html.parser")
+        outsideHeading = unrelated.find("h3")
+        soup.find("main").append(unrelated.section)
+        rules = _parseRules(_readFile(_CSS_PATH))
+        for heading in [*children, control, outsideHeading]:
+            with self.subTest(heading=heading.get_text()):
+                reaching = [rule for rule in rules if rule.depth == 0 and rule.hits(soup, heading)]
+                # These headings have only longhand margin rules. The chart
+                # override is later with equal specificity to the base rule.
+                self.assertFalse([rule for rule in reaching if rule.declaration("margin")])
+                for propertyName, expected in _CHART_HEADING_MARGINS.items():
+                    declarations = [rule.declaration(propertyName) for rule in reaching
+                                    if rule.declaration(propertyName) is not None]
+                    if heading is outsideHeading:
+                        self.assertEqual(declarations, [])
+                    else:
+                        self.assertTrue(declarations, f"no {propertyName} rule reaches this heading")
+                        self.assertEqual(declarations[-1], expected)
 
 
 class TestWrapped(WrappedHtmxTestCase):

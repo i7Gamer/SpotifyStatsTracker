@@ -28,6 +28,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+import bs4
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from _app_factory import AppTestCase
@@ -341,6 +343,65 @@ class TestListeningBehaviorSection(ChartsHtmxTestCase):
 
         self.assertIn("How plays ended", body)
 
+    def test_unknown_reason_coverage_renders_visible_measured_percentages(self):
+        total = BEHAVIOR_RAW["total"]
+        cases = (
+            (BEHAVIOR_RAW["reasonEnd"], "60.0%"),
+            ([("trackdone", total)], "0.0%"),
+            ([], None),
+            ([(None, total)], "100.0%"),
+        )
+        for reasons, percentage in cases:
+            with self.subTest(percentage=percentage):
+                db = self._makeDb()
+                # Another known field keeps the card visible for absent/all-
+                # unknown reasons, so the caption's own guard is exercised.
+                db.getListeningBehavior.return_value = {**BEHAVIOR_RAW, "reasonEnd": reasons}
+                soup = bs4.BeautifulSoup(self._fragment(db=db).get_data(as_text=True), "html.parser")
+                section = soup.find(id="behaviorReasonChart").find_parent(class_="chart-section")
+                captions = [p.get_text(" ", strip=True) for p in section.select("p.chart-subtitle")]
+                expected = [] if percentage is None else [
+                    f"End reason unknown for {percentage} of plays in this range."]
+                self.assertEqual(captions, expected)
+
+    def test_htmx_range_replacement_updates_and_removes_unknown_reason_caption(self):
+        soup = bs4.BeautifulSoup(self._shell(), "html.parser")
+        card = soup.find(id="chartsCard")
+        total = BEHAVIOR_RAW["total"]
+        ranges = (
+            ("month", BEHAVIOR_RAW["reasonEnd"], "60.0%"),
+            ("year", [("trackdone", total)], "0.0%"),
+            ("week", [], None),
+        )
+        for interval, reasons, percentage in ranges:
+            with self.subTest(interval=interval):
+                db = self._makeDb()
+                db.getListeningBehavior.return_value = {**BEHAVIOR_RAW, "reasonEnd": reasons}
+                response = self._fragment(f"?interval={interval}", db=db)
+                self.assertEqual(chartData(response)["interval"], interval)
+                fragment = bs4.BeautifulSoup(response.get_data(as_text=True), "html.parser")
+                card.clear()
+                card.extend(list(fragment.contents))
+                captions = [p.get_text(" ", strip=True) for p in card.select("p.chart-subtitle")
+                            if p.get_text().startswith("End reason unknown")]
+                expected = [] if percentage is None else [
+                    f"End reason unknown for {percentage} of plays in this range."]
+                self.assertEqual(captions, expected)
+
+    def test_unknown_reason_caption_respects_the_no_behavior_data_guard(self):
+        total = BEHAVIOR_RAW["total"]
+        for raw in ({}, {"total": total, "reasonEnd": [(None, total)]}):
+            with self.subTest(raw=raw):
+                db = self._makeDb()
+                db.getListeningBehavior.return_value = raw
+                soup = bs4.BeautifulSoup(self._fragment(db=db).get_data(as_text=True), "html.parser")
+                for script in soup.find_all("script"):
+                    script.decompose()
+                visible = soup.get_text(" ", strip=True)
+                self.assertIn("Import your extended streaming history to unlock this", visible)
+                self.assertNotIn("End reason unknown", visible)
+                self.assertIsNone(soup.find(id="behaviorReasonChart"))
+
     def test_no_data_at_all_shows_the_import_hint_not_empty_charts(self):
         db = self._makeDb()
         db.getListeningBehavior.return_value = {
@@ -353,5 +414,4 @@ class TestListeningBehaviorSection(ChartsHtmxTestCase):
         self.assertIn("Import your extended streaming history to unlock this", body)
         self.assertNotIn("behaviorReasonChart", body)
         self.assertNotIn("behaviorPlatformChart", body)
-
 

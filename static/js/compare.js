@@ -109,7 +109,6 @@ if (typeof document !== 'undefined') {
     if (origin === COMPARE_SORT_ID && fullRefresh) {
       var form = byId(COMPARE_FORM_ID);
       evt.detail.path = (form && form.getAttribute('hx-get')) || window.location.pathname;
-      delete evt.detail.parameters.scope;
     }
     // htmx returns this same config object in afterRequest.requestConfig.
     evt.detail.compareFullRefresh = fullRefresh;

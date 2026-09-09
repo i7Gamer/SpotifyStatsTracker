@@ -4,8 +4,8 @@ An import rewrites play history, so milestone rows recorded afterwards (and
 dates derived earlier) go stale - migrate1_35_0 fixed the backlog once, this
 keeps the "dates are data-derived" invariant standing. importHistoryBatch
 raises an in-memory per-user flag; the periodic milestone pass
-(_detectMilestonesSafely) consumes it AFTER detection has recorded any newly
-crossed rows and re-derives every date via recalculateMilestoneDates. A pass
+(_detectMilestonesSafely) consumes it before detection, then re-derives every
+date after newly crossed rows are recorded via recalculateMilestoneDates. A pass
 that recorded rows triggers the same re-derivation even without the flag
 (organic crossings get exact timestamps, and it self-heals a flag lost to a
 restart). Everything is gated by the instance-wide admin toggle
@@ -27,6 +27,7 @@ trigger wiring on both ends.
 import os
 import sys
 import datetime
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -34,6 +35,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from _app_factory import AppTestCase
 from conftest import DatabaseTestCase, normalizeTrackForTest
+from Database.database import Database
+from services.milestones import MILESTONE_PLAYS_THRESHOLDS
+
+RETRY_FAILURE_COUNT = 2
+RETRY_BASELINE_TS = 1000.0
+PARTIAL_RECALC_ROW_COUNT = 2
 
 
 def _meta(trackId, playedAt, timePlayed=60000):
@@ -166,7 +173,12 @@ class TestAutoRecalcWiring(AppTestCase):
     def _db(self, pending=False, importing=False):
         db = MagicMock()
         db.tz = datetime.timezone.utc
-        db.consumeMilestoneRecalcFlag.return_value = pending
+        # Real locked, one-shot flag behavior: a fixed mock return value would
+        # hide work lost between the failing pass and its next retry.
+        db.milestonesRecalcPending = pending
+        db._milestone_flag_lock = threading.Lock()
+        db.consumeMilestoneRecalcFlag.side_effect = lambda: Database.consumeMilestoneRecalcFlag(db)
+        db.raiseMilestoneRecalcFlag.side_effect = lambda: Database.raiseMilestoneRecalcFlag(db)
         db.readProgress.return_value = {"status": "running" if importing else "idle"}
         return db
 
@@ -290,6 +302,153 @@ class TestAutoRecalcWiring(AppTestCase):
 
         self.assertFalse(mockDetect.call_args.kwargs["markSeen"])
         mockRecalc.assert_not_called()
+
+    def test_detection_failure_retries_until_a_quiet_successful_pass(self):
+        dash = self._makeApp()
+        db = self._db(pending=True)
+        outcomes = [RuntimeError("detection failed") for _ in range(RETRY_FAILURE_COUNT)] + [[]]
+        with patch("app.detectMilestonesDetailed", side_effect=outcomes) as detect, \
+             patch("app.recalculateMilestoneDates") as recalc, \
+             patch("app.queue_email_notification") as queue:
+            for _ in range(RETRY_FAILURE_COUNT):
+                dash._detectMilestonesSafely(db, "alice")
+                self.assertTrue(db.milestonesRecalcPending)
+                recalc.assert_not_called()
+            dash._detectMilestonesSafely(db, "alice")
+
+        self.assertTrue(all(call.kwargs["markSeen"] for call in detect.call_args_list))
+        recalc.assert_called_once_with(db.repo, "alice", db.tz, removeUnsupported=True)
+        self.assertFalse(db.milestonesRecalcPending)
+        queue.assert_not_called()
+
+    def test_partial_recalculation_finishes_despite_detection_change_cache(self):
+        dash = self._makeApp()
+        db = self._db(pending=True)
+        db.repo = dash.repo
+        db.repo.upsertUser("alice", "alice@example.com")
+        db.repo.setMilestoneBaselineAt("alice", RETRY_BASELINE_TS)
+        # An overwrite left no plays supporting these previously earned rows.
+        for threshold in MILESTONE_PLAYS_THRESHOLDS[:PARTIAL_RECALC_ROW_COUNT]:
+            db.repo.recordMilestone("alice", "plays", threshold, None, RETRY_BASELINE_TS, True)
+        db.getPlayTotals.return_value = (0, 0)
+        db.getCurrentStreak.return_value = {"days": 0}
+        db.getTopArtists.return_value = []
+        delete = db.repo.deleteMilestone
+        with patch.object(db.repo, "deleteMilestone") as deleting:
+            # Apply the first deletion for real, then fail on the next row.
+            def partiallyDelete(rowId):
+                if deleting.call_count == PARTIAL_RECALC_ROW_COUNT:
+                    raise RuntimeError("delete failed")
+                delete(rowId)
+            deleting.side_effect = partiallyDelete
+            dash._detectMilestonesSafely(db, "alice")
+
+        self.assertTrue(db.milestonesRecalcPending)
+        self.assertEqual(len(db.repo.getMilestonesForUser("alice")), 1)
+        self.assertEqual(dash._milestoneChangeCache["alice"], (0, 0))
+        with patch("app.queue_email_notification") as queue:
+            dash._detectMilestonesSafely(db, "alice")
+        self.assertEqual(db.repo.getMilestonesForUser("alice"), [])
+        self.assertFalse(db.milestonesRecalcPending)
+        db.getCurrentStreak.assert_called_once()  # retry used the cached detection fast path
+        queue.assert_not_called()
+
+    def test_organic_failure_does_not_authorize_import_pruning(self):
+        dash = self._makeApp()
+        for failingTarget in ("app.detectMilestonesDetailed", "app.recalculateMilestoneDates"):
+            with self.subTest(target=failingTarget):
+                db = self._db()
+                with patch("app.detectMilestonesDetailed", return_value=_seenRows(1)), \
+                     patch("app.recalculateMilestoneDates"), \
+                     patch(failingTarget, side_effect=RuntimeError("organic failure")):
+                    dash._detectMilestonesSafely(db, "alice")
+                self.assertFalse(db.milestonesRecalcPending)
+                db.raiseMilestoneRecalcFlag.assert_not_called()
+                with patch("app.detectMilestonesDetailed", return_value=[]), \
+                     patch("app.recalculateMilestoneDates") as recalc:
+                    dash._detectMilestonesSafely(db, "alice")
+                recalc.assert_not_called()
+
+    def test_errors_before_consumption_preserve_the_original_error_and_flag(self):
+        dash = self._makeApp()
+        for pending in (False, True):
+            for stage in ("settings", "progress", "consume"):
+                with self.subTest(stage=stage, pending=pending):
+                    db = self._db(pending=pending)
+                    target, method = {
+                        "settings": (dash.repo, "isMilestoneRecalcEnabled"),
+                        "progress": (db, "readProgress"),
+                        "consume": (db, "consumeMilestoneRecalcFlag"),
+                    }[stage]
+                    error = RuntimeError(f"{stage} failed")
+                    with patch.object(target, method, side_effect=error), \
+                         patch("app.detectMilestonesDetailed") as detect, \
+                         patch("app.recalculateMilestoneDates") as recalc, \
+                         patch("app.logger.warning") as warning:
+                        dash._detectMilestonesSafely(db, "alice")
+                    self.assertIs(warning.call_args.args[-1], error)
+                    self.assertEqual(db.milestonesRecalcPending, pending)
+                    db.raiseMilestoneRecalcFlag.assert_not_called()
+                    detect.assert_not_called()
+                    recalc.assert_not_called()
+
+    def test_success_preserves_a_concurrent_import_raise(self):
+        dash = self._makeApp()
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                db = self._db(pending=pending)
+                def anotherImport(*args, **kwargs):
+                    db.raiseMilestoneRecalcFlag()
+                with patch("app.detectMilestonesDetailed", return_value=_seenRows(1)), \
+                     patch("app.recalculateMilestoneDates", side_effect=anotherImport):
+                    dash._detectMilestonesSafely(db, "alice")
+                self.assertTrue(db.consumeMilestoneRecalcFlag())
+                self.assertFalse(db.consumeMilestoneRecalcFlag())
+
+    def test_later_notification_error_does_not_rearm_completed_recalculation(self):
+        dash = self._makeApp()
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                db = self._db(pending=pending)
+                # Import detection normally yields seen rows; deliberately
+                # exercise the later-error boundary with an unseen result too.
+                unseen = [{**_seenRows(1)[0], "seen": False}]
+                with patch("app.detectMilestonesDetailed", return_value=unseen), \
+                     patch("app.recalculateMilestoneDates") as recalc, \
+                     patch("app.queue_email_notification", side_effect=RuntimeError("queue failed")) as queue:
+                    dash._detectMilestonesSafely(db, "alice")
+                recalc.assert_called_once_with(db.repo, "alice", db.tz, removeUnsupported=pending)
+                queue.assert_called_once()
+                db.raiseMilestoneRecalcFlag.assert_not_called()
+                self.assertFalse(db.milestonesRecalcPending)
+
+    def test_mid_pass_toggle_off_preserves_work_until_reenabled(self):
+        dash = self._makeApp()
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                dash.repo.setMilestoneRecalcEnabled(True)
+                db = self._db(pending=True)
+                def toggleOff(*args, **kwargs):
+                    dash.repo.setMilestoneRecalcEnabled(False)
+                    if fails:
+                        raise RuntimeError("recalc failed after disabling")
+                with patch("app.detectMilestonesDetailed", return_value=[]), \
+                     patch("app.recalculateMilestoneDates", side_effect=toggleOff) as recalc:
+                    dash._detectMilestonesSafely(db, "alice")
+                recalc.assert_called_once_with(db.repo, "alice", db.tz, removeUnsupported=True)
+                self.assertEqual(db.milestonesRecalcPending, fails)
+                with patch("app.detectMilestonesDetailed", return_value=[]), \
+                     patch("app.recalculateMilestoneDates") as retry:
+                    dash._detectMilestonesSafely(db, "alice")
+                    retry.assert_not_called()
+                    self.assertEqual(db.milestonesRecalcPending, fails)
+                    dash.repo.setMilestoneRecalcEnabled(True)
+                    dash._detectMilestonesSafely(db, "alice")
+                if fails:
+                    retry.assert_called_once_with(db.repo, "alice", db.tz, removeUnsupported=True)
+                else:
+                    retry.assert_not_called()
+                self.assertFalse(db.milestonesRecalcPending)
 
 
 class TestRecalcFlagIsAtomic(DatabaseTestCase):

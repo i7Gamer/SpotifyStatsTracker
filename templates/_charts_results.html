@@ -101,13 +101,16 @@
            plays.is_skip, which is a duration threshold - a long play can still
            end in a skip-forward event, and a live-recorded skip has no
            reason_end at all. #}
-        <h2>How plays ended</h2>
+        <h3>How plays ended</h3>
+        {% if chartData.listeningBehavior.unknownReasonShare is not none %}
+        <p class="chart-subtitle">End reason unknown for {{ chartData.listeningBehavior.unknownReasonShare }}% of plays in this range.</p>
+        {% endif %}
         <div class="chart-canvas-wrap">
           <canvas id="behaviorReasonChart" role="img" aria-label="How plays ended"></canvas>
         </div>
       </div>
       <div class="chart-section">
-        <h2>Platforms</h2>
+        <h3>Platforms</h3>
         <div class="chart-canvas-wrap" style="height: 250px;">
           <canvas id="behaviorPlatformChart" role="img" aria-label="Plays by platform"></canvas>
         </div>

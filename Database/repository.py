@@ -12,6 +12,7 @@ import logging
 # from Database.repository.
 from Database.queries._base import *  # noqa: F401,F403
 from Database.queries.tracks import TrackQueries
+from Database.queries.merges import MergeQueries
 from Database.queries.plays import PlayQueries
 from Database.queries.users import UserQueries
 from Database.queries.shares import ShareQueries
@@ -29,7 +30,7 @@ from Database.queries.email_queries import EmailQueries, VALID_NOTIFICATION_EVEN
 logger = logging.getLogger(__name__)
 
 
-class Repository(SqlFragments, TrackQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries, EmailQueries):
+class Repository(SqlFragments, TrackQueries, MergeQueries, PlayQueries, UserQueries, ShareQueries, SchemaQueries, GenreQueries, BioQueries, SettingQueries, WrappedQueries, MilestoneQueries, TagQueries, TrendQueries, EmailQueries):
     """Data-access layer over the shared SQLite database.
 
     Catalog methods (tracks/artists/albums/playlists/images) operate on data

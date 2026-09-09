@@ -28,7 +28,7 @@ function loadPage() {
           elt: id === form.id ? form : { id },
           path: id === 'sortBy' ? '/compare?scope=sortable' : '/compare',
           parameters: { interval: 'custom', startDate: '2026-08-01', endDate: '2026-08-31',
-            with: 'carol', groupBy: '', sortBy: 'time', ...(id === 'sortBy' ? { scope: 'sortable' } : {}) },
+            with: 'carol', groupBy: '', sortBy: 'time' },
         },
         preventDefault() { this.prevented = true; },
       };
@@ -50,7 +50,7 @@ assert.strictEqual(badge.detail.parameters.groupBy, '', 'badge parameters are un
 const normal = loadPage().request('sortBy');
 assert.strictEqual(normal.prevented, false);
 assert.strictEqual(normal.detail.path, '/compare?scope=sortable', 'healthy sorts retain the cheap endpoint');
-assert.strictEqual(normal.detail.parameters.scope, 'sortable');
+assert.strictEqual(normal.detail.compareFullRefresh, false);
 assert.strictEqual(normal.detail.parameters.groupBy, undefined);
 assert.strictEqual(normal.detail.parameters.sortBy, 'time');
 assert.strictEqual(normal.detail.parameters.interval, 'custom');
@@ -60,12 +60,17 @@ const full = page.request('compareFilters');
 page.handlers['htmx:responseError']({ detail: { requestConfig: full.detail } });
 const recovery = page.request('sortBy');
 assert.strictEqual(recovery.detail.path, '/compare', 'sorting after a failed valid-date refresh must refresh every region');
-assert.strictEqual(recovery.detail.parameters.scope, undefined);
+assert.strictEqual(recovery.detail.compareFullRefresh, true);
 assert.strictEqual(recovery.detail.parameters.with, 'carol');
+assert.strictEqual(recovery.detail.parameters.startDate, '2026-08-01');
+assert.strictEqual(recovery.detail.parameters.endDate, '2026-08-31');
+assert.strictEqual(recovery.detail.parameters.sortBy, 'time');
 page.handlers['htmx:afterRequest']({ detail: { successful: false, requestConfig: recovery.detail } });
 assert.strictEqual(page.request('sortBy').detail.path, '/compare', 'failed recovery must not acknowledge a full render');
 page.handlers['htmx:afterRequest']({ detail: { successful: true, requestConfig: recovery.detail } });
-assert.strictEqual(page.request('sortBy').detail.path, '/compare?scope=sortable', 'successful recovery restores cheap sorting');
+const recovered = page.request('sortBy');
+assert.strictEqual(recovered.detail.path, '/compare?scope=sortable', 'successful recovery restores cheap sorting');
+assert.strictEqual(recovered.detail.compareFullRefresh, false);
 
 const pending = loadPage();
 pending.request('compareFilters');
