@@ -68,14 +68,6 @@ SPOTIFY_REQUEST_TIMEOUT_SECONDS = 10
 # not the API being gone.
 CONSECUTIVE_FAILURE_ABORT = 5
 
-# Consecutive cycles whose token refresh failed before the account is told its
-# Spotify authorization needs redoing. A refresh returns None for a revoked
-# grant AND for a DNS blip, and only the first is the user's to fix - the same
-# reason the listener waits out SCOPE_ERROR_CONFIRM_THRESHOLD polls before
-# prompting. At one cycle per BACKFILLER_IDLE_WAIT_SECONDS this is a quarter of
-# an hour of sustained failure.
-TOKEN_REFRESH_REAUTH_THRESHOLD = 3
-
 # Spotify's "you are asking too often". Distinguished from the other failures
 # because it is the one that says stopping now helps.
 SPOTIFY_RATE_LIMIT_STATUS = 429
@@ -164,8 +156,9 @@ class _CycleAccessToken:
     at all when there is nothing to spend it on. Callers ask by CALLING it, so a
     plain `lambda: token` substitutes for it anywhere a real one is awkward.
 
-    None is a real answer and is cached like any other: a refresh that failed
-    must not be retried by the next caller in the same cycle."""
+    None and REFRESH_TOKEN_REVOKED are cached unchanged too: a failed refresh
+    must not be retried within a cycle, and the health observer needs the
+    explicit revocation verdict even though it is not a usable bearer token."""
 
     __slots__ = ("_mint", "_token", "_minted", "noted")
 
@@ -177,7 +170,7 @@ class _CycleAccessToken:
         #  two steps happened to ask for the token first
         self.noted = False
 
-    def __call__(self) -> str | None:
+    def __call__(self) -> str | object | None:
         if not self._minted:
             self._minted = True
             self._token = self._mint()
@@ -218,8 +211,8 @@ class MetadataBackfillMixin:
     # When this user's catalog lookups may resume, per _standDownCatalogLookups.
     # A class attribute so it has a declared home and a documented default -
     # the two readers used getattr(self, ..., 0.0) because nothing ever
-    # initialised it. Deliberately NOT reset per worker run, unlike
-    # _backfillTokenFailures: a quota window belongs to Spotify and outlives a
+    # initialised it. Deliberately NOT reset per worker run:
+    # a quota window belongs to Spotify and outlives a
     # restart, so a restarted worker must not walk back into an exhausted one.
     _catalogBackoffUntil = 0.0
 
@@ -400,11 +393,10 @@ class MetadataBackfillMixin:
             "lookups down for %.0f minutes", self.user, standDown / 60)
 
     def _noteTokenHealth(self, getAccessToken, hasWebApiCreds: bool) -> None:
-        """Count consecutive cycles whose token refresh failed, and ask the
-        account to re-authorize once that is clearly not a blip.
+        """Ask for reauthorization only on an explicit revoked-grant verdict.
 
-        A refresh returning None is the one failure on this path a USER can fix:
-        the stored grant is dead, so re-authorizing restores it.
+        None means unavailable/transient, including rate limits and network
+        failures. Repeating it does not turn it into evidence of revocation.
 
         Deliberately NOT wired to a 403 from the lookups themselves, however
         many times it repeats. That was tested for us on 2026-07-31, when
@@ -429,19 +421,11 @@ class MetadataBackfillMixin:
             return
         getAccessToken.noted = True
 
-        if getAccessToken() is not None:
-            self._backfillTokenFailures = 0
-            return
-
-        self._backfillTokenFailures += 1
-        #< exactly at the threshold, not past it: setSpotifyNeedsReauth queues
-        #  an email every time it is called with True, so a streak that keeps
-        #  running must not keep asking
-        if self._backfillTokenFailures == TOKEN_REFRESH_REAUTH_THRESHOLD:
-            _dbmod.logger.error(
-                "[Backfiller-%s] Spotify token refresh has failed %d cycles running - "
-                "the stored authorization looks revoked; prompting for re-authorization",
-                self.user, self._backfillTokenFailures)
+        from Database.Listeners.spotifyListener import REFRESH_TOKEN_REVOKED
+        token = getAccessToken()
+        if token is REFRESH_TOKEN_REVOKED:
+            # The shared setter queues only on an atomic false-to-true flag
+            # transition, even if another worker observed the same revocation.
             self.setSpotifyNeedsReauth(True)
 
     def _repairFallbackTrackMetadata(self, rawTracks: list[dict]) -> int:
@@ -554,7 +538,7 @@ class MetadataBackfillMixin:
             if not target_ids:
                 return
             access_token = getAccessToken()
-            if not access_token:
+            if not isinstance(access_token, str) or not access_token:
                 return
 
             headers = {"Authorization": f"Bearer {access_token}"}
@@ -627,10 +611,6 @@ class MetadataBackfillMixin:
         import random
         if stop_event is None:
             stop_event = self.backfiller_stop_event
-        #< here rather than on the instance: the streak belongs to THIS run, and
-        #  a worker restarted after a re-auth should start counting again from
-        #  nothing rather than inherit the state that prompted it
-        self._backfillTokenFailures = 0
         try:
             # 1. Random startup offset to prevent multiple user threads from starting at the same moment
             startup_delay = random.randint(self.BACKFILLER_MIN_START_DELAY, self.BACKFILLER_MAX_START_DELAY)
@@ -793,7 +773,7 @@ class MetadataBackfillMixin:
                     quotaWalled = _dbmod.time.time() < self._catalogBackoffUntil
                     access_token = None if quotaWalled else getAccessToken()
                     self._noteTokenHealth(getAccessToken, hasWebApiCreds)
-                    if access_token:
+                    if isinstance(access_token, str) and access_token:
                         # One request per album: the bulk `?ids=` form this used
                         # to call was withdrawn on 2026-07-31 and has answered
                         # 403 Forbidden ever since, which is why every cycle

@@ -499,6 +499,72 @@ class TestPlaysHistory(RepositoryTestCase):
         entries = self.repo.getPlaysNewestFirst("alice")
         self.assertEqual(entries[0]["playedFrom"], "playlist:xyz")
 
+    def test_duplicate_play_enriches_missing_played_from(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000,
+                             created_reason="history_import")
+        before = self.repo.connection().execute(
+            "SELECT id, created_at, created_reason FROM plays "
+            "WHERE username='alice' AND track_id='t1' AND played_at=1000.0"
+        ).fetchone()
+
+        inserted = self.repo.insertPlay("alice", "t1", 1000.0, 5000,
+                                        playedFrom="playlist:xyz")
+
+        row = self.repo.connection().execute(
+            "SELECT COUNT(*) AS count, id, played_from, created_at, created_reason FROM plays "
+            "WHERE username='alice' AND track_id='t1' AND played_at=1000.0"
+        ).fetchone()
+        self.assertFalse(inserted)
+        self.assertEqual(row["count"], 1)
+        self.assertEqual(row["id"], before["id"])
+        self.assertEqual(row["played_from"], "playlist:xyz")
+        self.assertEqual(row["created_at"], before["created_at"])
+        self.assertEqual(row["created_reason"], before["created_reason"])
+
+    def test_duplicate_play_replaces_existing_played_from(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, playedFrom="playlist:old")
+
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, playedFrom="playlist:new")
+
+        row = self.repo.connection().execute(
+            "SELECT played_from FROM plays "
+            "WHERE username='alice' AND track_id='t1' AND played_at=1000.0"
+        ).fetchone()
+        self.assertEqual(row["played_from"], "playlist:new")
+
+    def test_duplicate_play_same_played_from_does_not_write(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, playedFrom="playlist:xyz")
+        changesBefore = self.repo.connection().total_changes
+
+        inserted = self.repo.insertPlay("alice", "t1", 1000.0, 5000,
+                                        playedFrom="playlist:xyz")
+
+        self.assertFalse(inserted)
+        self.assertEqual(self.repo.connection().total_changes, changesBefore)
+
+    def test_duplicate_play_empty_played_from_is_a_source_value(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, playedFrom="playlist:xyz")
+
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, playedFrom="")
+
+        row = self.repo.connection().execute(
+            "SELECT played_from FROM plays "
+            "WHERE username='alice' AND track_id='t1' AND played_at=1000.0"
+        ).fetchone()
+        self.assertEqual(row["played_from"], "")
+
+    def test_duplicate_play_none_never_clears_played_from(self):
+        self.repo.insertPlay("alice", "t1", 1000.0, 5000, playedFrom="playlist:xyz")
+
+        inserted = self.repo.insertPlay("alice", "t1", 1000.0, 5000)
+
+        row = self.repo.connection().execute(
+            "SELECT played_from FROM plays "
+            "WHERE username='alice' AND track_id='t1' AND played_at=1000.0"
+        ).fetchone()
+        self.assertFalse(inserted)
+        self.assertEqual(row["played_from"], "playlist:xyz")
+
     def test_newest_first_respects_date_range(self):
         self.repo.insertPlay("alice", "t1", 1000.0, 5000)
         self.repo.insertPlay("alice", "t2", 2000.0, 5000)

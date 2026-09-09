@@ -72,17 +72,19 @@ class PlayQueries:
         conn = self._conn()
         behavioralSelect = ", ".join(BEHAVIORAL_COLUMNS)
         existing = conn.execute(
-            f"SELECT id, time_played, is_skip, {behavioralSelect} FROM plays WHERE username=? AND track_id=? AND played_at=?",
+            f"SELECT id, time_played, played_from, is_skip, {behavioralSelect} FROM plays WHERE username=? AND track_id=? AND played_at=?",
             (username, trackId, playedAt)
         ).fetchone()
 
         if existing:
             extras = extras or {}
+            playedFromChanged = playedFrom is not None and playedFrom != existing["played_from"]
             behavioralChanged = any(
                 extras.get(column) is not None and extras.get(column) != existing[column]
                 for column in BEHAVIORAL_COLUMNS
             )
-            if existing["time_played"] != timePlayed or existing["is_skip"] != is_skip or behavioralChanged:
+            if (existing["time_played"] != timePlayed or playedFromChanged
+                    or existing["is_skip"] != is_skip or behavioralChanged):
                 behavioralSet = ", ".join(f"{column} = COALESCE(?, {column})" for column in BEHAVIORAL_COLUMNS)
                 conn.execute(
                     f"UPDATE plays SET time_played = ?, is_skip = ?, played_from = COALESCE(?, played_from), {behavioralSet} WHERE id = ?",

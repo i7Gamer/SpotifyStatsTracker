@@ -621,10 +621,8 @@ class ConnectionManager:
                 _stampedSchemaByPath[resolvedPath] = SCHEMA
         else:
             with _stampedSchemaLock:
-                alreadyStamped = _stampedSchemaByPath.get(resolvedPath) == SCHEMA
-            if not alreadyStamped:
-                conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS); see _stampedSchemaByPath above for why this only runs once per (process, path)
-                with _stampedSchemaLock:
+                if _stampedSchemaByPath.get(resolvedPath) != SCHEMA:
+                    conn.executescript(SCHEMA)   #< idempotent (IF NOT EXISTS); see _stampedSchemaByPath above for why this only runs once per (process, path)
                     _stampedSchemaByPath[resolvedPath] = SCHEMA
         conn.commit()
         return conn

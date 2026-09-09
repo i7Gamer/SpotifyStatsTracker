@@ -17,6 +17,10 @@ import Database.db as dbModule
 from Database.db import ConnectionManager, SCHEMA
 import sqlite3
 
+DDL_RACE_JOIN_TIMEOUT_SECONDS = 5.0
+DDL_FIRST_CALL = 1
+DDL_SECOND_CALL = 2
+
 
 def _schemaDump(conn: sqlite3.Connection) -> list[tuple]:
     rows = conn.execute(
@@ -41,6 +45,83 @@ _realSqliteConnect = sqlite3.connect   #< captured before any test patches sqlit
 
 def _connectCountingExecutescript(dbPath, **kwargs):
     return _realSqliteConnect(dbPath, factory=_ExecutescriptCountingConnection, **kwargs)
+
+
+class _BlockingExecutescriptConnection(sqlite3.Connection):
+    """Coordinates concurrent schema execution without depending on SQLite timeouts."""
+
+    call_count = 0
+    first_entered = threading.Event()
+    second_settled = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+
+    @classmethod
+    def reset(cls):
+        cls.call_count = 0
+        cls.first_entered.clear()
+        cls.second_settled.clear()
+        cls.release.clear()
+
+    def executescript(self, script):
+        if script == dbModule.SCHEMA:
+            with type(self).lock:
+                type(self).call_count += 1
+                if type(self).call_count == DDL_FIRST_CALL:
+                    type(self).first_entered.set()
+                elif type(self).call_count == DDL_SECOND_CALL:
+                    type(self).second_settled.set()
+            if not type(self).release.wait(DDL_RACE_JOIN_TIMEOUT_SECONDS):
+                raise TimeoutError("test did not release schema execution")
+        return super().executescript(script)
+
+
+def _connectBlockingExecutescript(dbPath, **kwargs):
+    return _realSqliteConnect(dbPath, factory=_BlockingExecutescriptConnection, **kwargs)
+
+
+class _ObservedStampLock:
+    """Notice a contending opener without waiting for a forbidden second DDL."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+
+    def __enter__(self):
+        if not self.lock.acquire(blocking=False):
+            _BlockingExecutescriptConnection.second_settled.set()
+            if not self.lock.acquire(timeout=DDL_RACE_JOIN_TIMEOUT_SECONDS):
+                raise TimeoutError("test schema lock remained held")
+        return self
+
+    def __exit__(self, *exc):
+        self.lock.release()
+
+
+class _FailingThenCountingExecutescriptConnection(sqlite3.Connection):
+    call_count = 0
+    failures_remaining = 1
+    lock = threading.Lock()
+
+    @classmethod
+    def reset(cls):
+        cls.call_count = 0
+        cls.failures_remaining = 1
+
+    def executescript(self, script):
+        if script == dbModule.SCHEMA:
+            with type(self).lock:
+                type(self).call_count += 1
+                should_fail = type(self).failures_remaining > 0
+                if should_fail:
+                    type(self).failures_remaining -= 1
+            if should_fail:
+                self.close()
+                raise sqlite3.OperationalError("schema stamp failed")
+        return super().executescript(script)
+
+
+def _connectFailingThenCountingExecutescript(dbPath, **kwargs):
+    return _realSqliteConnect(dbPath, factory=_FailingThenCountingExecutescriptConnection, **kwargs)
 
 
 class TestSchemaTemplateMatchesDirectExecutescript(unittest.TestCase):
@@ -201,6 +282,93 @@ class TestExistingSchemaDdlRunsOnceProcessWide(unittest.TestCase):
                 currentManager.close()
 
             self.assertIn("app_settings", tableNames())
+
+    def test_overlapping_first_existing_file_stamps_run_ddl_once(self):
+        """Only the first unstamped opener should run the current DDL."""
+        with tempfile.TemporaryDirectory() as tmpDir:
+            dbPath = Path(tmpDir) / "overlappingExisting.db"
+            first = ConnectionManager(dbPath)
+            first.connection().execute(
+                "INSERT INTO artists (id, name, url) VALUES ('a1', 'Artist', '')"
+            )
+            first.connection().commit()
+            first.close()
+
+            with dbModule._stampedSchemaLock:
+                dbModule._stampedSchemaByPath.pop(dbPath.resolve(), None)
+
+            _BlockingExecutescriptConnection.reset()
+            errors = []
+
+            def opener():
+                manager = ConnectionManager(dbPath)
+                try:
+                    manager.connection()
+                except Exception as exc:
+                    errors.append(repr(exc))
+                finally:
+                    manager.close()
+
+            with patch.object(dbModule.sqlite3, "connect", side_effect=_connectBlockingExecutescript), \
+                 patch.object(dbModule, "_stampedSchemaLock", _ObservedStampLock()):
+                first_thread = threading.Thread(target=opener)
+                second_thread = threading.Thread(target=opener)
+                first_thread.start()
+                try:
+                    self.assertTrue(_BlockingExecutescriptConnection.first_entered.wait(
+                        DDL_RACE_JOIN_TIMEOUT_SECONDS))
+                    second_thread.start()
+                    # Fixed code blocks at the held stamp lock; old code enters
+                    # DDL again. Either signal proves the second opener got there.
+                    self.assertTrue(_BlockingExecutescriptConnection.second_settled.wait(
+                        DDL_RACE_JOIN_TIMEOUT_SECONDS))
+                finally:
+                    _BlockingExecutescriptConnection.release.set()
+                    first_thread.join(DDL_RACE_JOIN_TIMEOUT_SECONDS)
+                    if second_thread.ident is not None:
+                        second_thread.join(DDL_RACE_JOIN_TIMEOUT_SECONDS)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(_BlockingExecutescriptConnection.call_count, 1)
+
+    def test_failed_existing_file_stamp_is_retryable(self):
+        with tempfile.TemporaryDirectory() as tmpDir:
+            dbPath = Path(tmpDir) / "retryAfterFailure.db"
+            first = ConnectionManager(dbPath)
+            first.connection().execute(
+                "INSERT INTO artists (id, name, url) VALUES ('a1', 'Artist', '')"
+            )
+            first.connection().commit()
+            first.close()
+
+            with dbModule._stampedSchemaLock:
+                dbModule._stampedSchemaByPath.pop(dbPath.resolve(), None)
+            _FailingThenCountingExecutescriptConnection.reset()
+
+            with patch.object(dbModule.sqlite3, "connect",
+                              side_effect=_connectFailingThenCountingExecutescript):
+                failing = ConnectionManager(dbPath)
+                try:
+                    with self.assertRaisesRegex(sqlite3.OperationalError,
+                                                "schema stamp failed"):
+                        failing.connection()
+                finally:
+                    failing.close()
+
+                with dbModule._stampedSchemaLock:
+                    self.assertIsNone(dbModule._stampedSchemaByPath.get(dbPath.resolve()))
+
+                retrying = ConnectionManager(dbPath)
+                try:
+                    retrying.connection()
+                finally:
+                    retrying.close()
+
+            self.assertEqual(_FailingThenCountingExecutescriptConnection.call_count, 2)
+            with dbModule._stampedSchemaLock:
+                self.assertEqual(dbModule._stampedSchemaByPath.get(dbPath.resolve()), SCHEMA)
 
 
 class TestSchemaTemplateBackupIsThreadSafe(unittest.TestCase):

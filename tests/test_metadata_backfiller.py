@@ -9,9 +9,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from conftest import DatabaseTestCase
 from Database.database import Database
 from Database.workers.metadata_backfiller import (
-    CONSECUTIVE_FAILURE_ABORT, TOKEN_REFRESH_REAUTH_THRESHOLD,
+    CONSECUTIVE_FAILURE_ABORT,
 )
+from Database.Listeners.spotifyListener import REFRESH_TOKEN_REVOKED
 from test_track_isrc_backfill import REAL_ID, _insertTrack
+
+REPEATED_REFRESH_CYCLES = 5
 
 
 def runsCycles(db, count, event=None):
@@ -1104,6 +1107,20 @@ class TestReauthPrompting(DatabaseTestCase):
         self.addCleanup(Database._active_backfills.clear)
         return db, conn
 
+    @patch("Database.Spotify.Spotify")
+    @patch("requests.get")
+    def test_revoked_token_skips_both_catalog_paths_and_uses_cookie_fallback(self, mock_get, mock_spotify):
+        db, _ = self._db()
+        mock_spotify.return_value.album.return_value = None
+        with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
+                   return_value=REFRESH_TOKEN_REVOKED) as refresh:
+            db.backfiller_stop_event = runsOneCycle(db)
+            db._metadataBackfillLoop()
+        refresh.assert_called_once()
+        mock_get.assert_not_called()
+        mock_spotify.return_value.album.assert_called_once_with("alb1")
+        db.setSpotifyNeedsReauth.assert_called_once_with(True)
+
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value="mock_token")
     @patch("Database.Spotify.Spotify")
     @patch("requests.get")
@@ -1131,41 +1148,31 @@ class TestReauthPrompting(DatabaseTestCase):
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
     @patch("Database.Spotify.Spotify")
     @patch("requests.get")
-    def test_a_refresh_that_keeps_failing_does_ask(self, mock_get, mock_spotify, mock_refresh):
-        """The one failure here a user CAN fix: the stored grant is dead, so
-        re-authorizing is exactly the remedy."""
+    def test_transient_refresh_failures_never_ask_for_reauthorization(self, mock_get, mock_spotify, mock_refresh):
+        """Repeated network/rate-limit failures are still not a revoked grant."""
         db, _ = self._db()
 
-        db.backfiller_stop_event = runsCycles(db, TOKEN_REFRESH_REAUTH_THRESHOLD)
+        db.backfiller_stop_event = runsCycles(db, REPEATED_REFRESH_CYCLES)
         db._metadataBackfillLoop()
 
-        db.setSpotifyNeedsReauth.assert_called_once_with(True)
+        db.setSpotifyNeedsReauth.assert_not_called()
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
     @patch("Database.Spotify.Spotify")
     @patch("requests.get")
     def test_one_failed_refresh_is_not_enough(self, mock_get, mock_spotify, mock_refresh):
-        """A refresh returns None for a revoked grant AND for a DNS blip, and
-        only the first is the user's to fix - so one is never enough, the same
-        way the listener waits out its scope errors."""
+        """A refresh returning None carries no revocation verdict."""
         db, _ = self._db()
 
-        db.backfiller_stop_event = runsCycles(db, TOKEN_REFRESH_REAUTH_THRESHOLD - 1)
+        db.backfiller_stop_event = runsOneCycle(db)
         db._metadataBackfillLoop()
 
         db.setSpotifyNeedsReauth.assert_not_called()
 
     @patch("Database.Spotify.Spotify")
     @patch("requests.get")
-    def test_a_refresh_that_recovers_resets_the_streak(self, mock_get, mock_spotify):
-        """Consecutive, not cumulative: an outage that ends is not a revocation.
-
-        The lookups fail so that nothing is ever stamped and the queue stays
-        populated. Serving them SUCCESSFULLY made this test vacuous - the good
-        cycle drained the queue, so the cycles after it asked for no token at
-        all, were correctly not counted, and the streak could never have reached
-        the threshold whether it reset or not. Caught by mutation: deleting the
-        reset left the whole suite green."""
+    def test_intermittent_refresh_failures_never_request_reauth(self, mock_get, mock_spotify):
+        """Keep the queue populated so every cycle actually asks for a token."""
         db, _ = self._db()
 
         def alwaysFails(url, **kwargs):
@@ -1174,8 +1181,7 @@ class TestReauthPrompting(DatabaseTestCase):
             response.text = ""
             return response
         mock_get.side_effect = alwaysFails
-        tokens = [None] * (TOKEN_REFRESH_REAUTH_THRESHOLD - 1) + ["mock_token"] \
-            + [None] * (TOKEN_REFRESH_REAUTH_THRESHOLD - 1)
+        tokens = [None] * REPEATED_REFRESH_CYCLES + ["mock_token"] + [None] * REPEATED_REFRESH_CYCLES
 
         with patch("Database.Listeners.spotifyListener._refresh_spotify_access_token",
                    side_effect=tokens):
@@ -1184,20 +1190,21 @@ class TestReauthPrompting(DatabaseTestCase):
 
         db.setSpotifyNeedsReauth.assert_not_called()
 
-    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
+    @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=REFRESH_TOKEN_REVOKED)
     @patch("Database.Spotify.Spotify")
     @patch("requests.get")
-    def test_the_prompt_fires_once_per_streak_not_once_per_cycle(self, mock_get, mock_spotify,
+    def test_revocation_email_fires_once_across_cycles(self, mock_get, mock_spotify,
                                                                  mock_refresh):
-        """setSpotifyNeedsReauth queues an email every time it is called with
-        True, guard or no guard on the UPDATE - so a streak that keeps running
-        must not keep asking."""
+        """The real setter uses the persisted flag transition to deduplicate."""
         db, _ = self._db()
+        db.setSpotifyNeedsReauth = Database.setSpotifyNeedsReauth.__get__(db, Database)
+        mock_spotify.return_value.album.return_value = None
 
-        db.backfiller_stop_event = runsCycles(db, TOKEN_REFRESH_REAUTH_THRESHOLD + 5)
-        db._metadataBackfillLoop()
-
-        db.setSpotifyNeedsReauth.assert_called_once_with(True)
+        db.backfiller_stop_event = runsCycles(db, REPEATED_REFRESH_CYCLES)
+        with patch("services.email_worker.queue_email_notification") as notify:
+            db._metadataBackfillLoop()
+        notify.assert_called_once_with(db.user, "api_key_failed")
+        mock_get.assert_not_called()
 
     @patch("Database.Listeners.spotifyListener._refresh_spotify_access_token", return_value=None)
     @patch("Database.Spotify.Spotify")
@@ -1208,7 +1215,7 @@ class TestReauthPrompting(DatabaseTestCase):
         an authorization that lapsed. There is nothing to re-authorize."""
         db, _ = self._db(credentials=False)
 
-        db.backfiller_stop_event = runsCycles(db, TOKEN_REFRESH_REAUTH_THRESHOLD + 2)
+        db.backfiller_stop_event = runsCycles(db, REPEATED_REFRESH_CYCLES)
         db._metadataBackfillLoop()
 
         db.setSpotifyNeedsReauth.assert_not_called()

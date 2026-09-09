@@ -140,13 +140,13 @@ class ApiBackfillTestCase(unittest.TestCase):
         self.assertEqual(row["time_played"], 5000)
         self.assertEqual(row["played_from"], "playlist1")
 
-        # Try to insert identical play -> should return False and not update since duration is the same
+        # A duplicate keeps its identity but accepts a more recent source.
         inserted = self.repo.insertPlay("alice", "track1", 1000.0, 5000, "playlist2")
         self.repo.commit()
         self.assertFalse(inserted)
         row = conn.execute("SELECT time_played, played_from FROM plays WHERE username='alice' AND track_id='track1'").fetchone()
         self.assertEqual(row["time_played"], 5000)
-        self.assertEqual(row["played_from"], "playlist1")  # played_from was coalesced so it stayed same
+        self.assertEqual(row["played_from"], "playlist2")
 
         # Try to insert duplicate with different time_played -> should return False but UPDATE time_played
         inserted = self.repo.insertPlay("alice", "track1", 1000.0, 8000, "playlist2")

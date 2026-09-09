@@ -284,19 +284,21 @@ class UserQueries:
         ).fetchone()
         return bool(row["spotify_needs_reauth"]) if row else False
 
-    def setSpotifyNeedsReauth(self, username: str, needsReauth: bool) -> None:
-        """Flips the "this account's Spotify authorization is missing a
-        required scope" flag - set when the Web API backfill gets a 403
-        Insufficient client scope response, cleared the next time it gets a
-        definitive success. Guarded on the current value so a routine poll
+    def setSpotifyNeedsReauth(self, username: str, needsReauth: bool) -> bool:
+        """Flags a revoked grant or missing required Spotify scope, cleared
+        on definitive scoped success or completed reauthorization.
+        Guarded on the current value so a routine poll
         that already matches doesn't write every time (see
-        Listener.on_scope_status_change, called after every poll)."""
+        Listener.on_scope_status_change, called after every poll).
+        Returns whether the flag changed, allowing notification callers to
+        use the atomic UPDATE result instead of racing a separate read."""
         conn = self._conn()
         with conn:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE users SET spotify_needs_reauth = ? WHERE username = ? AND spotify_needs_reauth != ?",
                 (int(needsReauth), username, int(needsReauth)),
             )
+        return cursor.rowcount > 0
 
     def updateUserSpotifyCredentials(self, username: str, clientId: str | None,
                                      clientSecret: str | None, refreshToken: str | None) -> None:
@@ -340,9 +342,9 @@ class UserQueries:
         """How many stored secrets name an encryption key this instance does not
         have.
 
-        Every one of them reads back as None, which callers treat as "nothing
-        stored" - so without this the symptom is every user appearing logged out
-        for no stated reason. That is what a database restored WITHOUT its
+        These read back as None, which callers treat as "nothing stored" -
+        user credentials or instance SMTP settings appear unset, disrupting
+        logins or email delivery. That is what a database restored WITHOUT its
         matching secrets/data_encryption_key.txt looks like, and it is
         recoverable: the values are intact, the key is simply elsewhere.
 
@@ -353,8 +355,9 @@ class UserQueries:
         rows = conn.execute(f"SELECT {', '.join(self.SECRET_COLUMNS)} FROM users").fetchall()
         #< resolved once, not per value: it reads the key file behind a lock
         current = keyFingerprint()
-        return sum(1 for row in rows for column in self.SECRET_COLUMNS
-                   if isForeignKeyed(row[column], current))
+        userSecrets = sum(1 for row in rows for column in self.SECRET_COLUMNS
+                          if isForeignKeyed(row[column], current))
+        return userSecrets + int(isForeignKeyed(self.getAppSetting("smtp_password"), current))
 
     def getUserLastfmApiKey(self, username: str) -> str | None:
         conn = self._conn()

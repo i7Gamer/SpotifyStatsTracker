@@ -150,6 +150,93 @@ class TestCreateShareLink(ShareLinkRoutesTestCase):
         self.assertEqual(len(links), 1)
         self.assertIsNone(links[0]["year"])
 
+    def test_all_years_ajax_normalizes_an_invalid_panel_year(self):
+        """An all-years link discards its path year, so its returned panel
+        must use a real Wrapped year for its next action and revoke forms."""
+        db = self._makeDb()
+        client = self._loginAs("alice", "alice@example.com", db=db)
+        displayYear = self.dash._computeAvailableYears(db)[0]
+
+        resp = client.post("/wrapped/share-links/9999?ajax=true",
+                           data={"expiry": "never", "allYears": "1"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn(f"/wrapped/share-links/{displayYear}", html)
+        self.assertIn(f"your {displayYear} Wrapped", html)
+        self.assertIn(f'name="year" value="{displayYear}"', html)
+        self.assertNotIn("9999", html)
+        links = self.dash.repo.getShareLinksForUser("alice")
+        self.assertEqual(len(links), 1)
+        self.assertIsNone(links[0]["year"])
+
+    def test_all_years_redirect_normalizes_an_invalid_panel_year(self):
+        db = self._makeDb()
+        client = self._loginAs("alice", "alice@example.com", db=db)
+        displayYear = self.dash._computeAvailableYears(db)[0]
+
+        resp = client.post("/wrapped/share-links/9999",
+                           data={"expiry": "never", "allYears": "1"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(f"year={displayYear}", resp.headers["Location"])
+        self.assertNotIn("9999", resp.headers["Location"])
+        self.assertIsNone(self.dash.repo.getShareLinksForUser("alice")[0]["year"])
+
+    def test_all_years_invalid_expiry_normalizes_only_the_non_ajax_redirect(self):
+        db = self._makeDb()
+        client = self._loginAs("alice", "alice@example.com", db=db)
+        displayYear = self.dash._computeAvailableYears(db)[0]
+        form = {"expiry": "unknown", "allYears": "1"}
+
+        redirectResp = client.post("/wrapped/share-links/9999", data=form)
+        ajaxResp = client.post("/wrapped/share-links/9999?ajax=true", data=form)
+
+        self.assertEqual(redirectResp.status_code, 302)
+        self.assertIn(f"year={displayYear}", redirectResp.headers["Location"])
+        self.assertNotIn("9999", redirectResp.headers["Location"])
+        self.assertEqual(ajaxResp.status_code, 400)
+        self.assertEqual(ajaxResp.get_json()["error"], "Unknown link expiry option.")
+        self.assertEqual(self.dash.repo.getShareLinksForUser("alice"), [])
+
+    def test_all_years_cap_normalizes_only_the_non_ajax_redirect(self):
+        db = self._makeDb()
+        self.dash.repo.upsertUser("alice", "alice@example.com")
+        for _ in range(appModule.SHARE_LINK_MAX_PER_BUCKET):
+            self.dash.repo.createShareLink(
+                "alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, None, None)
+        client = self._loginAs("alice", "alice@example.com", db=db)
+        displayYear = self.dash._computeAvailableYears(db)[0]
+        form = {"expiry": "never", "allYears": "1"}
+
+        redirectResp = client.post("/wrapped/share-links/9999", data=form)
+        ajaxResp = client.post("/wrapped/share-links/9999?ajax=true", data=form)
+
+        self.assertEqual(redirectResp.status_code, 302)
+        self.assertIn(f"year={displayYear}", redirectResp.headers["Location"])
+        self.assertNotIn("9999", redirectResp.headers["Location"])
+        self.assertEqual(ajaxResp.status_code, 400)
+        self.assertIn("all-years", ajaxResp.get_json()["error"])
+        self.assertEqual(len(self.dash.repo.getShareLinksForUser("alice")),
+                         appModule.SHARE_LINK_MAX_PER_BUCKET)
+
+    def test_all_years_keeps_a_valid_nondefault_display_year(self):
+        db = self._makeDb()
+        client = self._loginAs("alice", "alice@example.com", db=db)
+        availableYears = [2026, 2025]
+
+        with patch.object(self.dash, "_computeAvailableYears", return_value=availableYears):
+            resp = client.post("/wrapped/share-links/2025?ajax=true",
+                               data={"expiry": "never", "allYears": "1"})
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_json()["html"]
+        self.assertIn("/wrapped/share-links/2025", html)
+        self.assertIn("your 2025 Wrapped", html)
+        self.assertIn('name="year" value="2025"', html)
+        self.assertNotIn("2026 Wrapped", html)
+        self.assertIsNone(self.dash.repo.getShareLinksForUser("alice")[0]["year"])
+
     def test_missing_expiry_field_still_defaults_to_never(self):
         """The form always posts one of the choices; an absent field is the
         existing default and must keep working."""

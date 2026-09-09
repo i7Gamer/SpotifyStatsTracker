@@ -2080,8 +2080,8 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         self.repo.updateUserSpotifyCredentials(self.user, clientId, clientSecret, refreshToken)
 
     def setSpotifyNeedsReauth(self, needsReauth: bool) -> None:
-        self.repo.setSpotifyNeedsReauth(self.user, needsReauth)
-        if needsReauth:
+        changed = self.repo.setSpotifyNeedsReauth(self.user, needsReauth)
+        if needsReauth and changed:
             from services.email_worker import queue_email_notification
             from Database.queries.email_queries import EVENT_API_KEY_FAILED
             queue_email_notification(self.user, EVENT_API_KEY_FAILED)

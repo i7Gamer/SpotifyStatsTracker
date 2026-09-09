@@ -271,10 +271,11 @@ class MediaFetchMixin:
         token = _refresh_spotify_access_token(
             creds["client_id"], creds["client_secret"], creds["refresh_token"],
             logUser=self.user)
-        if token:
+        if isinstance(token, str) and token:
             self._webApiTokenCache = (token, creds["refresh_token"],
                                       _dbmod.time.monotonic() + WEB_API_TOKEN_CACHE_SECONDS)
-        return token
+            return token
+        return None
 
     def _fetchArtistImageUrl(self, artistId: str) -> str | None:
         """Looks up a real Spotify CDN image URL for an artist, mirroring the

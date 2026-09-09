@@ -290,6 +290,11 @@ _SCOPE_ERROR = object()
 # than logging the same error every poll until someone reads the log.
 REFRESH_TOKEN_REVOKED = object()
 
+# Accounts-token cooldowns are separate from catalog/playback pacing. Share a
+# deadline among users of one configured client without pausing unrelated apps.
+_accountsTokenBackoffLock = threading.Lock()
+_accountsTokenBackoffUntil: dict[str, float] = {}
+
 # Spotify's recently-played endpoint has been observed to answer a handful of
 # polls with 403 "Insufficient client scope" even though the stored refresh
 # token does carry the scope (confirmed live: the very next poll, using the
@@ -527,14 +532,22 @@ def _isComparableSpotifyUserId(value) -> bool:
 
 
 def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_token: str,
-                                   logUser: str | None = None) -> str | None:
-    """`logUser` is the internal user key (e.g. "7kevinegger"), used only to
+                                   logUser: str | None = None) -> str | object | None:
+    """Return a token, REFRESH_TOKEN_REVOKED, or transient/unavailable None.
+
+    `logUser` is the internal user key (e.g. "7kevinegger"), used only to
     identify which account's worker a logged failure belongs to. It is
     deliberately not the email: these lines are the highest-volume in the log
     and the key identifies the account just as well without writing an address
     to disk on every poll."""
     import base64
     import requests
+    with _accountsTokenBackoffLock:
+        deadline = _accountsTokenBackoffUntil.get(client_id)
+        if deadline is not None:
+            if time.monotonic() < deadline:
+                return None
+            del _accountsTokenBackoffUntil[client_id]
     url = "https://accounts.spotify.com/api/token"
     payload = {
         "grant_type": "refresh_token",
@@ -549,24 +562,22 @@ def _refresh_spotify_access_token(client_id: str, client_secret: str, refresh_to
         resp = requests.post(url, data=payload, headers=headers,
                              timeout=SPOTIFY_WEB_API_TIMEOUT_SECONDS)
         if resp.status_code == 200:
-            return resp.json().get("access_token")
+            token = resp.json().get("access_token")
+            if isinstance(token, str) and token:
+                return token
+            logger.warning("Spotify token refresh returned no usable access token for user %s", logUser)
+            return None
         elif resp.status_code == 429:
-            # Split out of the error line below, NOT because there is anything to
-            # act on but because a rate limit and a broken grant are different
-            # news: both used to read as "failed to refresh", which sends an
-            # operator looking at the client secret for something that clears
-            # itself.
-            #
-            # Deliberately does NOT stand SPOTIFY_LIMITER down, unlike the two
-            # api.spotify.com readers. This is accounts.spotify.com - a separate
-            # service with its own budget - so a stand-down would pause catalog
-            # lookups for a limit that was never theirs, while doing nothing at
-            # all to the offending call, which never consults the limiter.
-            # Pacing this host would need a budget of its own; there is no
-            # evidence yet that it needs one.
+            # Do not stand SPOTIFY_LIMITER down: accounts.spotify.com needs its
+            # own cooldown, leaving catalog/playback requests with valid tokens
+            # free to proceed. Never hold the lock while making HTTP requests.
             standDown = retryAfterSeconds(resp,
                                           default=SPOTIFY_RATE_LIMIT_BACKOFF_SECONDS,
                                           maximum=WEB_API_MAX_BACKOFF_SECONDS)
+            with _accountsTokenBackoffLock:
+                deadline = time.monotonic() + standDown
+                _accountsTokenBackoffUntil[client_id] = max(
+                    _accountsTokenBackoffUntil.get(client_id, deadline), deadline)
             logger.warning(
                 "Spotify rate-limited the access-token refresh for user %s - it asked for %.0fs",
                 logUser, standDown)

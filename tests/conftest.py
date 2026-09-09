@@ -77,6 +77,15 @@ def _resetSpotifyRateLimiter():
     limiter._lastReason = None
 
 
+@pytest.fixture(autouse=True)
+def _resetAccountsTokenBackoff():
+    """A token-endpoint 429 in one test must not suppress another's HTTP mock."""
+    import Database.Listeners.spotifyListener as listenerModule
+
+    with listenerModule._accountsTokenBackoffLock:
+        listenerModule._accountsTokenBackoffUntil.clear()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _fastPasswordHashing():
     """generate_password_hash defaults to scrypt (~85ms/call - a real,

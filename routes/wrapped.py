@@ -188,6 +188,14 @@ def register(app, dashboard):
                 return jsonify(error=RATE_LIMIT_ERROR_MESSAGE), 429
             return redirect(url_for("wrappedPage", error=RATE_LIMIT_ERROR_MESSAGE, openShareModal=1))
 
+        allYears = request.form.get("allYears") == "1"
+        availableYears = dashboard._computeAvailableYears(db)
+        # An all-years link stores no year, so a crafted path year must not
+        # become the context of the panel returned after creating it. Keep a
+        # valid current-panel year, otherwise use the same first available year
+        # that the public all-years view falls back to.
+        displayYear = year if year in availableYears else availableYears[0]
+
         # An unrecognized value used to fall through .get() to None, i.e. a
         # permanent link - the most permissive option. A share link is a
         # standing unauthenticated access grant, so an unknown expiry is
@@ -197,16 +205,15 @@ def register(app, dashboard):
             errorMessage = "Unknown link expiry option."
             if isAjax:
                 return jsonify(error=errorMessage), 400
-            return redirect(url_for("wrappedPage", year=year, error=errorMessage, openShareModal=1))
+            return redirect(url_for("wrappedPage", year=displayYear, error=errorMessage, openShareModal=1))
         expiresInSeconds = SHARE_LINK_EXPIRY_CHOICES[expiryChoice]
-        allYears = request.form.get("allYears") == "1"
         # <int:year> bounds nothing, and _buildWrappedContext does
         # nowLocal.replace(year=year + 1): a hand-crafted POST for year 9999
         # minted a link whose PUBLIC page 500'd on every visit (year 10000 is
         # out of datetime's range; year 0 dies on the first replace). Validate
         # against the years the user has data for - the same set the share
         # modal offers. allYears links carry no year, so they skip this.
-        if not allYears and year not in dashboard._computeAvailableYears(db):
+        if not allYears and year not in availableYears:
             errorMessage = "You can only share a year you have listening data for."
             if isAjax:
                 return jsonify(error=errorMessage), 400
@@ -227,13 +234,13 @@ def register(app, dashboard):
                 "Revoke one to create another.")
             if isAjax:
                 return jsonify(error=errorMessage), 400
-            return redirect(url_for("wrappedPage", year=year, error=errorMessage, openShareModal=1))
+            return redirect(url_for("wrappedPage", year=displayYear, error=errorMessage, openShareModal=1))
 
         if isAjax:
             html = render_template("_share_link_panel.html",
-                                   **dashboard.shareLinkPanelArgs(username, year))
+                                   **dashboard.shareLinkPanelArgs(username, displayYear))
             return jsonify(html=html)
-        return redirect(url_for("wrappedPage", year=year, success="Share link created.", openShareModal=1))
+        return redirect(url_for("wrappedPage", year=displayYear, success="Share link created.", openShareModal=1))
     app.add_url_rule("/wrapped/share-links/<int:year>", "createWrappedShareLink", createWrappedShareLink, methods=["POST"])
 
     def _sharedImageBase(token):

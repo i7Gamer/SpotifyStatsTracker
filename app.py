@@ -384,7 +384,8 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
                 "%d stored secret(s) were encrypted with a DIFFERENT key than this instance uses. "
                 "They are intact but unreadable here - restore secrets/data_encryption_key.txt from "
                 "the same backup as the database (or set DATA_ENCRYPTION_KEY to the original value). "
-                "Until then the affected users read as logged out and must re-authenticate.",
+                "Until then affected user credentials or SMTP settings remain unreadable; "
+                "user logins or email delivery may fail.",
                 foreignSecrets,
             )
 
