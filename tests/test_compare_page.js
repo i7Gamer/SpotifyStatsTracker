@@ -180,7 +180,7 @@ function loadCompareRetryDom(opts) {
   delete require.cache[require.resolve('../static/js/compare.js')];
   require('../static/js/compare.js');
 
-  handlers['htmx:responseError']({});
+  handlers['htmx:responseError']({ detail: { requestConfig: { compareFullRefresh: true } } });
   assert.strictEqual(typeof retry, 'function', 'a transport error must arm a Retry');
   retry();
 

@@ -484,6 +484,7 @@ class TestShell(CompareHtmxTestCase):
         soup = bs4.BeautifulSoup(shell, "html.parser")
         placeholder = soup.select_one("#compareStatsTable p.loading[hx-get]")
         self.assertIsNotNone(placeholder)
+        self.assertEqual(placeholder.get("id"), "compareInitialLoad")
         self.assertEqual(placeholder["hx-sync"], "#compareFilters:replace")
 
     def test_the_placeholder_triggers_the_first_load(self):

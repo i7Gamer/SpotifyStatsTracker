@@ -17,11 +17,11 @@ from services.email_service import EMAIL_FAILED, deliver_email_notification, get
 logger = logging.getLogger(__name__)
 
 EMAIL_WORKER_POLL_INTERVAL_SECONDS = 2.0
-# A send the relay refused (a timeout, a dropped connection, a 4xx) is tried
-# this many times in all, this far apart, before the job is dropped with an
+# A database preparation failure or failed SMTP send is tried this many
+# times in all, this far apart, before the job is dropped with an
 # error line naming it. Bounded, because the queue has no consumer but this
 # thread and a relay that is down for good must not pin every later mail
-# behind one that will never go. Only a FAILED send comes back; a SKIPPED one
+# behind one that will never go. Only a FAILED attempt comes back; a SKIPPED one
 # (see email_service) was a decision.
 EMAIL_MAX_SEND_ATTEMPTS = 3
 EMAIL_RETRY_DELAY_SECONDS = 60.0
@@ -32,7 +32,7 @@ EMAIL_WORKER_STOP_JOIN_TIMEOUT_SECONDS = 3.0
 
 
 class _EmailJob(NamedTuple):
-    """One queued notification. `attempt` is the number of the send this job
+    """One queued notification. `attempt` is the preparation/send attempt this job
     is waiting to make (1 for a fresh enqueue); `notBefore` is the monotonic
     time a retry becomes due, 0 for a job that can go right away."""
     username: str
@@ -122,8 +122,8 @@ class EmailWorker:
         return True
 
     def _retryOrDrop(self, job: _EmailJob) -> None:
-        """The send failed: queue the next attempt, or say the job is gone.
-        The service has already logged the SMTP error itself; these lines
+        """Preparation or sending failed: queue the next attempt, or say the job is gone.
+        The service has already logged the underlying error; these lines
         carry the attempt count, which is the part it cannot know."""
         if job.attempt >= EMAIL_MAX_SEND_ATTEMPTS:
             logger.error("Giving up on notification email (%s) for %s after %d attempts",

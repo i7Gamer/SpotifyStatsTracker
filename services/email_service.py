@@ -7,6 +7,7 @@ import html
 import logging
 import os
 import smtplib
+import sqlite3
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -432,37 +433,44 @@ def deliver_email_notification(
     """Send an event notification email to username, adhering to global and
     user settings and cooldown limits. Answers EMAIL_SENT, EMAIL_SKIPPED or
     EMAIL_FAILED: the worker retries a failure, and a skip is not one."""
-    config = get_smtp_config(repo)
-    if not config["enabled"] or not config["host"]:
-        return EMAIL_SKIPPED
+    try:
+        config = get_smtp_config(repo)
+        if not config["enabled"] or not config["host"]:
+            return EMAIL_SKIPPED
 
-    # Check user preference
-    if not repo.getUserNotificationPreference(username, event_type):
-        logger.debug("User %s opted out of email notification for event %s", username, event_type)
-        return EMAIL_SKIPPED
+        # Check user preference
+        if not repo.getUserNotificationPreference(username, event_type):
+            logger.debug("User %s opted out of email notification for event %s", username, event_type)
+            return EMAIL_SKIPPED
 
-    # Check anti-spam cooldown
-    if repo.isNotificationCooldownActive(username, event_type, cooldown_seconds=DEFAULT_NOTIFICATION_COOLDOWN_SECONDS):
-        logger.debug("Cooldown active for user %s event %s, skipping email", username, event_type)
-        return EMAIL_SKIPPED
+        # Check anti-spam cooldown
+        if repo.isNotificationCooldownActive(username, event_type, cooldown_seconds=DEFAULT_NOTIFICATION_COOLDOWN_SECONDS):
+            logger.debug("Cooldown active for user %s event %s, skipping email", username, event_type)
+            return EMAIL_SKIPPED
 
-    user_email = repo.getEmailForUsername(username)
-    if not user_email:
-        logger.warning("No email address on record for user %s", username)
-        return EMAIL_SKIPPED
+        user_email = repo.getEmailForUsername(username)
+        if not user_email:
+            logger.warning("No email address on record for user %s", username)
+            return EMAIL_SKIPPED
 
-    ctx = context or {}
-    base_url = get_instance_public_url(repo)
-    subject, text_body, html_body = _render_event_template(event_type, username, ctx, base_url)
+        ctx = context or {}
+        base_url = get_instance_public_url(repo)
+        subject, text_body, html_body = _render_event_template(event_type, username, ctx, base_url)
 
-    msg = build_email_message(
-        to_email=user_email,
-        subject=subject,
-        text_body=text_body,
-        html_body=html_body,
-        from_email=config["from_email"],
-        from_name=config["from_name"],
-    )
+        msg = build_email_message(
+            to_email=user_email,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+            from_email=config["from_email"],
+            from_name=config["from_name"],
+        )
+    except sqlite3.OperationalError as error:
+        # Nothing has reached SMTP yet, so the worker can safely retry using
+        # its bounded policy. Keep post-send cooldown writes outside this
+        # handler: retrying their failure would duplicate a delivered message.
+        logger.error("Database error preparing notification email (%s) for %s: %s", event_type, username, error)
+        return EMAIL_FAILED
 
     success, err = _send_smtp_message(config, msg)
     if success:

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 i7Gamer
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import sqlite3
 import threading
 
 import pytest
@@ -12,6 +13,7 @@ from services.email_worker import (
     EMAIL_MAX_SEND_ATTEMPTS, EMAIL_RETRY_DELAY_SECONDS,
 )
 from services.email_service import EMAIL_SENT, EMAIL_SKIPPED, EMAIL_FAILED
+from services.email_service import DEFAULT_SMTP_PORT, SETTING_INSTANCE_PUBLIC_URL, save_smtp_config
 from Database.queries.email_queries import EVENT_INVALID_COOKIES, EVENT_SHARE_REQUEST, EVENT_MILESTONE_REACHED
 
 # A failure deadline for the cross-thread waits below, not a pace: each wait
@@ -20,6 +22,140 @@ _DEADLINE_SECONDS = 5
 # Longer than any join in these tests, so a worker that sleeps through its stop
 # flag instead of waiting on it is still parked when the assertion runs.
 _LONG_IDLE_INTERVAL_SECONDS = 60
+_RETRY_CLOCK_START = 1000.0
+
+
+@pytest.fixture
+def delivery_repo():
+    repo = Repository()
+    repo.upsertUser("alice", "alice@example.test")
+    save_smtp_config(repo, enabled=True, host="smtp.example.test", port=DEFAULT_SMTP_PORT,
+                     encryption="tls", user="", password="",
+                     from_email="tracker@example.test", from_name="Tracker")
+    return repo
+
+
+@pytest.mark.parametrize("read", [
+    "getAppSetting", "getUserNotificationPreference", "isNotificationCooldownActive",
+    "getEmailForUsername", "instance_url",
+])
+def test_pre_send_database_failure_preserves_job_until_delayed_recovery(delivery_repo, read, caplog):
+    worker = EmailWorker(delivery_repo)
+    context = {"requester_username": "bob", "metadata": {"source": "sharing"}}
+    worker.enqueue("alice", EVENT_SHARE_REQUEST, context)
+    clock = [_RETRY_CLOCK_START]
+    method = "getAppSetting" if read == "instance_url" else read
+    original = getattr(delivery_repo, method)
+
+    def fail_read(*args, **kwargs):
+        if read != "instance_url" or args[0] == SETTING_INSTANCE_PUBLIC_URL:
+            raise sqlite3.OperationalError("database is locked")
+        return original(*args, **kwargs)
+
+    with patch("services.email_service._send_smtp_message", return_value=(True, None)) as smtp, \
+         patch("services.email_worker.time.monotonic", side_effect=lambda: clock[0]):
+        with patch.object(delivery_repo, method, side_effect=fail_read):
+            assert worker.process_one() is True
+        smtp.assert_not_called()
+        assert "database is locked" in caplog.text
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 1
+        with worker._queue.mutex:
+            retry = worker._queue.queue[0]
+        assert (retry.username, retry.eventType, retry.context) == ("alice", EVENT_SHARE_REQUEST, context)
+        assert retry.context is context
+        assert retry.attempt == 2
+        assert retry.notBefore == clock[0] + EMAIL_RETRY_DELAY_SECONDS
+        assert worker.process_one() is False
+        assert worker._queue.unfinished_tasks == 1
+        smtp.assert_not_called()
+        clock[0] = retry.notBefore
+        assert worker.process_one() is True
+        smtp.assert_called_once()
+        message = smtp.call_args.args[1]
+        assert message["To"] == "alice@example.test"
+        assert "bob" in message["Subject"]
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
+        assert delivery_repo.isNotificationCooldownActive("alice", EVENT_SHARE_REQUEST)
+
+
+def test_lazy_connection_failure_retries_with_an_unbound_worker(delivery_repo):
+    worker = EmailWorker()
+    worker.enqueue("alice", EVENT_SHARE_REQUEST)
+    clock = [_RETRY_CLOCK_START]
+    with patch("services.email_service._send_smtp_message", return_value=(True, None)) as smtp, \
+         patch("services.email_worker.time.monotonic", side_effect=lambda: clock[0]):
+        with patch("Database.db.ConnectionManager._newConnection",
+                   side_effect=sqlite3.OperationalError("unable to open database file")):
+            assert worker.process_one() is True
+        smtp.assert_not_called()
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 1
+        assert worker.process_one() is False
+        clock[0] += EMAIL_RETRY_DELAY_SECONDS
+        assert worker.process_one() is True
+        smtp.assert_called_once()
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
+
+
+def test_pre_send_database_failure_exhausts_existing_attempt_limit(delivery_repo, caplog):
+    worker = EmailWorker(delivery_repo)
+    worker.enqueue("alice", EVENT_SHARE_REQUEST)
+    clock = [_RETRY_CLOCK_START]
+    with patch.object(delivery_repo, "getAppSetting", side_effect=sqlite3.OperationalError("database is locked")) as read, \
+         patch("services.email_service._send_smtp_message") as smtp, \
+         patch("services.email_worker.time.monotonic", side_effect=lambda: clock[0]):
+        for _ in range(EMAIL_MAX_SEND_ATTEMPTS):
+            assert worker.process_one() is True
+            clock[0] += EMAIL_RETRY_DELAY_SECONDS
+        assert worker.process_one() is False
+        assert read.call_count == EMAIL_MAX_SEND_ATTEMPTS
+        smtp.assert_not_called()
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
+        assert "Giving up" in caplog.text
+
+
+def test_cooldown_write_failure_after_smtp_success_never_requeues(delivery_repo, caplog):
+    worker = EmailWorker(delivery_repo)
+    worker.enqueue("alice", EVENT_SHARE_REQUEST)
+    with patch.object(delivery_repo, "recordNotificationSent",
+                      side_effect=sqlite3.OperationalError("database is locked")), \
+         patch("services.email_service._send_smtp_message", return_value=(True, None)) as smtp:
+        assert worker.process_one() is True
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
+        assert worker.process_one() is False
+        smtp.assert_called_once()
+        assert "Error processing email notification" in caplog.text
+
+
+@pytest.mark.parametrize("error", [sqlite3.ProgrammingError("bad query"), TypeError("bad context")])
+def test_pre_send_programming_error_is_logged_without_retry(delivery_repo, error, caplog):
+    worker = EmailWorker(delivery_repo)
+    worker.enqueue("alice", EVENT_SHARE_REQUEST)
+    with patch("services.email_service._render_event_template", side_effect=error), \
+         patch("services.email_service._send_smtp_message") as smtp:
+        assert worker.process_one() is True
+        smtp.assert_not_called()
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
+        assert "Error processing email notification" in caplog.text
+
+
+@pytest.mark.parametrize("skip", ["disabled", "unconfigured", "opt_out", "cooldown", "no_recipient"])
+def test_delivery_skip_does_not_enter_retry_path(delivery_repo, skip):
+    from services.email_service import SETTING_EMAIL_NOTIF_ENABLED, SETTING_SMTP_HOST
+
+    if skip == "disabled":
+        delivery_repo.setAppSetting(SETTING_EMAIL_NOTIF_ENABLED, "0")
+    elif skip == "unconfigured":
+        delivery_repo.setAppSetting(SETTING_SMTP_HOST, "")
+    elif skip == "opt_out":
+        delivery_repo.setUserNotificationPreference("alice", EVENT_SHARE_REQUEST, False)
+    elif skip == "cooldown":
+        delivery_repo.recordNotificationSent("alice", EVENT_SHARE_REQUEST)
+    worker = EmailWorker(delivery_repo)
+    worker.enqueue("missing" if skip == "no_recipient" else "alice", EVENT_SHARE_REQUEST)
+    with patch("services.email_service._send_smtp_message") as smtp:
+        assert worker.process_one() is True
+        smtp.assert_not_called()
+        assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
 
 
 def test_the_idle_loop_notices_the_stop_flag_instead_of_sleeping_through_it():

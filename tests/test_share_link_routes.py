@@ -3,6 +3,8 @@ authenticated /wrapped and /profile routes, and the public, unauthenticated
 GET /shared/<token> page and its image routes.
 """
 import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -15,7 +17,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import app as appModule
 from app import SpotifyDashboardApp, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_ERROR_MESSAGE
 from _app_factory import AppTestCase
-from Database.repository import IMAGE_KIND_ARTIST
+from config import IMAGE_CACHE_CONTROL
+from Database.database import Database
+from Database.repository import IMAGE_KIND_ARTIST, IMAGE_STATUS_OK, IMAGE_STATUS_PENDING
 import Database.utils as utilsModule
 from test_charts_genres import coverageDict
 from conftest import wrappedCachedRow
@@ -1411,6 +1415,116 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
 
 
 class TestSharedImageRoutes(ShareLinkRoutesTestCase):
+    def _realArtistImageCache(self):
+        imageDir = Path(self.enterContext(TemporaryDirectory()))
+        self.enterContext(patch.object(Database, "imgDir_artists", imageDir))
+        db = Database("alice", dbPath=self.dash.repo.connectionManager.dbPath, startWorkers=False)
+        self.addCleanup(db.repo.connectionManager.close)
+        db._imageDownloadExecutor = MagicMock()
+        self.enterContext(patch.object(self.dash, "_getReadOnlyUserDb", return_value=db))
+        return db, imageDir
+
+    def _getArtistImage(self, token, filename):
+        response = self.dash.app.test_client().get(f"/shared/{token}/img/artists/{filename}")
+        response.close()  # Release the file handle before temporary-directory cleanup on Windows.
+        return response
+
+    def test_unsupported_extensions_leave_real_cached_image_untouched(self):
+        token = self._createLink()
+        artistId = "art1"
+        self._seedPlayedArtist(artistId)
+        db, imageDir = self._realArtistImageCache()
+        (imageDir / f"{artistId}.jpeg").write_bytes(b"synthetic image")
+
+        for extension in (".png", ".jpg", ".JPEG", ""):
+            with self.subTest(extension=extension), patch.object(
+                    self.dash.repo, "getPlayedArtistIds",
+                    wraps=self.dash.repo.getPlayedArtistIds) as played:
+                db.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+                self.dash._getReadOnlyUserDb.reset_mock()
+                for _ in ("first request", "repeated request"):
+                    response = self._getArtistImage(token, f"{artistId}{extension}")
+                    self.assertEqual(response.status_code, 404)
+                self.assertEqual(db.repo.imageStatus(artistId, IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+                self.assertTrue((imageDir / f"{artistId}.jpeg").exists())
+                db._imageDownloadExecutor.submit.assert_not_called()
+                self.dash._getReadOnlyUserDb.assert_not_called()
+                played.assert_not_called()
+
+    def test_unsupported_extension_is_rejected_even_when_file_exists(self):
+        token = self._createLink()
+        db, imageDir = self._realArtistImageCache()
+        (imageDir / "art1.png").write_bytes(b"synthetic image")
+
+        self.assertEqual(self._getArtistImage(token, "art1.png").status_code, 404)
+        self.dash._getReadOnlyUserDb.assert_not_called()
+        db._imageDownloadExecutor.submit.assert_not_called()
+
+    def test_real_missing_shared_jpeg_claims_once_across_repeated_requests(self):
+        token = self._createLink()
+        artistId = "art1"
+        self._seedPlayedArtist(artistId)
+        db, _ = self._realArtistImageCache()
+        db.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+
+        for _ in ("first request", "pending request"):
+            response = self._getArtistImage(token, f"{artistId}.jpeg")
+            self.assertEqual(response.status_code, 404)
+            self.assertIn("no-store", response.headers["Cache-Control"])
+            self.assertEqual(db.repo.imageStatus(artistId, IMAGE_KIND_ARTIST), IMAGE_STATUS_PENDING)
+        db._imageDownloadExecutor.submit.assert_called_once()
+
+    def test_real_cached_shared_jpeg_preserves_status_and_cache_headers(self):
+        token = self._createLink()
+        artistId = "art1"
+        self._seedPlayedArtist(artistId)
+        db, imageDir = self._realArtistImageCache()
+        (imageDir / f"{artistId}.jpeg").write_bytes(b"synthetic image")
+        db.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+
+        response = self._getArtistImage(token, f"{artistId}.jpeg")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], IMAGE_CACHE_CONTROL)
+        self.assertEqual(response.headers["X-Robots-Tag"], "noindex")
+        self.assertEqual(db.repo.imageStatus(artistId, IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+        db._imageDownloadExecutor.submit.assert_not_called()
+        self.dash._getReadOnlyUserDb.assert_not_called()
+
+    def test_real_unplayed_artist_is_not_forgotten_or_fetched(self):
+        token = self._createLink()
+        db, _ = self._realArtistImageCache()
+        db.repo.markImageStatus("unplayed", IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+
+        self.assertEqual(self._getArtistImage(token, "unplayed.jpeg").status_code, 404)
+
+        self.assertEqual(db.repo.imageStatus("unplayed", IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+        db._imageDownloadExecutor.submit.assert_not_called()
+        self.dash._getReadOnlyUserDb.assert_not_called()
+
+    def test_rejected_share_access_cannot_repair_real_artist_cache(self):
+        db, _ = self._realArtistImageCache()
+        artistId = "art1"
+        db.repo.markImageStatus(artistId, IMAGE_KIND_ARTIST, IMAGE_STATUS_OK)
+        for rejection in ("unknown token", "revoked token", "disabled feature"):
+            with self.subTest(rejection=rejection):
+                self.dash.repo.setShareLinksEnabled(True)
+                token = self._createLink()
+                self._seedPlayedArtist(artistId)
+                if rejection == "unknown token":
+                    token = "unknown"
+                elif rejection == "revoked token":
+                    linkId = self.dash.repo.getShareLink(token)["id"]
+                    self.dash.repo.revokeShareLink(linkId, "alice")
+                else:
+                    self.dash.repo.setShareLinksEnabled(False)
+
+                for extension in (".jpeg", ".png"):
+                    self.assertEqual(self._getArtistImage(token, f"{artistId}{extension}").status_code, 404)
+                self.assertEqual(db.repo.imageStatus(artistId, IMAGE_KIND_ARTIST), IMAGE_STATUS_OK)
+                db._imageDownloadExecutor.submit.assert_not_called()
+                self.dash._getReadOnlyUserDb.assert_not_called()
+
     def _createLink(self):
         self.dash.repo.upsertUser("alice", "alice@example.com")
         return self.dash.repo.createShareLink("alice", self.dash.repo.SHARE_LINK_KIND_WRAPPED, 2026, None)

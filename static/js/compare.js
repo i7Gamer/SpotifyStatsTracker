@@ -34,6 +34,8 @@
 //< the form htmx watches, and the queue every request on this page joins
 var COMPARE_FORM_ID = 'compareFilters';
 var COMPARE_SORT_ID = 'sortBy';
+var COMPARE_INITIAL_LOAD_ID = 'compareInitialLoad';
+var COMPARE_USER_BADGES_ID = 'compareUserBadges';
 //< the JSON island the trend chart is repainted from. Only the full refresh
 //  carries one - a sort change renders an identical chart, so it does not
 var COMPARE_TREND_DATA_ID = 'compareTrendData';
@@ -70,9 +72,9 @@ if (typeof window !== 'undefined') {
 
 if (typeof document !== 'undefined') {
   var byId = function (id) { return document.getElementById(id); };
-  // A failed or replaced full request leaves the form ahead of the rendered
-  // summary. The next sort must finish that refresh before using narrow swaps.
-  var compareNeedsFullRefresh = false;
+  // The shell starts empty. A failed or replaced full request leaves a complete
+  // refresh owed, so the next sort must finish it before using narrow swaps.
+  var compareNeedsFullRefresh = true;
 
   // Called from the Time Period select's onchange. Both this and htmx's own
   // listener sit on that select (the form's trigger names it with `from:`), and
@@ -90,22 +92,27 @@ if (typeof document !== 'undefined') {
   // page to gain: it used to fetch an inverted range and render an empty
   // comparison with no explanation.
   //
-  // Scoped to the form and its separate sort control. A counterpart badge carries its
-  // whole query in its href and must keep working even while the Time Period
-  // select sits on a half-entered custom range - which is exactly the state
-  // that blocks a form request.
+  // Only form/sort requests validate the editable dates. Initial load and
+  // counterpart links carry their complete, server-validated query already.
+  // All four sources participate in recovery, including when their source
+  // element disappears during the response's out-of-band swaps.
   document.body.addEventListener('htmx:configRequest', function (evt) {
     if (!evt.detail.elt) return;
     var origin = evt.detail.elt.id;
-    if (origin !== COMPARE_FORM_ID && origin !== COMPARE_SORT_ID) return;
-    var problem = HtmxFilters.rangeProblemFromDom();
-    HtmxFilters.showRangeError(problem);
-    if (problem !== HtmxFilters.RANGE_OK) {
-      evt.preventDefault();
-      return;
+    var usesForm = origin === COMPARE_FORM_ID || origin === COMPARE_SORT_ID;
+    var isCounterpart = evt.detail.elt.tagName === 'A' &&
+      evt.detail.elt.closest('#' + COMPARE_USER_BADGES_ID);
+    if (!usesForm && origin !== COMPARE_INITIAL_LOAD_ID && !isCounterpart) return;
+    if (usesForm) {
+      var problem = HtmxFilters.rangeProblemFromDom();
+      HtmxFilters.showRangeError(problem);
+      if (problem !== HtmxFilters.RANGE_OK) {
+        evt.preventDefault();
+        return;
+      }
+      pruneCompareAutoParams(evt.detail.parameters);
     }
-    pruneCompareAutoParams(evt.detail.parameters);
-    var fullRefresh = origin === COMPARE_FORM_ID || compareNeedsFullRefresh;
+    var fullRefresh = origin !== COMPARE_SORT_ID || compareNeedsFullRefresh;
     if (origin === COMPARE_SORT_ID && fullRefresh) {
       var form = byId(COMPARE_FORM_ID);
       evt.detail.path = (form && form.getAttribute('hx-get')) || window.location.pathname;
@@ -153,18 +160,25 @@ if (typeof document !== 'undefined') {
                     : window.location.pathname + window.location.search;
     htmx.ajax('GET', path, { source: form, target: 'body', swap: 'none' });
   };
-  var reportCompareFailure = function () {
+  var reportCompareFailure = function (evt) {
+    var config = evt.detail && evt.detail.requestConfig;
+    if (!config || typeof config.compareFullRefresh !== 'boolean') return;
     if (window.AjaxStatus) window.AjaxStatus.showBanner(reloadCompare);
   };
   document.body.addEventListener('htmx:responseError', reportCompareFailure);
   document.body.addEventListener('htmx:sendError', reportCompareFailure);
   document.body.addEventListener('htmx:afterRequest', function (evt) {
-    if (evt.detail && evt.detail.successful && evt.detail.requestConfig &&
-        evt.detail.requestConfig.compareFullRefresh) {
+    // The initial paragraph and counterpart links can be detached by now.
+    // The saved request marker still identifies them when htmx rebroadcasts
+    // completion from a surviving ancestor.
+    var config = evt.detail && evt.detail.requestConfig;
+    if (!config || typeof config.compareFullRefresh !== 'boolean') return;
+    if (evt.detail.successful && config.compareFullRefresh) {
       compareNeedsFullRefresh = false;
     }
-    //< a later success is what clears a stale banner; Retry clears its own
-    if (evt.detail && evt.detail.successful && window.AjaxStatus) {
+    // A partial success cannot acknowledge an outstanding full refresh.
+    // The Retry button still clears its banner immediately when clicked.
+    if (evt.detail.successful && !compareNeedsFullRefresh && window.AjaxStatus) {
       window.AjaxStatus.clearBanner();
     }
   });

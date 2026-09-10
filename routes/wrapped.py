@@ -26,6 +26,7 @@ from config import (
     SHARE_LINK_MAX_PER_BUCKET, RATE_LIMIT_ERROR_MESSAGE,
 )
 from Database.database import Database
+from Database.media_fetch import STORED_IMAGE_EXTENSION
 from Database.repository import IMAGE_KIND_ARTIST, Repository
 from Database.utils import msToString, now
 
@@ -375,26 +376,29 @@ def register(app, dashboard):
         if link is None or filename != os.path.basename(filename):
             return "", 404
 
+        artistId, extension = os.path.splitext(filename)
+        if extension != STORED_IMAGE_EXTENSION:
+            return "", 404
+
         imageDir = Database.imgDir_artists
         imagePath = os.path.join(imageDir, filename)
         if not os.path.exists(imagePath):
-            parts = os.path.splitext(filename)
             # Unlike the authenticated route, the caller here is anonymous and
             # the fetch would run on the LINK OWNER's Spotify credentials, so
             # it's restricted to ids that actually appear in their listening
             # data. Otherwise walking arbitrary ids through this route would
             # insert an images row and dispatch an authenticated lookup per
             # id, with no session and no backpressure.
-            if (len(parts) == 2 and parts[0].isalnum()
-                    and dashboard.repo.getPlayedArtistIds(link["username"], [parts[0]])):
+            if (artistId.isalnum()
+                    and dashboard.repo.getPlayedArtistIds(link["username"], [artistId])):
                 db = dashboard._getReadOnlyUserDb(link["username"])
                 # The file is not on disk, so an 'ok' images row for it is
                 # stale (a database restored without its Media folder) and
                 # lazyFetchArtistImage would honour it forever - forgotten
                 # first, as the authenticated route's _forgetMissingImage
                 # does. Inside the played-ids gate above: this is a write.
-                db.repo.forgetImageStatus(parts[0], IMAGE_KIND_ARTIST)
-                db.lazyFetchArtistImage(parts[0], Path(imagePath))
+                db.repo.forgetImageStatus(artistId, IMAGE_KIND_ARTIST)
+                db.lazyFetchArtistImage(artistId, Path(imagePath))
 
         resp = sendCacheableImage(imageDir, filename)
         resp.headers["X-Robots-Tag"] = "noindex"

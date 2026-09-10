@@ -225,7 +225,7 @@
        silent redirect. No hx-indicator either: these placeholders already say
        "Loading…", so there is nothing to dim (matching loadCompareData's
        `initial` option, which faded nothing). #}
-    <p class="loading"
+    <p class="loading" id="compareInitialLoad"
        hx-get="{{ resultsUrl }}"
        hx-trigger="load"
        hx-swap="none"
