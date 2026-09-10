@@ -633,8 +633,7 @@ button {
 }
 
 
-.card h2,
-.chart-card .chart-section h3 {
+.card h2 {
   margin-top: 0;
   margin-bottom: 18px;
 }
@@ -3007,6 +3006,7 @@ input[type="checkbox"], input[type="radio"] {
 
 .chart-card h2,
 .chart-card .chart-section h3 {
+  margin-top: 0;
   margin-bottom: 4px;
 }
 

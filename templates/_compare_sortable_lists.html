@@ -35,5 +35,6 @@
 </div>
 {% endfor %}
 
-{# Switching counterpart must preserve the sort just applied to the lists. #}
+{# OOB-swap the counterpart picker so switching users carries the validated
+   sort just applied to these lists into the next request. #}
 {% with oob = true %}{% include '_compare_user_badges.html' %}{% endwith %}

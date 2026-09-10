@@ -97,9 +97,10 @@ class UserRegistryMixin:
                 username = sanitized
                 counter = 1
                 while True:
-                    if username in self.user_databases:
-                        pass  # a cached Database (possibly read-only) already owns this name
-                    elif self.repo.createUserIfNameAvailable(username, email):
+                    # A cached Database may be read-only and still need the
+                    # legacy-account diagnostic below when its name is skipped.
+                    if (username not in self.user_databases
+                            and self.repo.createUserIfNameAvailable(username, email)):
                         # An email prefix proves no ownership of an existing
                         # account, including a legacy row with no email. The
                         # insert also reserves display names under its write lock.

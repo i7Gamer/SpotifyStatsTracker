@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from Database.queries._base import *  # noqa: F401,F403 - shared constants/db helpers

@@ -208,12 +208,11 @@ class _CatalogBatch:
 class MetadataBackfillMixin:
     """The Spotify Web-API metadata backfiller (missing album/track dates, artistless tracks)."""
 
-    # When this user's catalog lookups may resume, per _standDownCatalogLookups.
-    # A class attribute so it has a declared home and a documented default -
-    # the two readers used getattr(self, ..., 0.0) because nothing ever
-    # initialised it. Deliberately NOT reset per worker run:
-    # a quota window belongs to Spotify and outlives a
-    # restart, so a restarted worker must not walk back into an exhausted one.
+    # Immutable default until this instance first hits its catalog quota.
+    # _standDownCatalogLookups assigns self._catalogBackoffUntil, shadowing
+    # this default for that user only; other instances keep their own deadline.
+    # Do not reset it when restarting a worker on the same Database instance:
+    # the existing quota window still applies. A new process starts at zero.
     _catalogBackoffUntil = 0.0
 
     def _spendCatalogBatch(self, kind: str, ids: list, headers: dict,
