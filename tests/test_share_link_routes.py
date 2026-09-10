@@ -1415,6 +1415,45 @@ class TestShareLinkPanelOnWrappedPage(ShareLinkRoutesTestCase):
 
 
 class TestSharedImageRoutes(ShareLinkRoutesTestCase):
+    def test_unsafe_artist_filename_is_rejected_before_file_or_owner_data_access(self):
+        """Call the view directly so Flask's one-segment route cannot hide a
+        missing filename guard. A valid token still authorizes the request."""
+        token = self._createLink()
+        readOnlyDb = self._makeDb()
+        filenames = (
+            "../../evil.jpeg", r"..\..\evil.jpeg", "/evil.jpeg", r"C:\evil.jpeg",
+            "artist name.jpeg", "art\u00edst.jpeg", "artist:evil.jpeg", "", "...",
+        )
+        for filename in filenames:
+            with self.subTest(filename=filename), self.dash.app.test_request_context('/'), \
+                 patch('routes.wrapped.os.path.exists', return_value=True) as exists, \
+                 patch('routes.wrapped.sendCacheableImage', return_value=Response("OK")) as send, \
+                 patch.object(self.dash.repo, 'getPlayedArtistIds') as played, \
+                 patch.object(self.dash, '_getReadOnlyUserDb', return_value=readOnlyDb) as getDb:
+                response = self.dash.app.make_response(
+                    self.dash.app.view_functions["serveSharedArtistImage"](token, filename))
+
+                self.assertEqual(response.status_code, 404)
+                exists.assert_not_called()
+                send.assert_not_called()
+                played.assert_not_called()
+                getDb.assert_not_called()
+                readOnlyDb.repo.forgetImageStatus.assert_not_called()
+                readOnlyDb.lazyFetchArtistImage.assert_not_called()
+
+    def test_safe_synthetic_artist_filename_remains_servable(self):
+        token = self._createLink()
+        filename = "synthetic_artist-1.jpeg"
+        with self.dash.app.test_request_context('/'), \
+             patch('routes.wrapped.os.path.exists', return_value=True) as exists, \
+             patch('routes.wrapped.sendCacheableImage', return_value=Response("OK")) as send:
+            response = self.dash.app.view_functions["serveSharedArtistImage"](token, filename)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Robots-Tag"], "noindex")
+        exists.assert_called_once_with(os.path.join(Database.imgDir_artists, filename))
+        send.assert_called_once_with(Database.imgDir_artists, filename)
+
     def _realArtistImageCache(self):
         imageDir = Path(self.enterContext(TemporaryDirectory()))
         self.enterContext(patch.object(Database, "imgDir_artists", imageDir))

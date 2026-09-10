@@ -15,6 +15,7 @@ from flask import (
     render_template, redirect, request, url_for, jsonify, make_response,
     abort,
 )
+from werkzeug.utils import secure_filename
 
 from routes._htmx import isHtmxSwap
 #< the same cacheable-image response the authenticated /img/ routes serve: one
@@ -373,15 +374,19 @@ def register(app, dashboard):
 
     def serveSharedArtistImage(token, filename):
         link = _resolveSharedLink(token)
-        if link is None or filename != os.path.basename(filename):
+        if link is None:
+            return "", 404
+        safeFilename = secure_filename(filename)
+        # Reject unsafe names rather than rewriting them to another cached file.
+        if not safeFilename or safeFilename != filename:
             return "", 404
 
-        artistId, extension = os.path.splitext(filename)
+        artistId, extension = os.path.splitext(safeFilename)
         if extension != STORED_IMAGE_EXTENSION:
             return "", 404
 
         imageDir = Database.imgDir_artists
-        imagePath = os.path.join(imageDir, filename)
+        imagePath = os.path.join(imageDir, safeFilename)
         if not os.path.exists(imagePath):
             # Unlike the authenticated route, the caller here is anonymous and
             # the fetch would run on the LINK OWNER's Spotify credentials, so
@@ -400,7 +405,7 @@ def register(app, dashboard):
                 db.repo.forgetImageStatus(artistId, IMAGE_KIND_ARTIST)
                 db.lazyFetchArtistImage(artistId, Path(imagePath))
 
-        resp = sendCacheableImage(imageDir, filename)
+        resp = sendCacheableImage(imageDir, safeFilename)
         resp.headers["X-Robots-Tag"] = "noindex"
         return resp
     app.add_url_rule("/shared/<token>/img/artists/<filename>", "serveSharedArtistImage", serveSharedArtistImage)
