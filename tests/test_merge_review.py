@@ -23,7 +23,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from conftest import DatabaseTestCase
-from Database.queries.tracks import isPlainTitle, normalizeTrackTitle
+from Database.queries.merges import isPlainTitle, normalizeTrackTitle
 
 ISRC_A = "USRC12345678"
 ISRC_B = "GBAYE0000001"
@@ -412,7 +412,7 @@ class TestReviewCandidates(MergeReviewTestCase):
         self._track(db, "C" * 22, "Song Two", plays=9)
         self._track(db, "D" * 22, "Song Two", plays=2)
 
-        with patch("Database.queries.tracks.MERGE_REVIEW_PAGE_LIMIT", 1):
+        with patch("Database.queries.merges.MERGE_REVIEW_PAGE_LIMIT", 1):
             review = db.repo.getMergeReviewCandidates()
 
         self.assertEqual(len(review["groups"]), 1)
@@ -871,10 +871,16 @@ class TestSeeingAndUndoingDismissals(MergeReviewTestCase):
         self._track(db, "C" * 22, "Song Two", plays=5)
         self._track(db, "D" * 22, "Song Two", plays=2)
         db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
-        with patch("Database.queries.tracks.time.time", return_value=2e9):
+        frozenDecisionTimestamp = 2e9
+        with patch("Database.queries.merges.time.time", return_value=frozenDecisionTimestamp):
             db.repo.dismissMergeCandidate("D" * 22, decidedBy="timorzipa")
 
         self.assertEqual(self._dismissedIds(db), ["D" * 22, "B" * 22])
+        storedDecision = db.repo._conn().execute(
+            "SELECT decided_at FROM track_merge_decisions WHERE track_id=?",
+            ("D" * 22,),
+        ).fetchone()
+        self.assertEqual(storedDecision["decided_at"], frozenDecisionTimestamp)
 
     def test_the_page_cap_reports_what_it_cut(self):
         db = self._db()
@@ -885,7 +891,7 @@ class TestSeeingAndUndoingDismissals(MergeReviewTestCase):
         db.repo.dismissMergeCandidate("B" * 22, decidedBy="timorzipa")
         db.repo.dismissMergeCandidate("D" * 22, decidedBy="timorzipa")
 
-        with patch("Database.queries.tracks.MERGE_DISMISSED_PAGE_LIMIT", 1):
+        with patch("Database.queries.merges.MERGE_DISMISSED_PAGE_LIMIT", 1):
             listing = db.repo.getDismissedMergeCandidates()
 
         self.assertEqual(len(listing["entries"]), 1)

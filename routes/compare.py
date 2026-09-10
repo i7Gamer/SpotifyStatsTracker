@@ -40,7 +40,7 @@ COMPARE_INTERVALS = ("", "today", "day", "week", "month", "year", "5years", "cus
 # out entirely, which is the same thing _resolveGroupBy does with an empty one.
 COMPARE_TREND_BUCKETS = ("day", "week", "month")
 # The ?scope= the Sort by control sends, narrowing the refresh to the six
-# individual my/their lists (the only regions whose content reads sortBy).
+# individual my/their lists and the counterpart links carrying the current sort.
 COMPARE_SORTABLE_SCOPE = "sortable"
 # What the shell's trend data island holds until the first swap replaces it:
 # the shape charts.js expects, so a resize before the data lands draws the
@@ -234,7 +234,8 @@ def register(app, dashboard):
                         #  interval _getDateRange leaves open - is a lifetime first
                         rangeScopedFirstListen=startDate is not None)
 
-        # A sortBy change swaps only those six lists, so its request
+        # A sortBy change swaps those six lists and updates counterpart links
+        # to preserve the new sort when switching users. Its request
         # (?scope=sortable, see the Sort by control in compare.html) stops here
         # - the shared lists, similarities, genres, taste match and trend below
         # are the expensive half on long ranges and would render identically
@@ -247,7 +248,8 @@ def register(app, dashboard):
             # and is the same validated-values rule _compareFilterArgs exists
             # for. htmx honours this header over the attribute.
             return Response(
-                render_template("_compare_sortable_lists.html", **listArgs),
+                render_template("_compare_sortable_lists.html", userBadges=userBadges,
+                                withUsername=withUsername, **listArgs),
                 headers={"HX-Replace-Url": url_for("comparePage", **filterArgs)},
             )
 

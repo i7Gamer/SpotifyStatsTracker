@@ -14,7 +14,7 @@ what most of this file is about:
   worth pinning - it does not error, it silently keeps stale content under a URL
   that already says otherwise.
 - the NARROW refresh survives. A Sort by change still asks for
-  ``?scope=sortable`` and still gets only the six individual my/their lists, so
+  ``?scope=sortable`` and gets the six individual lists and counterpart links, so
   the shared lists, taste match, genres and trend - the expensive half on long
   ranges - are not recomputed to render identically.
 - the URL updates by REPLACE, never push: an in-page filter change must not
@@ -44,6 +44,7 @@ import sys
 import unittest
 from html.parser import HTMLParser
 from unittest.mock import patch, MagicMock
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -326,10 +327,43 @@ class TestSortableScope(CompareHtmxTestCase):
     def _sortable(self, url=f"/compare?scope={COMPARE_SORTABLE_SCOPE}"):
         return self._loginAs().get(url, headers=HX_HEADERS)
 
-    def test_it_swaps_only_the_six_individual_lists(self):
+    def test_it_swaps_the_six_individual_lists_and_counterpart_links(self):
         body = self._sortable().get_data(as_text=True)
 
-        self.assertEqual(oobMarkers(body), set(SORTABLE_REGION_IDS))
+        self.assertEqual(oobMarkers(body), set(SORTABLE_REGION_IDS) | {"compareUserBadges"})
+
+    def test_switching_counterpart_after_sort_preserves_validated_filters(self):
+        import bs4
+
+        self._accept("alice", "carol")
+        client = self._loginAs()
+        for requestedSort, expectedSort in (("name", "name"), ("totalTimeListened", "totalTimeListened"),
+                                            ("invalid", "plays")):
+            for rangeArgs in ({"interval": ""}, {"interval": "custom", "startDate": "2026-01-01",
+                                                  "endDate": "2026-01-31"}):
+                with self.subTest(sort=requestedSort, range=rangeArgs):
+                    filters = {**rangeArgs, "limit": "25", "groupBy": "week"}
+                    url = "/compare?" + urlencode({**filters, "with": "bob", "sortBy": requestedSort,
+                                                  "scope": COMPARE_SORTABLE_SCOPE})
+                    fragment = bs4.BeautifulSoup(self._fragment(url, client), "html.parser")
+                    pickers = fragment.select("#compareUserBadges")
+                    self.assertEqual(len(pickers), 1)
+                    self.assertEqual(pickers[0]["hx-swap-oob"], "outerHTML")
+                    carolLink = next(a["href"] for a in pickers[0].select("a")
+                                     if parse_qs(urlsplit(a["href"]).query)["with"] == ["carol"])
+                    expected = {**filters, "with": "carol", "sortBy": expectedSort}
+                    self.assertEqual(parse_qs(urlsplit(carolLink).query, keep_blank_values=True),
+                                     {key: [value] for key, value in expected.items()})
+                    with patch.object(self.dash, "_gatherCompareStats",
+                                      wraps=self.dash._gatherCompareStats) as gather:
+                        switched = self._fragment(carolLink, client)
+                    self.assertEqual([call.kwargs["sortBy"] for call in gather.call_args_list],
+                                     [expectedSort, expectedSort])
+                    self.assertIs(gather.call_args_list[-1].args[0], self.dbs["carol"])
+                    # Full refreshes include the same picker exactly once.
+                    switchedSoup = bs4.BeautifulSoup(switched, "html.parser")
+                    self.assertEqual(len(switchedSoup.select("#compareUserBadges")), 1)
+                    self.assertEqual(switchedSoup.select_one("#compareWithField")["value"], "carol")
 
     def test_it_skips_the_work_those_lists_do_not_need(self):
         """The shared lists, similarities, genres, taste match and trend render

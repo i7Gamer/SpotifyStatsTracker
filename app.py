@@ -592,6 +592,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
         deliver_email_notification, so this never doubles up."""
         if not self.repo.isMilestonesEnabled():
             return
+        localNeedsRecalc = False
         try:
             # Import-backfill hygiene, one admin toggle for both halves:
             # crossings surfaced by imported history are recorded as already
@@ -614,6 +615,7 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if recalcEnabled and db.readProgress().get("status") == "running":
                 return
             pending = db.consumeMilestoneRecalcFlag() if recalcEnabled else False
+            localNeedsRecalc = pending
             rows = detectMilestonesDetailed(db, db.repo, username,
                                             changeCache=self._milestoneChangeCache,
                                             markSeen=pending)
@@ -632,11 +634,16 @@ class SpotifyDashboardApp(ViewModelMixin, PaginationMixin, DateRangeMixin, Wrapp
             if recalcEnabled and (pending or recorded > 0):
                 recalculateMilestoneDates(db.repo, username, db.tz,
                                           removeUnsupported=pending)
+                localNeedsRecalc = False
             unseen = [r for r in rows if not r["seen"] and r["kind"] in EMAILED_MILESTONE_KINDS]
             if unseen:
                 queue_email_notification(username, EVENT_MILESTONE_REACHED,
                                          {"milestones": [formatMilestone(r) for r in unseen]})
         except Exception as e:
+            if localNeedsRecalc:
+                # Retry consumed import work, including partially applied
+                # recalculation. Never clear a concurrent import's new flag.
+                db.raiseMilestoneRecalcFlag()
             logger.warning("Milestone detection failed for %s: %s", username, e)
 
     def primeMilestoneBadge(self, username: str) -> None:

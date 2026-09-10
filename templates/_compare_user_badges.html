@@ -26,7 +26,7 @@
    [hidden]{display:none}).
 
    Expects: userBadges (from routes/compare.py), withUsername; `oob` only when
-   included from _compare_results.html. #}
+   included from _compare_sortable_lists.html (also used by full refreshes). #}
 <nav class="wrapped-year-badges" id="compareUserBadges" aria-label="Select user to compare with"
      {% if userBadges | length < 2 %}hidden{% endif %}
      hx-boost="true"

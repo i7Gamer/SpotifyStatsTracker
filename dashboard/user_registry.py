@@ -83,7 +83,7 @@ class UserRegistryMixin:
         # "alice@b.com") could otherwise both pass the uniqueness check before
         # either has actually created their row.
         created = False
-        legacyUsername = None
+        rejectedNames = []
         with self._session_lock:
             username = self.repo.getUsernameForEmail(email)
             if not username:
@@ -98,37 +98,35 @@ class UserRegistryMixin:
                 counter = 1
                 while True:
                     if username in self.user_databases:
-                        pass  # a live Database already exists under this name - can't be the same account, needs a new suffix
+                        pass  # a cached Database (possibly read-only) already owns this name
                     elif self.repo.createUserIfNameAvailable(username, email):
                         # An email prefix proves no ownership of an existing
                         # account, including a legacy row with no email. The
                         # insert also reserves display names under its write lock.
                         break
 
+                    rejectedNames.append(username)
                     username = f"{sanitized}_{counter}"
                     counter += 1
 
-                if username != sanitized:
-                    try:
-                        legacyUsername = self.repo.getNullEmailUsernameNoCase(sanitized)
-                    except Exception:
-                        # This is an operator diagnostic after the account was
-                        # successfully reserved. A failed lookup must not turn a
-                        # valid first login into an error.
-                        logger.exception(
-                            "Could not check whether allocated account %s was suffixed "
-                            "past a legacy account",
-                            username,
-                        )
-
         if created:
-            if legacyUsername is not None:
-                logger.warning(
-                    "Legacy account %s has no associated email; allocated new account %s. "
-                    "See README.md#recover-a-legacy-account before reassociating either account.",
-                    legacyUsername,
-                    username,
-                )
+            # Best-effort diagnostics after reservation, outside the session
+            # lock. A failed lookup must not fail login or hide later orphans.
+            for candidate in rejectedNames:
+                try:
+                    legacyUsername = self.repo.getNullEmailUsernameNoCase(candidate)
+                except Exception:
+                    logger.exception(
+                        "Could not check whether allocated account %s was suffixed "
+                        "past legacy candidate %s", username, candidate)
+                    continue
+                if legacyUsername is not None:
+                    logger.warning(
+                        "Legacy account %s has no associated email; allocated new account %s. "
+                        "See README.md#recover-a-legacy-account before reassociating either account.",
+                        legacyUsername,
+                        username,
+                    )
             # The startup promotion ran over an empty users table on a fresh
             # install and nothing re-ran it, so the first account had no admin
             # until the next restart. Same rule as boot (ADMIN_EMAIL

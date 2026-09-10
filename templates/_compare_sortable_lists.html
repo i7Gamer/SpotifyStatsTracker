@@ -1,7 +1,7 @@
 {#- SPDX-FileCopyrightText: 2026 i7Gamer
     SPDX-License-Identifier: AGPL-3.0-or-later -#}
 
-{# The six individual my/their Top lists - the ONLY regions whose content reads
+{# The six individual my/their Top lists and the counterpart links that carry
    ?sortBy=. The stats table, chart, taste match, similarities and Top Common
    lists render byte-identical under any sortBy (see routes/compare.py), so the
    Sort by control asks for THIS fragment alone (?scope=sortable) and leaves the
@@ -19,6 +19,7 @@
    on, and this page's correctness should not be a config setting.
 
    Expects: my/their (from _gatherCompareStats), username, compareWith,
+   userBadges, withUsername (for the counterpart picker),
    emptyMessage - see _wrapped_list.html and _track_card.html for the rest. #}
 {% for listId, listItems, listSection in [
      ('myTopSongsList', my.topSongs, 'top_songs'),
@@ -33,3 +34,6 @@
   {% with items = listItems, section = listSection %}{% include '_wrapped_list.html' %}{% endwith %}
 </div>
 {% endfor %}
+
+{# Switching counterpart must preserve the sort just applied to the lists. #}
+{% with oob = true %}{% include '_compare_user_badges.html' %}{% endwith %}

@@ -40,6 +40,7 @@ FIRST_IMPORTS = (
     "Database.telemetry",
     "Database.import_service",
     "Database.media_fetch",
+    "Database.queries.merges",
     "Database.Listeners.spotifyListener",
     "Database.Importers.AutoImporter",
     "Database.database",        #< the direction that always worked - the control
