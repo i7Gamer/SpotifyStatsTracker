@@ -39,9 +39,10 @@ def _renderTrackCard(**context):
 
 
 class TrackCardWrappedReleaseCaptionTestCase(unittest.TestCase):
-    def _artistCard(self, wrappedCard=None):
+    def _artistCard(self, wrappedCard=None, uniqueSongCount=4):
         context = {
-            "track": {"id": "ar1", "name": "Fixture Artist", "plays": 4, "uniqueSongCount": 4},
+            "track": {"id": "ar1", "name": "Fixture Artist", "plays": 4,
+                      "uniqueSongCount": uniqueSongCount},
             "section": "top_artists", "username": "tester", "publicView": False,
         }
         if wrappedCard is not None:
@@ -62,6 +63,12 @@ class TrackCardWrappedReleaseCaptionTestCase(unittest.TestCase):
 
         self.assertIn("You played 4 different songs by Fixture Artist", html)
         self.assertNotIn("song releases by", html)
+
+    def test_artist_card_uses_singular_song_wording(self):
+        html = self._artistCard(wrappedCard=True, uniqueSongCount=1)
+
+        self.assertIn("You played 1 different song by Fixture Artist", html)
+        self.assertNotIn("1 different songs", html)
 
     def test_wrapped_album_card_names_releases_not_songs(self):
         html = self._albumCard(wrappedCard=True)

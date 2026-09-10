@@ -162,7 +162,7 @@
                     apart from that tile - true now only of the ALBUM card below,
                     which keeps the wording. Pinned by
                     tests/test_track_card_wrapped_release_caption.py. -#}
-                <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different songs by {{ cardTitle }}</div>
+                <div>{{ (username | displayName) if publicView else "You" }} played {{ track.get('uniqueSongCount') }} different {{ "song" if track.get('uniqueSongCount') == 1 else "songs" }} by {{ cardTitle }}</div>
               {% endif %}
           </div>
           {% endif %}
