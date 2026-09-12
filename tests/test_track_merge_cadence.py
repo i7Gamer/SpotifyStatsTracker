@@ -182,7 +182,7 @@ class TestTheLoopIsWiredToIt(CadenceTestCase):
         import routes.admin
         source = inspect.getsource(routes.admin)
 
-        self.assertIn("stampTrackMergeRun", source)
+        self.assertIn("mergeTracksByIsrc(enableSetting=True)", source)
 
 
 class TestAFailedPassDoesNotSpendTheDay(CadenceTestCase):

@@ -74,14 +74,21 @@ class Repository(SqlFragments, TrackQueries, MergeQueries, PlayQueries, UserQuer
         database is in the trouble the original error describes, which is when
         losing it costs the most.
 
-        Swallowed but NOT silent: a rollback that failed leaves the transaction
-        OPEN - the very state the caller was trying to leave - so the next
-        commit on this connection adopts whatever was staged. That is worth a
-        line of its own even though it cannot be the exception."""
+        Swallowed but NOT silent: a rollback that failed may leave the
+        transaction OPEN, so the connection is discarded before another
+        operation can adopt whatever was staged."""
         try:
             self.rollback()
             return True
         except Exception as e:
-            logger.error("Rollback failed - staged writes may still be pending on this "
-                         "connection and could be adopted by the next commit: %s", e)
+            logger.error("Rollback failed; discarding the connection so staged writes "
+                         "cannot be adopted by a later commit: %s", e)
+            try:
+                self.connectionManager.close()
+            except Exception as closeError:
+                # ConnectionManager.close() clears the thread-local handle in a
+                # finally block, so this is diagnostic rather than a recovery
+                # failure that callers need to handle.
+                logger.error("Failed to close the discarded database connection: %s",
+                             closeError)
             return False

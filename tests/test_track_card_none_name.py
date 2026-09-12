@@ -49,6 +49,28 @@ class TrackCardNoneNameTestCase(unittest.TestCase):
         self.assertIn("played 4 songs from Fixture Album", html)
         self.assertIn("<h3>Fixture Album</h3>", html)
 
+    def test_a_missing_disc_number_does_not_render_as_none(self):
+        for section in ("dashboard", "top_songs"):
+            with self.subTest(section=section):
+                html = _renderTrackCard(
+                    track={"id": "t1", "name": "Song", "trackNumber": 3,
+                           "discNumber": None},
+                    section=section, username="tester", publicView=False,
+                )
+
+                self.assertIn("Track 3", html)
+                self.assertNotIn("Disc", html)
+                self.assertNotIn("None", html)
+
+    def test_a_real_disc_number_is_preserved(self):
+        html = _renderTrackCard(
+            track={"id": "t1", "name": "Song", "trackNumber": 3,
+                   "discNumber": 2},
+            section="dashboard", username="tester", publicView=False,
+        )
+
+        self.assertIn("Track 3 · Disc 2", html)
+
 
 if __name__ == "__main__":
     unittest.main()

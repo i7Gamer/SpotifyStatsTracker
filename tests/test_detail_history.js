@@ -250,6 +250,25 @@ run('the retry re-requests the current URL into the list', () => {
   assert.strictEqual(dom.page.ajax[0].opts.target, '#detailHistoryResults');
 });
 
+run('a failed Show More retry preserves its batch URL and swap target', () => {
+  const dom = tabSetup({ search: '?view=history&sort=oldest' });
+  const actions = makeElement();
+  const button = makeElement({ id: 'showMorePlaysBtn' });
+  dom.list.children.push(actions);
+
+  dom.page.bodyListeners['htmx:responseError']({ detail: {
+    target: actions,
+    elt: button,
+    pathInfo: { finalRequestPath: '/song/t1?view=history&sort=oldest&offset=50' },
+  } });
+  dom.page.lastRetry();
+
+  assert.strictEqual(dom.page.ajax[0].url,
+                     '/song/t1?view=history&sort=oldest&offset=50');
+  assert.strictEqual(dom.page.ajax[0].opts.source, button);
+  assert.strictEqual(dom.page.ajax[0].opts.target, undefined);
+});
+
 run('a list swap that lands clears the banner the last failure left', () => {
   const dom = tabSetup();
 

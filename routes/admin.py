@@ -657,11 +657,10 @@ def register(app, dashboard):
         message = "User settings saved."
         if mergeWanted != dashboard.repo.isTrackMergeEnabled():
             if mergeWanted:
-                dashboard.repo.setTrackMergeEnabled(True)
-                summary = dashboard.repo.mergeTracksByIsrc()
-                #< this IS the day's pass, so the backfiller's next claim waits
-                #  a full interval instead of repeating it minutes from now
-                dashboard.repo.stampTrackMergeRun()
+                # The merge, enabled flag and run stamp commit atomically. A
+                # failed first pass must leave the checkbox off, while this
+                # successful pass owns the backfiller's slot for the day.
+                summary = dashboard.repo.mergeTracksByIsrc(enableSetting=True)
                 #< before-count first - "merged 433 into 407" reads as a shrink
                 #  of 26, but the two counts are disjoint (duplicates that fold
                 #  away vs songs that survive), so lead with their sum. NB

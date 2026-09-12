@@ -178,7 +178,17 @@
   // the error.
   function reportHistoryFailure(evt) {
     if (!window.AjaxStatus || !evt.detail || !isHistorySwap(evt.detail.target)) return;
+    var source = evt.detail.elt;
+    var pathInfo = evt.detail.pathInfo;
+    var failedUrl = pathInfo && pathInfo.finalRequestPath;
     window.AjaxStatus.showBanner(function () {
+      // Replay the exact failed declarative request when htmx supplied it. In
+      // particular, Show More's offset and #timelineActions outerHTML target
+      // live on its button and must not be replaced with the address-bar URL.
+      if (source && failedUrl) {
+        htmx.ajax('GET', failedUrl, { source: source });
+        return;
+      }
       htmx.ajax('GET', window.location.pathname + window.location.search,
                 { target: '#' + HISTORY_RESULTS_ID, swap: 'innerHTML' });
     }, undefined, BANNER_OWNER);

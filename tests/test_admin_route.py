@@ -580,6 +580,19 @@ class TestTrackMergeDryRunWording(AdminRouteTestBase):
                       "2 song(s); 3 duplicate(s) removed.",
                       unquote_plus(resp.headers["Location"]))
         self.assertTrue(dash.repo.isTrackMergeEnabled())
+        self.assertIsNotNone(dash.repo.getTrackMergeLastRun())
+
+    def test_failed_enable_merge_leaves_the_feature_disabled(self):
+        dash = self._makeApp()
+
+        with patch.object(dash.repo, "mergeTracksByIsrc",
+                          side_effect=RuntimeError("merge failed")) as merge:
+            response = self._post(dash, "/admin/user_settings", isAdmin=True,
+                                  data={"track_merge": "1"})
+
+        self.assertEqual(response.status_code, 500)
+        merge.assert_called_once_with(enableSetting=True)
+        self.assertFalse(dash.repo.isTrackMergeEnabled())
 
 
 class TestAdminMilestoneWorkerHealth(AdminRouteTestBase):

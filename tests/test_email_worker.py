@@ -113,7 +113,7 @@ def test_pre_send_database_failure_exhausts_existing_attempt_limit(delivery_repo
         assert "Giving up" in caplog.text
 
 
-def test_cooldown_write_failure_after_smtp_success_never_requeues(delivery_repo, caplog):
+def test_cooldown_write_failure_after_smtp_success_is_sent_and_never_requeues(delivery_repo, caplog):
     worker = EmailWorker(delivery_repo)
     worker.enqueue("alice", EVENT_SHARE_REQUEST)
     with patch.object(delivery_repo, "recordNotificationSent",
@@ -123,7 +123,8 @@ def test_cooldown_write_failure_after_smtp_success_never_requeues(delivery_repo,
         assert worker._queue.qsize() == worker._queue.unfinished_tasks == 0
         assert worker.process_one() is False
         smtp.assert_called_once()
-        assert "Error processing email notification" in caplog.text
+        assert "could not record its cooldown" in caplog.text
+        assert "Error processing email notification" not in caplog.text
 
 
 @pytest.mark.parametrize("error", [sqlite3.ProgrammingError("bad query"), TypeError("bad context")])

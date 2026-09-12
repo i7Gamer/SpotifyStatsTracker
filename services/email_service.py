@@ -474,7 +474,14 @@ def deliver_email_notification(
 
     success, err = _send_smtp_message(config, msg)
     if success:
-        repo.recordNotificationSent(username, event_type)
+        try:
+            repo.recordNotificationSent(username, event_type)
+        except sqlite3.Error as error:
+            # SMTP has already accepted the message. Retrying now would send a
+            # duplicate, so report delivery as successful while making the
+            # missing anti-spam stamp visible to operators.
+            logger.error("Notification email (%s) was sent to %s but could not "
+                         "record its cooldown: %s", event_type, username, error)
         logger.info("Notification email (%s) sent successfully to %s", event_type, username)
         return EMAIL_SENT
     logger.error("Failed to send notification email (%s) to %s: %s", event_type, username, err)

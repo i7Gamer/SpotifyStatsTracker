@@ -12,6 +12,7 @@ as anyone listens to new music, and the backfiller re-runs the matcher - once a
 day, see test_track_merge_cadence - while the toggle is on.
 """
 import os
+import sqlite3
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -62,6 +63,24 @@ class TestTheSettingItself(ToggleTestCase):
         self.assertTrue(db.repo.isTrackMergeEnabled())
         db.repo.setTrackMergeEnabled(False)
         self.assertFalse(db.repo.isTrackMergeEnabled())
+
+    def test_enable_setting_failure_rolls_back_the_merge(self):
+        db = self._dbWithPair()
+        conn = db.repo._conn()
+        with conn:
+            conn.execute(
+                "CREATE TRIGGER reject_track_merge_enable BEFORE INSERT ON app_settings "
+                "WHEN NEW.key = 'track_merge_enabled' BEGIN "
+                "SELECT RAISE(ABORT, 'setting failed'); END"
+            )
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "setting failed"):
+            db.repo.mergeTracksByIsrc(enableSetting=True)
+
+        self.assertFalse(db.repo.isTrackMergeEnabled())
+        self.assertIsNone(self._canonical(db, "A" * 22))
+        self.assertIsNone(self._canonical(db, "B" * 22))
+        self.assertIsNone(db.repo.getTrackMergeLastRun())
 
 
 class TestTheBackfillerKeepsMergesCurrent(ToggleTestCase):

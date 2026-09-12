@@ -3,7 +3,7 @@ import sys
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -3202,8 +3202,8 @@ class TestRollbackQuietly(RepositoryTestCase):
     and in listener_last_error, precisely when the database is unhealthy, which
     is when rollback is most likely to fail in the first place.
 
-    Swallowed but NOT silent: a failed rollback leaves the transaction open,
-    which is the very state the call was trying to get out of."""
+    Swallowed but NOT silent: a failed rollback discards the connection so its
+    still-open transaction cannot leak into a later operation."""
 
     def test_a_successful_rollback_discards_the_staged_write(self):
         self.repo.upsertUser("alice", "alice@example.com")
@@ -3216,20 +3216,31 @@ class TestRollbackQuietly(RepositoryTestCase):
         self.assertFalse(self.repo._conn().in_transaction)
 
     def test_a_failing_rollback_does_not_raise(self):
+        original = self.repo._conn()
         with patch.object(self.repo, "rollback",
                           side_effect=RuntimeError("cannot operate on a closed database")):
             self.assertFalse(self.repo.rollbackQuietly())   #< must not raise
 
+        self.assertIsNot(self.repo._conn(), original)
+
     def test_a_failing_rollback_is_reported(self):
-        """The transaction is still open at this point. Dropping that on the
-        floor would leave staged writes for an unrelated later commit to adopt
-        with nothing in the log to explain it."""
+        """Discarding the connection is still reported alongside the failure."""
         with patch.object(self.repo, "rollback",
                           side_effect=RuntimeError("cannot operate on a closed database")):
             with self.assertLogs("Database.repository", level="ERROR") as logs:
                 self.repo.rollbackQuietly()
 
         self.assertIn("cannot operate on a closed database", str(logs.output))
+
+    def test_close_forgets_a_connection_even_when_its_close_raises(self):
+        broken = MagicMock()
+        broken.close.side_effect = RuntimeError("close failed")
+        self.repo.connectionManager._local.conn = broken
+
+        with self.assertRaisesRegex(RuntimeError, "close failed"):
+            self.repo.connectionManager.close()
+
+        self.assertIsNone(getattr(self.repo.connectionManager._local, "conn", None))
 
 
 if __name__ == "__main__":

@@ -253,7 +253,7 @@ class MergeQueries:
             for row in rows
         ]
 
-    def mergeTracksByIsrc(self) -> dict:
+    def mergeTracksByIsrc(self, *, enableSetting: bool = False) -> dict:
         """Point every track that shares an ISRC with another at one canonical.
 
         An ISRC identifies a RECORDING, so two tracks carrying the same one are
@@ -307,15 +307,33 @@ class MergeQueries:
            along on the one write.
 
         Idempotent: a second run merges nothing and rewrites nothing. Returns
-        {"groups", "merged"} - groups considered, tracks newly pointed."""
-        plan = self._planIsrcMerges(includeGuardState=True)
-        if not plan["groups"]:
-            return {"groups": 0, "merged": 0}
+        {"groups", "merged"} - groups considered, tracks newly pointed.
 
+        enableSetting is the admin toggle's activation edge. It writes the
+        enabled flag and daily-run stamp in the same transaction as the merge,
+        so neither state can survive without the other when any write fails."""
+        plan = self._planIsrcMerges(includeGuardState=True)
         conn = self._conn()
         merged = 0
         now = time.time()
         canonicals = []
+
+        def writeActivationSettings():
+            for key, value in (
+                    (TRACK_MERGE_SETTING_KEY, APP_SETTING_TRUE),
+                    (TRACK_MERGE_LAST_RUN_KEY, str(now))):
+                conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+
+        if not plan["groups"]:
+            if enableSetting:
+                with conn:
+                    writeActivationSettings()
+            return {"groups": 0, "merged": 0}
+
         with conn:
             #< BEGIN IMMEDIATE: the carry-along below re-reads each member's
             #  dependents mid-surgery and re-points what it finds; unlocked,
@@ -435,6 +453,8 @@ class MergeQueries:
                 #  genuinely tag-less everywhere on every daily pass, forever,
                 #  since such a canonical can never satisfy the own-rows test.
                 self._requeueCanonicalForGenres(conn, canonicalId)
+            if enableSetting:
+                writeActivationSettings()
         if merged:
             #< a merge moves numbers frozen inside every user's cached Wrapped
             #  years, and past years never notice on their own. Scoped to the

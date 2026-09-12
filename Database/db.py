@@ -637,5 +637,9 @@ class ConnectionManager:
     def close(self):
         conn = getattr(self._local, "conn", None)
         if conn is not None:
-            conn.close()
-            self._local.conn = None
+            try:
+                conn.close()
+            finally:
+                # A handle that failed to close is not safe to hand back to a
+                # later operation. Forget it even when sqlite raises here.
+                self._local.conn = None
