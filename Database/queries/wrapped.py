@@ -152,16 +152,15 @@ class WrappedQueries:
         15-minute worker refills the rest. Returns rows dropped."""
         conn = self._conn()
         with conn:
-            #< the generation bump, in the same transaction as the delete: a
-            #  recalculation is seconds of queries under a per-year lock this
-            #  path does not take, so one can be mid-flight right now - and its
-            #  save would land AFTER this delete, resurrecting a snapshot whose
-            #  reads straddle the merge. A merge changes neither freshness
-            #  signal the worker compares, so nothing would ever notice. The
-            #  save re-checks this stamp inside its own transaction and
-            #  discards itself if it moved.
-            self._bumpWrappedGeneration(conn)
-            return conn.execute("DELETE FROM user_wrapped").rowcount
+            return self._deleteAllWrapped(conn)
+
+    def _deleteAllWrapped(self, conn) -> int:
+        """Invalidate within the caller's transaction, without committing it."""
+        # The generation and delete must commit with the merge itself: a
+        # recalculation already in flight must not resurrect its old snapshot.
+        # Its save re-checks this stamp inside its own transaction.
+        self._bumpWrappedGeneration(conn)
+        return conn.execute("DELETE FROM user_wrapped").rowcount
 
     def deleteCachedWrappedForTracks(self, trackIds) -> int:
         """deleteAllWrapped narrowed to the years a merge of these tracks can
@@ -199,26 +198,30 @@ class WrappedQueries:
           reads straddle this merge, so it cannot be narrowed with the delete -
           and it is bumped in the same transaction, for the same serialization
           deleteAllWrapped needs."""
-        ids = list(dict.fromkeys(trackIds))
         conn = self._conn()
         with conn:
-            self._bumpWrappedGeneration(conn)
-            if not ids:
-                return 0
-            return conn.execute(
-                """
-                DELETE FROM user_wrapped WHERE EXISTS (
-                    SELECT 1 FROM plays p
-                    WHERE p.username = user_wrapped.username
-                      AND p.track_id IN (SELECT value FROM json_each(?))
-                      AND user_wrapped.year BETWEEN
-                              CAST(strftime('%Y', p.played_at - ?, 'unixepoch') AS INTEGER)
-                          AND CAST(strftime('%Y', p.played_at + ?, 'unixepoch') AS INTEGER)
-                )
-                """,
-                (json.dumps(ids), WRAPPED_YEAR_TZ_SLACK_SECONDS,
-                 WRAPPED_YEAR_TZ_SLACK_SECONDS)
-            ).rowcount
+            return self._deleteCachedWrappedForTracks(conn, trackIds)
+
+    def _deleteCachedWrappedForTracks(self, conn, trackIds) -> int:
+        """Invalidate within the caller's transaction, without committing it."""
+        ids = list(dict.fromkeys(trackIds))
+        self._bumpWrappedGeneration(conn)
+        if not ids:
+            return 0
+        return conn.execute(
+            """
+            DELETE FROM user_wrapped WHERE EXISTS (
+                SELECT 1 FROM plays p
+                WHERE p.username = user_wrapped.username
+                  AND p.track_id IN (SELECT value FROM json_each(?))
+                  AND user_wrapped.year BETWEEN
+                          CAST(strftime('%Y', p.played_at - ?, 'unixepoch') AS INTEGER)
+                      AND CAST(strftime('%Y', p.played_at + ?, 'unixepoch') AS INTEGER)
+            )
+            """,
+            (json.dumps(ids), WRAPPED_YEAR_TZ_SLACK_SECONDS,
+             WRAPPED_YEAR_TZ_SLACK_SECONDS)
+        ).rowcount
 
     def getWrappedInvalidationGeneration(self) -> int:
         row = self._conn().execute(

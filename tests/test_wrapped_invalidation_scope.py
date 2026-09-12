@@ -33,8 +33,10 @@ recomputation is the price of never caching a snapshot that straddles a merge.
 """
 import datetime
 import os
+import sqlite3
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -93,6 +95,110 @@ class ScopeTestCase(DatabaseTestCase):
     def _survivingYears(self, db):
         return {(row["username"], row["year"]) for row in
                 db.repo._conn().execute("SELECT username, year FROM user_wrapped")}
+
+
+class TestMergeInvalidationAtomicity(ScopeTestCase):
+    OPERATIONS = ("enable", "automatic", "manual", "split", "disable", "revert")
+    YEAR = 2022
+    SNAPSHOT_TABLES = ("tracks", "track_merge_decisions", "app_settings", "user_wrapped")
+
+    def _case(self, operation):
+        db = self._db()
+        self._track(db, "A", ISRC, name="Song")
+        self._track(db, "B", ISRC, name="Song - Remaster")
+        self._plays(db, "alice", "A", _ts(self.YEAR))
+        self._plays(db, "alice", "B", _ts(self.YEAR, 7))
+        repo = db.repo
+        with repo._conn() as conn:
+            conn.execute("UPDATE tracks SET lastfm_attempted_at=? WHERE id='A'", (_ts(self.YEAR),))
+        if operation in ("split", "disable", "revert"):
+            repo.mergeTracksByIsrc(enableSetting=True)
+        self._cacheYears(db, "alice", self.YEAR)
+        actions = {
+            "enable": lambda: repo.mergeTracksByIsrc(enableSetting=True),
+            "automatic": repo.mergeTracksByIsrc,
+            "manual": lambda: repo.mergeTrackManually("B", "A", decidedBy="alice"),
+            "split": lambda: repo.unmergeTrack("B", decidedBy="alice"),
+            "disable": lambda: repo.unmergeAllIsrcMerges(disableSetting=True),
+            "revert": repo.unmergeAllIsrcMerges,
+        }
+        return db, actions[operation]
+
+    def _committedState(self, db):
+        # A separate reader proves that no partial change was committed, not
+        # just that the writer's connection currently shows the expected rows.
+        conn = sqlite3.connect(db.repo.connectionManager.dbPath)
+        try:
+            return {table: conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+                    for table in self.SNAPSHOT_TABLES}
+        finally:
+            conn.close()
+
+    def _assertSuccessfulRetry(self, db, action, operation, generation):
+        action()
+        repo = db.repo
+        self.assertIsNone(repo.getCachedWrapped("alice", self.YEAR))
+        self.assertGreater(repo.getWrappedInvalidationGeneration(), generation)
+        pointer = repo._conn().execute(
+            "SELECT canonical_id FROM tracks WHERE id='B'").fetchone()[0]
+        self.assertEqual(pointer, "A" if operation in ("enable", "automatic", "manual") else None)
+        self.assertEqual(repo.isTrackMergeEnabled(), operation in ("enable", "split", "revert"))
+        self.assertFalse(repo._conn().in_transaction)
+
+    def _assertWriteFailureRollsBack(self, trigger):
+        for operation in self.OPERATIONS:
+            with self.subTest(operation=operation):
+                db, action = self._case(operation)
+                repo = db.repo
+                before = self._committedState(db)
+                generation = repo.getWrappedInvalidationGeneration()
+                with repo._conn() as conn:
+                    conn.execute(trigger)
+
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "invalidation failed"):
+                    action()
+
+                self.assertEqual(self._committedState(db), before)
+                self.assertFalse(conn.in_transaction)
+                with conn:
+                    conn.execute("DROP TRIGGER fail_invalidation")
+                self._assertSuccessfulRetry(db, action, operation, generation)
+
+    def test_cache_delete_failure_rolls_back_every_merge_change(self):
+        # AFTER DELETE exercises failure after the generation bump and after
+        # SQLite has started deleting rows. Neither may survive the rollback.
+        self._assertWriteFailureRollsBack(
+            "CREATE TRIGGER fail_invalidation AFTER DELETE ON user_wrapped "
+            "BEGIN SELECT RAISE(ABORT, 'invalidation failed'); END")
+
+    def test_generation_write_failure_rolls_back_every_merge_change(self):
+        self._assertWriteFailureRollsBack(
+            "CREATE TRIGGER fail_invalidation BEFORE INSERT ON app_settings "
+            "WHEN NEW.key='wrapped_invalidation_generation' "
+            "BEGIN SELECT RAISE(ABORT, 'invalidation failed'); END")
+
+    def test_post_write_scope_failure_rolls_back_enable_and_manual_merge(self):
+        for operation in ("enable", "manual"):
+            with self.subTest(operation=operation):
+                db, action = self._case(operation)
+                repo = db.repo
+                before = self._committedState(db)
+                generation = repo.getWrappedInvalidationGeneration()
+                expand = repo._mergeGroupTrackIds
+
+                def failAfterMerge(conn, ids):
+                    group = expand(conn, ids)
+                    if conn.execute("SELECT canonical_id FROM tracks WHERE id='B'").fetchone()[0]:
+                        raise sqlite3.OperationalError("scope failed")
+                    return group
+
+                with patch.object(repo, "_mergeGroupTrackIds", side_effect=failAfterMerge):
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "scope failed"):
+                        action()
+
+                self.assertEqual(self._committedState(db), before)
+                self.assertFalse(repo._conn().in_transaction)
+                self._assertSuccessfulRetry(db, action, operation, generation)
 
 
 class TestTheMergeScope(ScopeTestCase):

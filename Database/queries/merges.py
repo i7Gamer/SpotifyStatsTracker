@@ -455,18 +455,12 @@ class MergeQueries:
                 self._requeueCanonicalForGenres(conn, canonicalId)
             if enableSetting:
                 writeActivationSettings()
-        if merged:
-            #< a merge moves numbers frozen inside every user's cached Wrapped
-            #  years, and past years never notice on their own. Scoped to the
-            #  years the merged groups were actually played in - by every user
-            #  who played them - because a pass that merges anything is on a
-            #  daily backfiller cadence rather than a one-off (see
-            #  TRACK_MERGE_MIN_INTERVAL_SECONDS) and new ISRCs keep completing
-            #  pairs; see deleteCachedWrappedForTracks. Expanded from
-            #  the canonicals AFTER the commit, so the group it reads is the one
-            #  this run just made.
-            self.deleteCachedWrappedForTracks(
-                self._mergeGroupTrackIds(conn, canonicals))
+            if merged:
+                # Expand the groups after the writes, while still holding the
+                # transaction lock. Merge changes, settings, generation, and
+                # cache deletion must all commit or roll back together.
+                self._deleteCachedWrappedForTracks(
+                    conn, self._mergeGroupTrackIds(conn, canonicals))
         return {"groups": len(canonicals), "merged": merged}
 
     def previewMergeTracksByIsrc(self) -> dict:
@@ -676,9 +670,9 @@ class MergeQueries:
                 """,
                 (trackId, time.time(), decidedBy),
             )
-        #< one track's undo still shifts every cached year the group it left
-        #  appears in - both sides of the split move, so the scope is the group
-        self.deleteCachedWrappedForTracks(group)
+            # Both sides of the split move, so invalidate the old group in the
+            # same transaction as the pointer and manual verdict.
+            self._deleteCachedWrappedForTracks(conn, group)
 
     def unmergeAllIsrcMerges(self, *, disableSetting: bool = False) -> int:
         """Undo everything the MATCHER did, leaving every human verdict alone.
@@ -745,13 +739,11 @@ class MergeQueries:
                 conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) "
                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                              (TRACK_MERGE_SETTING_KEY, APP_SETTING_FALSE))
-        if cur.rowcount or restored:
-            #< either arm moves numbers frozen inside cached Wrapped years: a
-            #  cleared merge splits a group, a restored one re-forms a different
-            #  one. `restored` is counted but NOT returned - the caller's message
-            #  says how many tracks were UNMERGED, and a restored track was moved
-            #  back into a merge rather than out of one.
-            self.deleteAllWrapped()
+            if cur.rowcount or restored:
+                # Either arm changes cached years. Invalidate before committing
+                # the revert and optional setting change. Restored tracks are
+                # not returned: they moved into a merge, not out of one.
+                self._deleteAllWrapped(conn)
         return cur.rowcount
 
     def getMergeReviewCandidates(self) -> dict:
@@ -937,15 +929,11 @@ class MergeQueries:
             #  so the release every genre read now resolves to may never have
             #  been looked up - see _requeueCanonicalForGenres
             self._requeueCanonicalForGenres(conn, root)
-        #< same invalidation as the automatic tier, and the same scope: the
-        #  merge moves numbers frozen inside the cached years the resulting
-        #  group was played in, for every user who played it. Expanded from the
-        #  root after the commit, so trackId and the dependents that rode along
-        #  are all in it - unioned with the group trackId left, captured above.
-        #< sorted, like _mergeGroupTrackIds' own return: the ids become a JSON
-        #  array bound into the DELETE, and a set's order is not stable
-        self.deleteCachedWrappedForTracks(
-            sorted(set(leaving) | set(self._mergeGroupTrackIds(conn, [root]))))
+            # Invalidate both the old and resulting groups before committing.
+            # Expand after the writes so carried dependents are included;
+            # sort for a stable JSON array bound into the DELETE.
+            self._deleteCachedWrappedForTracks(
+                conn, sorted(set(leaving) | set(self._mergeGroupTrackIds(conn, [root]))))
         return merged
 
     def dismissMergeCandidate(self, trackId: str, decidedBy: str,

@@ -13,10 +13,9 @@ verbs the 2026-08-16 sweep of all 100 `with conn:` blocks then turned up.
 
 The pinned property is positional, not a spelling: every SELECT issued before
 the verb's FIRST write must already hold the transaction. Reads after the
-writes stay exempt on purpose - the merge verbs re-expand group membership
-post-commit for the cache-invalidation scope, and those reads are covered by
-the wrapped generation check (saveCachedWrapped discards a snapshot that
-straddled them), not by this lock.
+writes are outside this guard-specific check. Merge-group expansion and
+cache invalidation also run within the merge transaction; rollback coverage
+for that contract lives in test_wrapped_invalidation_scope.
 
 Pinned structurally rather than by racing threads, with the recording
 technique test_wrapped_invalidation_scope introduced: a test that has to lose
