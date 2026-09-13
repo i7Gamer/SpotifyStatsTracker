@@ -161,6 +161,11 @@ class TrackQueries:
                     continue
                 self.upsertTrack(track)
                 repaired += 1
+            if repaired:
+                # Shared album/artist metadata and discovery years can change
+                # beyond these tracks' play years. Invalidate once per actual
+                # repair batch, atomically with the catalog and fallback markers.
+                self._deleteAllWrapped(conn)
         return repaired
 
     def getTrack(self, trackId: str) -> dict | None:

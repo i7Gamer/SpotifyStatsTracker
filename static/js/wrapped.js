@@ -181,7 +181,7 @@ if (typeof document !== 'undefined') {
     drawStat('Total Time', btn.dataset.time, 420, 220);
     drawStat('Unique Songs', btn.dataset.songs, 180, 310);
     drawStat('Unique Artists', btn.dataset.artists, 420, 310);
-    drawStat('Longest Streak', btn.dataset.streak + ' days', 300, 400);
+    drawStat('Longest Streak', btn.dataset.streak + (btn.dataset.streak === '1' ? ' day' : ' days'), 300, 400);
 
     ctx.fillStyle = 'rgba(255,255,255,0.05)';
     ctx.fillRect(40, 440, 520, 380);

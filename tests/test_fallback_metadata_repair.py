@@ -1,4 +1,7 @@
 """Repair degraded catalog rows without re-recording confirmed listening."""
+import datetime
+import json
+import sqlite3
 import time
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +10,7 @@ from Database.Formatters.spotifyClient import Client
 from Database.Listeners.spotifyListener import Listener
 from Database.Spotify.client import fallbackTrackRecord
 from Database.db import RESTRICTED_FALLBACK_REASON
+from Database.database import Database
 from Database.repository import TRACK_ISRC_RETRY_SECONDS
 from Database.utils import timeToInt
 from test_api_backfill import _MONOTONIC_NOW
@@ -18,6 +22,11 @@ LISTENED_MS = 10000
 CONTEXT_URI = "spotify:playlist:context"
 QUEUE_LIMIT = 50
 BACKFILL_COPY_OFFSET_SECONDS = 2
+WRAPPED_YEAR = 2025
+WRAPPED_PLAY_MONTH = 6
+WRAPPED_SNAPSHOT_TABLES = (
+    "tracks", "albums", "artists", "track_artists", "plays", "app_settings", "user_wrapped",
+)
 
 
 def catalogTrack(trackId=REAL_ID):
@@ -207,3 +216,133 @@ class TestFallbackMetadataRepair(DatabaseTestCase):
         self._catalogPoll(catalogTrack(REAL_ID_2))
         assert self.conn.execute("SELECT created_reason FROM tracks WHERE id=?", (REAL_ID,)).fetchone()[0] == RESTRICTED_FALLBACK_REASON
         assert self.db.repo.getTrack(REAL_ID_2) is None
+
+
+class TestFallbackRepairWrappedCache(DatabaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.db = self._makeDb({}, [])
+
+    def _seedFallback(self, trackId=REAL_ID):
+        self.db.repo.upsertTrack(Client.formatTrack(fallbackTrackRecord(trackId), embedPlaybackInfo=False))
+        self._play(self.db, trackId, WRAPPED_YEAR)
+
+    def _play(self, db, trackId, year):
+        playedAt = datetime.datetime(year, WRAPPED_PLAY_MONTH, 1, tzinfo=db.tz).timestamp()
+        db.repo.insertPlay(db.user, trackId, playedAt, TRACK_DURATION_MS)
+        db.repo.commit()
+
+    def _cache(self, db=None, year=WRAPPED_YEAR):
+        db = db or self.db
+        db.recalculateWrappedForYear(year)
+        cached = db.repo.getCachedWrapped(db.user, year)
+        self.assertIsNotNone(cached)
+        return cached
+
+    def _committedState(self):
+        # Verify durable state from an independent reader, including shared
+        # metadata and credits, not just the repairing connection's view.
+        conn = sqlite3.connect(self.db.repo.connectionManager.dbPath)
+        try:
+            return {table: conn.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
+                    for table in WRAPPED_SNAPSHOT_TABLES}
+        finally:
+            conn.close()
+
+    def test_repair_refreshes_real_wrapped_without_new_listening(self):
+        self._seedFallback()
+        before = self._cache()
+        self.assertNotEqual(json.loads(before["top_songs"])[0]["name"], "Recovered song")
+        plays = self._committedState()["plays"]
+
+        self.assertEqual(self.db._repairFallbackTrackMetadata([catalogTrack()]), 1)
+
+        self.assertIsNone(self.db.repo.getCachedWrapped(self.db.user, WRAPPED_YEAR))
+        after = self._cache()
+        for field, name in (("top_songs", "Recovered song"), ("top_albums", "Recovered album"),
+                            ("top_artists", "Recovered artist")):
+            self.assertEqual(json.loads(after[field])[0]["name"], name)
+        self.assertEqual(after["total_plays"], before["total_plays"])
+        self.assertEqual(after["max_played_at"], before["max_played_at"])
+        self.assertEqual(self._committedState()["plays"], plays)
+
+    def test_repair_invalidates_other_users_and_later_discovery_years(self):
+        self._seedFallback()
+        oldMetadata = catalogTrack(REAL_ID_2)
+        oldMetadata["artists"][0]["name"] = "Old artist name"
+        oldMetadata["album"]["name"] = "Old album name"
+        self.db.repo.upsertTrack(Client.formatTrack(oldMetadata, embedPlaybackInfo=False))
+        laterYear = WRAPPED_YEAR + 1
+        self._play(self.db, REAL_ID_2, laterYear)
+        bob = Database("bob", dbPath=self.db.repo.connectionManager.dbPath, startWorkers=False)
+        self.addCleanup(bob.repo.connectionManager.close)
+        self._play(bob, REAL_ID_2, laterYear)
+        self._cache()
+        self.assertEqual(self._cache(year=laterYear)["discovered_artists"], 1)
+        self.assertEqual(json.loads(self._cache(bob, laterYear)["top_artists"])[0]["name"], "Old artist name")
+
+        self.db._repairFallbackTrackMetadata([catalogTrack()])
+
+        self.assertEqual(self.db.repo._conn().execute("SELECT COUNT(*) FROM user_wrapped").fetchone()[0], 0)
+        self.assertEqual(self._cache(year=laterYear)["discovered_artists"], 0)
+        bobCache = self._cache(bob, laterYear)
+        self.assertEqual(json.loads(bobCache["top_artists"])[0]["name"], "Recovered artist")
+        self.assertEqual(json.loads(bobCache["top_albums"])[0]["name"], "Recovered album")
+
+    def test_multi_repair_batch_bumps_generation_once_without_cached_rows(self):
+        for trackId in (REAL_ID, REAL_ID_2):
+            self._seedFallback(trackId)
+        generation = self.db.repo.getWrappedInvalidationGeneration()
+
+        repaired = self.db._repairFallbackTrackMetadata([catalogTrack(), catalogTrack(REAL_ID_2), catalogTrack()])
+
+        self.assertEqual(repaired, 2)
+        self.assertEqual(self.db.repo.getWrappedInvalidationGeneration(), generation + 1)
+
+    def test_noop_batches_preserve_cached_rows_and_generation(self):
+        self._seedFallback()
+        self.db._repairFallbackTrackMetadata([catalogTrack()])
+        self._cache()
+        before = self._committedState()
+        for payload in ([], [None, {}], [fallbackTrackRecord(REAL_ID)],
+                        [catalogTrack(REAL_ID_2)], [catalogTrack(), catalogTrack()]):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.db._repairFallbackTrackMetadata(payload), 0)
+                self.assertEqual(self._committedState(), before)
+
+    def test_inflight_pre_repair_snapshot_cannot_restore_stale_metadata(self):
+        self._seedFallback()
+        stale = self._cache()
+        generation = self.db.repo.getWrappedInvalidationGeneration()
+        self.db._repairFallbackTrackMetadata([catalogTrack()])
+
+        self.assertFalse(self.db.repo.saveCachedWrapped(
+            self.db.user, WRAPPED_YEAR, stale, expectedGeneration=generation))
+        self.assertIsNone(self.db.repo.getCachedWrapped(self.db.user, WRAPPED_YEAR))
+
+    def test_invalidation_failure_rolls_back_catalog_and_cache_and_allows_retry(self):
+        triggers = (
+            "CREATE TRIGGER fail_invalidation BEFORE INSERT ON app_settings "
+            "WHEN NEW.key='wrapped_invalidation_generation' "
+            "BEGIN SELECT RAISE(ABORT, 'invalidation failed'); END",
+            "CREATE TRIGGER fail_invalidation AFTER DELETE ON user_wrapped "
+            "BEGIN SELECT RAISE(ABORT, 'invalidation failed'); END",
+        )
+        for trigger in triggers:
+            with self.subTest(trigger=trigger):
+                self.db = self._makeDb({}, [])
+                self._seedFallback()
+                self._cache()
+                before = self._committedState()
+                with self.db.repo._conn() as conn:
+                    conn.execute(trigger)
+
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "invalidation failed"):
+                    self.db._repairFallbackTrackMetadata([catalogTrack()])
+
+                self.assertEqual(self._committedState(), before)
+                self.assertFalse(conn.in_transaction)
+                with conn:
+                    conn.execute("DROP TRIGGER fail_invalidation")
+                self.assertEqual(self.db._repairFallbackTrackMetadata([catalogTrack()]), 1)
+                self.assertIsNone(self.db.repo.getCachedWrapped(self.db.user, WRAPPED_YEAR))

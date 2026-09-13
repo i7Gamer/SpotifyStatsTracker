@@ -54,7 +54,7 @@
 <section class="track-summary-grid-3">
   <article class="track-summary-card" data-stat="streak">
     <h3>Longest Streak</h3>
-    <p class="summary-value">{{ longestStreak }} days</p>
+    <p class="summary-value">{{ longestStreak }} {{ 'day' if longestStreak == 1 else 'days' }}</p>
   </article>
   <article class="track-summary-card" data-stat="peak">
     <h3>Peak Day</h3>

@@ -101,6 +101,15 @@ class TestFragmentBranch(WrappedHtmxTestCase):
         self.assertIn("A Recorded Song", body)
         self.assertIn('class="track-summary-grid"', body)
 
+    def test_streak_unit_is_grammatical_on_the_page_and_fragment(self):
+        for streak, unit in ((0, "days"), (1, "day"), (2, "days")):
+            self.db.repo.getCachedWrapped.return_value = wrappedCachedRow(longestStreak=streak)
+
+            for render in (self._page, self._fragment):
+                with self.subTest(streak=streak, render=render.__name__):
+                    body = render()
+                    self.assertIn(f'<p class="summary-value">{streak} {unit}</p>', body)
+
     def test_the_fragment_carries_the_chart_canvas(self):
         """It is swapped in as one unit with the lists - the canvas is a new
         element every time, which is why the re-render is an afterSettle

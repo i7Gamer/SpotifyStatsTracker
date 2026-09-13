@@ -156,7 +156,7 @@ class WrappedQueries:
 
     def _deleteAllWrapped(self, conn) -> int:
         """Invalidate within the caller's transaction, without committing it."""
-        # The generation and delete must commit with the merge itself: a
+        # The generation and delete must commit with the catalog change: a
         # recalculation already in flight must not resurrect its old snapshot.
         # Its save re-checks this stamp inside its own transaction.
         self._bumpWrappedGeneration(conn)

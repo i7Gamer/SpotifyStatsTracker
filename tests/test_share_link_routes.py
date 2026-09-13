@@ -681,6 +681,17 @@ class TestPublicSharedWrappedPage(PublicSharedWrappedTestCase):
 
         self.assertEqual(resp.status_code, 200)
 
+    def test_streak_unit_is_grammatical(self):
+        token = self._createLink()
+        db = self._makeDb()
+
+        for streak, unit in ((0, "days"), (1, "day"), (2, "days")):
+            with self.subTest(streak=streak):
+                db.repo.getCachedWrapped.return_value = wrappedCachedRow(longestStreak=streak)
+                body = self._getShared(token, db=db).get_data(as_text=True)
+
+                self.assertIn(f'<p class="summary-value">{streak} {unit}</p>', body)
+
     def test_unknown_token_404s(self):
         resp = self._getShared("does-not-exist")
 

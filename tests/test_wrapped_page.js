@@ -384,12 +384,12 @@ run('a request with no headers object at all does not crash the listener', () =>
 
 // ---------------------------------------------------------- the PNG export
 
-function exportSetup(theme) {
+function exportSetup(theme, streak = '2') {
   const btn = makeElement({
     dataset: {
       year: '2026', user: 'timo', topsong: 'Aruarian Dance', topartist: 'Nujabes',
       topalbum: 'Modal Soul', peakday: '2026-03-01', peakplays: '120',
-      discoveredsongs: '340', discoveredartists: '58',
+      discoveredsongs: '340', discoveredartists: '58', streak,
     },
   });
   btn.selectors = ['#exportWrappedBtn'];
@@ -411,6 +411,14 @@ run('the card is drawn in the active theme', () => {
 
   assert.ok(page.canvas.gradient.includes('#0b3c1d'), page.canvas.gradient.join());
   assert.ok(page.canvas.fills.includes('#1DB954'), 'the green accent, not the default rose');
+});
+
+run('the exported card uses the grammatical streak unit', () => {
+  for (const [streak, unit] of [['0', 'days'], ['1', 'day'], ['2', 'days']]) {
+    const page = exportSetup('theme-rose', streak);
+
+    assert.ok(page.canvas.texts.includes(streak + ' ' + unit));
+  }
 });
 
 run('an unknown theme falls back to the default rather than drawing nothing', () => {
