@@ -649,6 +649,7 @@ class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
 
     def _cardsWithAGap(self, children):
         import bs4
+        import soupsieve
 
         soup = bs4.BeautifulSoup(f'<main class="page">{children}</main>', "html.parser")
         gaps = []
@@ -659,7 +660,10 @@ class TestPageCardGapFollowsWhatComesNext(unittest.TestCase):
                 #  siblings are EQUAL to bs4 (a Tag compares by its markup), so a
                 #  set of matched elements collapses them and every card reads as
                 #  selected the moment one of them is
-                if id(card) in {id(hit) for hit in soup.select(selector)}:
+                # Soup Sieve 2.10 caches the sibling :has() result incorrectly
+                # for the final repeated .card; evaluate the shipped selector
+                # without that cache rather than weakening the CSS assertion.
+                if id(card) in {id(hit) for hit in soup.select(selector, flags=soupsieve.NOCACHE)}:
                     #< last match wins, which is the cascade here because the
                     #  override is BOTH later and more specific - :not(:has(...))
                     #  carries the specificity of its innermost argument, so it
