@@ -1068,6 +1068,32 @@ class PlayQueries:
         params += [firstListenStartTs, firstListenEndTs]
         return " HAVING MIN(p.played_at) >= ? AND MIN(p.played_at) < ?"
 
+    def getTopArtistIds(self, username: str, limit: int | None) -> list[str]:
+        """All-time play-ranked ids for Discover's exclusion list.
+
+        Same counts and tie order as getArtistAggregates(sortBy="plays"),
+        without metadata, first-listen dates or canonical unique-song counts
+        that Discover never uses. Every credited artist counts, as on Top
+        Artists; recommendation candidates use their own distinct-play count."""
+        rows = self._conn().execute(
+            """
+            WITH agg AS (
+                SELECT ta.artist_id, COUNT(*) AS plays,
+                       SUM(p.time_played) AS total_time_listened
+                FROM plays p
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                WHERE p.username = ? AND p.is_skip = 0
+                GROUP BY ta.artist_id
+            )
+            SELECT ar.id
+            FROM agg JOIN artists ar ON ar.id = agg.artist_id
+            ORDER BY plays DESC, total_time_listened DESC, ar.name COLLATE NOCASE ASC, ar.id ASC
+            LIMIT ?
+            """,
+            (username, -1 if limit is None else limit),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
                              sortBy: str = "plays", limit: int | None = None, offset: int = 0,

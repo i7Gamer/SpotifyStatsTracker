@@ -1165,7 +1165,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         topGenres = list(self.getGenreDistribution(limit=genrePool).keys())
         if not topGenres:
             return []
-        topArtistIds = [artist["id"] for artist in self.getTopArtists(by="plays", limit=excludeTopN)]
+        topArtistIds = self.repo.getTopArtistIds(self.user, excludeTopN)
         return self.repo.getArtistsByGenres(self.user, topGenres, topArtistIds, limit)
 
     def _genreNames(self, rows, includeInherited) -> list[str]:

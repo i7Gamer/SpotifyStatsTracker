@@ -41,6 +41,12 @@ class GenreQueries:
         Database._resolveIncludeInherited, which owns that fallback."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        # All-time GROUP BY otherwise picks user_track to avoid a sort, but
+        # fetching the play rows in track order costs random table reads.
+        # User/time had better row locality in the measured snapshot and was
+        # faster on all users, even with the extra grouping sort.
+        # Leave bounded reads to the planner's range selection.
+        playIndex = " INDEXED BY idx_plays_user_time" if startTs is None and endTs is None else ""
         #< free while nothing is merged: COALESCE(canonical_id, id) is the id
         songKey = "COALESCE(t.canonical_id, t.id)" if self._anyTrackMerges() else "p.track_id"
         params.extend([inherited, inherited])
@@ -48,7 +54,7 @@ class GenreQueries:
             f"""
             WITH played AS (
                 SELECT track_id, COUNT(*) AS cnt
-                FROM plays
+                FROM plays{playIndex}
                 WHERE username = ? AND is_skip = 0{rangeClause}
                 GROUP BY track_id
             ),
@@ -124,19 +130,30 @@ class GenreQueries:
         Last.fm counts tie constantly). A play with N genres counts once per
         genre, the standard reading for tag distributions. Track-level genres
         only: they're the finest granularity, and inherited rows already carry
-        artist genres down to tag-less tracks when the toggle allows."""
-        params: list = [inherited, username]
-        rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
+        artist genres down to tag-less tracks when the toggle allows.
+
+        Count each played release before resolving its canonical genres: the
+        catalog joins then run per distinct release rather than per play.
+        SUM preserves the play weighting, including multiple genres per song."""
+        params: list = [username]
+        rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        params.append(inherited)
         limitClause = ""
         if limit is not None:
             limitClause = " LIMIT ?"
             params.append(limit)
         rows = self._conn().execute(
             f"""
-            SELECT g.genre AS genre, COUNT(*) AS plays
-            FROM plays p
+            WITH played AS (
+                SELECT track_id, COUNT(*) AS cnt
+                FROM plays INDEXED BY idx_plays_user_time
+                WHERE username = ? AND is_skip = 0{rangeClause}
+                GROUP BY track_id
+            )
+            SELECT g.genre AS genre, SUM(p.cnt) AS plays
+            FROM played p
             {self._genreMembershipJoin()}
-            WHERE (? OR g.inherited = 0) AND p.username = ? AND p.is_skip = 0{rangeClause}
+            WHERE (? OR g.inherited = 0)
             GROUP BY g.genre
             ORDER BY plays DESC, g.genre ASC{limitClause}
             """,

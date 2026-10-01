@@ -73,9 +73,8 @@ class TrendQueries:
               -- Only tracks with a recent real play can survive the
               -- `recent_count >= 1` below, so aggregating any others is wasted
               -- work. Restricting the candidates first turns a GROUP BY over
-              -- the user's whole history into one over the handful of tracks
-              -- they have actually played lately (~180ms -> ~0.5ms on a real
-              -- library, on the landing page). The subquery repeats the
+              -- the user's whole history into one over recently played songs.
+              -- The subquery repeats the
               -- is_skip = 0 filter deliberately: a track whose only recent
               -- plays are skips has recent_count 0 and must stay excluded, the
               -- same as before (see test_rediscovery_excludes_skips).
@@ -85,10 +84,17 @@ class TrendQueries:
               -- release's rows are dropped from the aggregate, and old_count /
               -- max_old_played_at lie about the song's history. A song
               -- rediscovered VIA a different release is still a rediscovery.
-              AND COALESCE(t.canonical_id, t.id) IN (
-                  SELECT COALESCE(t2.canonical_id, t2.id) FROM plays p2
-                  JOIN tracks t2 ON t2.id = p2.track_id
-                  WHERE p2.username = ? AND p2.is_skip = 0 AND p2.played_at >= ?
+              -- Expand those canonicals to every release id BEFORE reading
+              -- history. A predicate on t.canonical_id alone still walks all
+              -- the user's plays; plays.track_id lets user_track seek only
+              -- the candidates without losing any sibling's old listens.
+              AND plays.track_id IN (
+                  SELECT eligible.id FROM tracks eligible
+                  WHERE COALESCE(eligible.canonical_id, eligible.id) IN (
+                      SELECT COALESCE(t2.canonical_id, t2.id) FROM plays p2
+                      JOIN tracks t2 ON t2.id = p2.track_id
+                      WHERE p2.username = ? AND p2.is_skip = 0 AND p2.played_at >= ?
+                  )
               )
             GROUP BY COALESCE(t.canonical_id, t.id)   -- see the note above
             HAVING recent_count >= 1
@@ -151,10 +157,14 @@ class TrendQueries:
                   -- week's plays, so a song first heard half a year ago reads
                   -- as discovered days ago. First heard is a property of the
                   -- SONG, which is exactly what the merge group is.
-                  AND COALESCE(t.canonical_id, t.id) IN (
-                      SELECT COALESCE(t2.canonical_id, t2.id) FROM plays p2
-                      JOIN tracks t2 ON t2.id = p2.track_id
-                      WHERE p2.username = ? AND p2.is_skip = 0 AND p2.played_at >= ?
+                  -- Expand to release ids for the same indexed history seeks.
+                  AND plays.track_id IN (
+                      SELECT eligible.id FROM tracks eligible
+                      WHERE COALESCE(eligible.canonical_id, eligible.id) IN (
+                          SELECT COALESCE(t2.canonical_id, t2.id) FROM plays p2
+                          JOIN tracks t2 ON t2.id = p2.track_id
+                          WHERE p2.username = ? AND p2.is_skip = 0 AND p2.played_at >= ?
+                      )
                   )
                   -- The obsession is usually a new track played hard, which
                   -- would put the same song in two adjacent cards. Compared on
