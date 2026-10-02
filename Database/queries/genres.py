@@ -10,6 +10,10 @@ try:
 except ModuleNotFoundError:
     from lastfm import foldStylizedArtistName
 
+# Raw plays conservatively bound distinct non-skip releases. Above this
+# measured budget, global membership sets beat five seeks per release.
+GENRE_COVERAGE_PROBE_MAX_PLAYS = 5000
+
 
 class GenreQueries:
     """GenreQueries: genres data-access methods, mixed into Repository."""
@@ -20,14 +24,17 @@ class GenreQueries:
         and, per category, how many of them had a genre. Database.getGenreCoverage
         turns these into percentages.
 
-        Coverage as set membership: materialize each "has a (filtered) genre" id
-        set once, then probe this user's distinct played tracks against them. The
-        previous form fired 5 correlated EXISTS subqueries per distinct track
+        Large ranges use set membership: materialize each "has a genre" id
+        set once, then probe this user's distinct played tracks against them.
+        All-time correlated EXISTS fired 5 subqueries per distinct track
         (~87k index probes on a large library); this scans the three small genre
         tables once and joins, ~48% faster for identical output. tracks is
         LEFT-joined so a play whose track row is missing still counts toward the
         denominator (it just can't be album/artist covered), matching the old
-        plays-only outer scan.
+        plays-only outer scan. Small bounded ranges instead use indexed EXISTS
+        to avoid scanning the global genre tables. A capped covering-index
+        probe selects that path by raw-play count, including skips; date span
+        alone cannot distinguish a tiny window from a bounded whole history.
 
         The two TRACK sets are probed by the same key the genre stats read
         their rows under - the canonical once anything is merged, see
@@ -41,6 +48,18 @@ class GenreQueries:
         Database._resolveIncludeInherited, which owns that fallback."""
         params: list = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="played_at")
+        useSeeks = False
+        if startTs is not None or endTs is not None:
+            probe = self._conn().execute(
+                f"""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM plays INDEXED BY idx_plays_user_time
+                    WHERE username = ?{rangeClause} LIMIT ?
+                )
+                """,
+                [*params, GENRE_COVERAGE_PROBE_MAX_PLAYS + 1],
+            ).fetchone()[0]
+            useSeeks = probe <= GENRE_COVERAGE_PROBE_MAX_PLAYS
         # All-time GROUP BY otherwise picks user_track to avoid a sort, but
         # fetching the play rows in track order costs random table reads.
         # User/time had better row locality in the measured snapshot and was
@@ -50,8 +69,7 @@ class GenreQueries:
         #< free while nothing is merged: COALESCE(canonical_id, id) is the id
         songKey = "COALESCE(t.canonical_id, t.id)" if self._anyTrackMerges() else "p.track_id"
         params.extend([inherited, inherited])
-        row = self._conn().execute(
-            f"""
+        query = f"""
             WITH played AS (
                 SELECT track_id, COUNT(*) AS cnt
                 FROM plays{playIndex}
@@ -78,9 +96,35 @@ class GenreQueries:
             LEFT JOIN covered_albums  ca  ON ca.album_id   = t.album_id
             LEFT JOIN own_albums      oa  ON oa.album_id   = t.album_id
             LEFT JOIN covered_artists car ON car.artist_id = ta.artist_id
-            """,
-            params,
-        ).fetchone()
+            """
+        if useSeeks:
+            query = f"""
+                WITH played AS (
+                    SELECT track_id, COUNT(*) AS cnt FROM plays
+                    WHERE username = ? AND is_skip = 0{rangeClause}
+                    GROUP BY track_id
+                )
+                SELECT COALESCE(SUM(p.cnt), 0) AS total,
+                    COALESCE(SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM track_genres g WHERE g.track_id = {songKey}
+                        AND (? OR g.inherited = 0)) THEN p.cnt ELSE 0 END), 0) AS song_covered,
+                    COALESCE(SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM album_genres g WHERE g.album_id = t.album_id
+                        AND (? OR g.inherited = 0)) THEN p.cnt ELSE 0 END), 0) AS album_covered,
+                    COALESCE(SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM artist_genres g WHERE g.artist_id = ta.artist_id)
+                        THEN p.cnt ELSE 0 END), 0) AS artist_covered,
+                    COALESCE(SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM track_genres g WHERE g.track_id = {songKey}
+                        AND g.inherited = 0) THEN p.cnt ELSE 0 END), 0) AS song_own,
+                    COALESCE(SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM album_genres g WHERE g.album_id = t.album_id
+                        AND g.inherited = 0) THEN p.cnt ELSE 0 END), 0) AS album_own
+                FROM played p
+                LEFT JOIN tracks t ON t.id = p.track_id
+                LEFT JOIN track_artists ta ON ta.track_id = p.track_id AND ta.position = 0
+            """
+        row = self._conn().execute(query, params).fetchone()
         return dict(row)
 
     def _genreMembershipJoin(self, merged: bool | None = None) -> str:

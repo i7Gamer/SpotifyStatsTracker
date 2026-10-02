@@ -371,8 +371,61 @@ class TestSortableScope(CompareHtmxTestCase):
         observable via the trend series queries never running."""
         self._sortable()
 
-        self.dbs["alice"].getListeningTimeSeries.assert_not_called()
-        self.dbs["bob"].getListeningTimeSeries.assert_not_called()
+        for username in ("alice", "bob"):
+            for method in ("getListeningTimeSeries", "getCompletionStats", "getExplicitRatio",
+                           "getHourOfDayHeatmap", "getSongsCount", "getArtistsCount"):
+                getattr(self.dbs[username], method).assert_not_called()
+
+    def test_sortable_queries_only_the_displayed_head_at_the_selected_metric(self):
+        from config import WRAPPED_LIMIT_OPTIONS
+
+        client = self._loginAs()
+        for limit in WRAPPED_LIMIT_OPTIONS:
+            for sort in ("plays", "name", "totalTimeListened"):
+                with self.subTest(limit=limit, sort=sort):
+                    for db in self.dbs.values():
+                        db.reset_mock()
+                    response = client.get("/compare?" + urlencode({"scope": COMPARE_SORTABLE_SCOPE,
+                                          "interval": "", "limit": limit, "sortBy": sort}), headers=HX_HEADERS)
+                    self.assertEqual(response.status_code, 200)
+                    for username in ("alice", "bob"):
+                        db = self.dbs[username]
+                        db.getPlayTotals.assert_called_once_with(None, None)
+                        expected = {"limit": limit}
+                        if sort == "totalTimeListened":
+                            expected["by"] = sort
+                        for method in ("getTopSongs", "getTopArtists", "getTopAlbums"):
+                            getattr(db, method).assert_called_once_with(None, None, **expected)
+
+    def test_sortable_lists_match_full_refresh_for_all_limits_sorts_and_ranges(self):
+        from config import WRAPPED_LIMIT_OPTIONS
+        from bs4 import BeautifulSoup
+
+        poolSize = 120
+        for username in ("alice", "bob"):
+            db = self.dbs[username]
+            db.getPlayTotals.return_value = (1000, 1000000)
+            rows = [{"id": f"item{i}", "name": f"Name {poolSize-i:03}", "artists": [],
+                     "duration": 60000, "plays": poolSize-i, "totalTimeListened": (i+1)*1000,
+                     "firstListenedAt": 1000, "uniqueSongCount": 1} for i in range(poolSize)]
+            # The selected metric changes membership, not just presentation.
+            def query(*args, limit, by="plays"):
+                return sorted(rows, key=lambda r: r[by], reverse=True)[:limit]
+            for method in ("getTopSongs", "getTopArtists", "getTopAlbums"):
+                getattr(db, method).side_effect = query
+            db.getPlayedTrackIds.return_value = {"item0"}
+            db.getPlayedArtistIds.return_value = {"item0"}
+            db.getPlayedAlbumIds.return_value = {"item0"}
+        client = self._loginAs()
+        for limit in WRAPPED_LIMIT_OPTIONS:
+            for sort in ("plays", "name", "totalTimeListened"):
+                for interval in ("", "month"):
+                    with self.subTest(limit=limit, sort=sort, interval=interval):
+                        url = "/compare?" + urlencode({"interval": interval, "limit": limit, "sortBy": sort})
+                        full = BeautifulSoup(self._fragment(url, client), "html.parser")
+                        narrow = BeautifulSoup(self._fragment(url+"&scope=sortable", client), "html.parser")
+                        for region in SORTABLE_REGION_IDS + ("compareUserBadges",):
+                            self.assertEqual(narrow.find(id=region), full.find(id=region))
 
     def test_an_unknown_scope_still_degrades_to_the_full_refresh(self):
         """Only the exact scope the frontend sends narrows the response."""

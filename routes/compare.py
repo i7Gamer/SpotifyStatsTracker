@@ -209,8 +209,10 @@ def register(app, dashboard):
                 comparisonTrend=EMPTY_COMPARISON_TREND,
             )
 
-        my = dashboard._gatherCompareStats(db, startDate, endDate, limit=limit, sortBy=sortBy)
-        their = dashboard._gatherCompareStats(otherDb, startDate, endDate, limit=limit, sortBy=sortBy)
+        sortableOnly = request.args.get("scope") == COMPARE_SORTABLE_SCOPE
+        gather = dashboard._gatherCompareSortableStats if sortableOnly else dashboard._gatherCompareStats
+        my = gather(db, startDate, endDate, limit=limit, sortBy=sortBy)
+        their = gather(otherDb, startDate, endDate, limit=limit, sortBy=sortBy)
 
         # A counterpart item links to Spotify only when the viewer has NO
         # plays of that exact song/artist/album - the viewer's own detail
@@ -240,7 +242,7 @@ def register(app, dashboard):
         # - the shared lists, similarities, genres, taste match and trend below
         # are the expensive half on long ranges and would render identically
         # anyway. Any other scope value degrades to the full refresh.
-        if request.args.get("scope") == COMPARE_SORTABLE_SCOPE:
+        if sortableOnly:
             # The scope marker is transport, not page state, and hx-replace-url
             # writes back the URL that was REQUESTED - so without this the
             # address bar (and every link copied from it) would carry

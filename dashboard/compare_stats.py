@@ -11,6 +11,33 @@ from config import COMPARE_OVERLAP_POOL_SIZE, COMPARE_SHARED_POOL_SIZE, COMPARE_
 class CompareStatsMixin:
     """Compare-page per-user stat gathering and shared/common-item building."""
 
+    def _gatherCompareSortableStats(self, db, startDate, endDate, limit=COMPARE_TOP_LIST_SIZE,
+                                   sortBy="plays") -> dict:
+        """Only the displayed lists for a sort swap, with the full page's semantics.
+
+        No shared/taste-match pools or summary statistics are consumed by this
+        fragment. Name still alphabetizes the plays-ranked head, while other
+        metrics select their own head. Keep the same embeds and live genres.
+        """
+        totalPlays, totalMs = db.getPlayTotals(startDate, endDate)
+
+        def display(query):
+            if sortBy in ("plays", "name"):
+                rows = query(startDate, endDate, limit=min(limit, COMPARE_OVERLAP_POOL_SIZE))
+                return self._resortByMetric(rows, "name") if sortBy == "name" else rows
+            return query(startDate, endDate, limit=limit, by=sortBy)
+
+        songs = self._embedTopSongsTextElements(
+            self._embedSongsTextElements(display(db.getTopSongs)),
+            sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        artists = self._embedArtistsTextElements(
+            display(db.getTopArtists), sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        albums = self._embedAlbumsTextElements(
+            display(db.getTopAlbums), sortBy=sortBy, totalPlays=totalPlays, totalMs=totalMs)
+        return {"topSongs": self._attachGenres(db, songs, "track"),
+                "topArtists": self._attachGenres(db, artists, "artist"),
+                "topAlbums": self._attachGenres(db, albums, "album")}
+
     def _gatherCompareStats(self, db, startDate, endDate, limit=COMPARE_TOP_LIST_SIZE, sortBy="plays") -> dict:
         """One Compare-page side's stats, gathered identically for the viewer
         and the counterpart so the two columns can't drift apart. Runs the
