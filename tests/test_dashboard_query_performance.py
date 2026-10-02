@@ -10,6 +10,7 @@ class DashboardQueryPerformanceTestCase(DatabaseTestCase):
     NOW = 2_000_000_000
     OLD_DAYS = 200
     PLAY_MS = 200_000
+    ORPHAN_PLAYS = 5
 
     def _catalog(self):
         tracks = {
@@ -135,6 +136,38 @@ class DashboardQueryPerformanceTestCase(DatabaseTestCase):
         self.assertEqual(repo.getTopArtistIds(db.user, None), ["a2", "a1"])
         self.assertEqual(repo.getTopArtistIds(db.user, None),
                          [row["id"] for row in repo.getArtistAggregates(db.user)])
+
+    def test_artist_ids_preserve_merge_gated_orphan_exclusion_and_ranking(self):
+        db = self._catalog()
+        repo = db.repo
+        conn = repo._conn()
+        for offset in range(self.ORPHAN_PLAYS):
+            repo.insertPlay(db.user, "member", self.NOW + offset, self.PLAY_MS)
+        repo.upsertUser("orphanuser", "orphan@example.com")
+        repo.insertPlay("orphanuser", "member", self.NOW, self.PLAY_MS)
+        repo.insertPlay(db.user, "canonical", self.NOW, self.PLAY_MS)
+        for offset in range(2):
+            repo.insertPlay(db.user, "other", self.NOW + offset, self.PLAY_MS)
+        repo.commit()
+        # Deliberately corrupt only this disposable fixture. Its surviving
+        # play/credit rows must be treated exactly as the full ranking does.
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DELETE FROM tracks WHERE id='member'")
+        repo.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        for merged in (False, True):
+            if merged:
+                # Even a merge unrelated to these plays changes the old path.
+                conn.execute("UPDATE tracks SET canonical_id='fourth' WHERE id='third'")
+                repo.commit()
+            expected = ["a2", "a1"] if merged else ["a1", "a2"]
+            self.assertEqual(repo.getTopArtistIds("orphanuser", None), [] if merged else ["a1"])
+            for limit in (None, -1, 0, 1, len(expected)):
+                with self.subTest(merged=merged, limit=limit):
+                    reference = [row["id"] for row in repo.getArtistAggregates(db.user, limit=limit)]
+                    self.assertEqual(reference, expected if limit is None or limit < 0 else expected[:limit])
+                    self.assertEqual(repo.getTopArtistIds(db.user, limit), reference)
+        self.assertEqual(repo.getTopArtistIds("empty", None), [])
 
     def test_discover_uses_lightweight_ranking_without_hydrating_top_artists(self):
         db = self._catalog()

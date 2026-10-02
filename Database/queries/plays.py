@@ -1074,15 +1074,18 @@ class PlayQueries:
         Same counts and tie order as getArtistAggregates(sortBy="plays"),
         without metadata, first-listen dates or canonical unique-song counts
         that Discover never uses. Every credited artist counts, as on Top
-        Artists; recommendation candidates use their own distinct-play count."""
+        Artists; recommendation candidates use their own distinct-play count.
+        When any merge exists, retain the full ranking's missing-track
+        exclusion without fetching canonical metadata for every play."""
+        trackExists = " AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = p.track_id)" if self._anyTrackMerges() else ""
         rows = self._conn().execute(
-            """
+            f"""
             WITH agg AS (
                 SELECT ta.artist_id, COUNT(*) AS plays,
                        SUM(p.time_played) AS total_time_listened
                 FROM plays p
                 JOIN track_artists ta ON ta.track_id = p.track_id
-                WHERE p.username = ? AND p.is_skip = 0
+                WHERE p.username = ? AND p.is_skip = 0{trackExists}
                 GROUP BY ta.artist_id
             )
             SELECT ar.id
