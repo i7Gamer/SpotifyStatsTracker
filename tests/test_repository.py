@@ -2087,6 +2087,120 @@ class TestStatsAggregates(RepositoryTestCase):
 
         self.assertEqual(self.repo.getArtistsCount("alice"), 2)
 
+    def test_all_time_artist_count_uses_hinted_release_membership_and_retains_credit_rules(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1", "a2", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "skipped"))
+        self.repo.insertPlay("alice", "t1", 100, 1000)
+        self.repo.insertPlay("alice", "t1", 200, 1000)
+        self.repo.insertPlay("alice", "t2", 300, 1000, is_skip=1)
+        self.repo.insertPlay("bob", "t2", 400, 1000)
+        conn = self.repo._conn()
+        self.repo.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")  # Deliberately corrupt disposable fixture.
+        conn.execute("INSERT INTO track_artists(track_id,artist_id,position) VALUES ('t1','missing',9)")
+        self.repo.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        statements = []
+        conn.set_trace_callback(statements.append)
+        try:
+            self.assertEqual(self.repo.getArtistsCount("alice"), 2)
+            self.assertEqual(self.repo.getArtistsCount("empty"), 0)
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(len(statements), 2)
+        for sql in statements:
+            self.assertIn("INDEXED BY idx_plays_user_time", sql)
+            self.assertIn("SELECT DISTINCT p.track_id", sql)
+
+    def test_filtered_artist_counts_keep_their_existing_query(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100, 200000)
+        self.repo.commit()
+        filters = ({"startTs": 0}, {"endTs": 200}, {"searchQuery": "a1"},
+                   {"artistIds": ["a1"]}, {"artistIds": []}, {"fullPlaysOnly": True})
+        for kwargs in filters:
+            with self.subTest(kwargs=kwargs):
+                statements = []
+                conn = self.repo._conn()
+                conn.set_trace_callback(statements.append)
+                try:
+                    result = self.repo.getArtistsCount("alice", **kwargs)
+                finally:
+                    conn.set_trace_callback(None)
+                self.assertEqual(result, 0 if kwargs == {"artistIds": []} else 1)
+                self.assertFalse(any("INDEXED BY idx_plays_user_time" in sql for sql in statements))
+
+    def test_dashboard_top_artist_matches_full_rows_with_merges_credits_skips_and_ties(self):
+        self.repo.upsertUser("bob", "bob@example.com")
+        for trackId, artistIds in (("t1", ("a1", "a2", "a1")), ("t2", ("a1",)),
+                                  ("t3", ("a3",)), ("skip", ("a4",))):
+            self.repo.upsertTrack(self._track(trackId, "alb1", *artistIds))
+        for trackId, stamp, duration, skip in (("t1", 100, 1000, 0), ("t2", 200, 1000, 0),
+                                              ("t3", 300, 3000, 0), ("skip", 400, 99999, 1)):
+            self.repo.insertPlay("alice", trackId, stamp, duration, is_skip=skip)
+        self.repo.insertPlay("bob", "skip", 500, 99999)
+        conn = self.repo._conn()
+        self.repo.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("UPDATE artists SET name='Same' WHERE id IN ('a1','a3')")
+        conn.execute("INSERT INTO track_artists(track_id,artist_id,position) VALUES ('t3','missing',9)")
+        self.repo.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        # a1 and a3 tie on time/name; id selects a1 despite a3's fewer plays.
+        for merged in (False, True):
+            with self.subTest(merged=merged):
+                if merged:
+                    conn.execute("UPDATE tracks SET canonical_id='t1' WHERE id='t2'")
+                    self.repo.commit()
+                expected = self.repo.getArtistAggregates("alice", sortBy="totalTimeListened", limit=1)
+                actual = self.repo.getDashboardTopArtist("alice")
+                self.assertEqual(actual, expected)
+                self.assertEqual(actual[0]["id"], "a1")
+                self.assertEqual(actual[0]["plays"], 3)
+                self.assertEqual(actual[0]["uniqueSongCount"], 1 if merged else 2)
+                self.assertEqual(actual[0]["firstListenedAt"], 100)
+                self.assertEqual(self.repo.getDashboardTopArtist("empty"), [])
+                self.assertEqual(self.repo.getDashboardTopArtist("bob"),
+                                 self.repo.getArtistAggregates("bob", sortBy="totalTimeListened", limit=1))
+
+    def test_dashboard_top_artist_preserves_missing_track_exclusion_only_when_merged(self):
+        self.repo.upsertTrack(self._track("orphan", "alb1", "a1"))
+        self.repo.upsertTrack(self._track("t2", "alb1", "a2"))
+        self.repo.upsertTrack(self._track("t3", "alb1", "a2"))
+        self.repo.insertPlay("alice", "orphan", 100, 10000)
+        self.repo.insertPlay("alice", "t2", 200, 1000)
+        conn = self.repo._conn()
+        self.repo.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DELETE FROM tracks WHERE id='orphan'")
+        self.repo.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        for merged in (False, True):
+            with self.subTest(merged=merged):
+                if merged:
+                    conn.execute("UPDATE tracks SET canonical_id='t2' WHERE id='t3'")
+                    self.repo.commit()
+                expected = self.repo.getArtistAggregates("alice", sortBy="totalTimeListened", limit=1)
+                self.assertEqual(self.repo.getDashboardTopArtist("alice"), expected)
+                self.assertEqual(expected[0]["id"], "a2" if merged else "a1")
+
+    def test_dashboard_top_artist_ranks_and_hydrates_in_one_statement(self):
+        self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
+        self.repo.insertPlay("alice", "t1", 100, 1000)
+        self.repo.commit()
+        statements = []
+        conn = self.repo._conn()
+        conn.set_trace_callback(statements.append)
+        try:
+            self.repo.getDashboardTopArtist("alice")
+        finally:
+            conn.set_trace_callback(None)
+        reads = [sql for sql in statements if "FROM plays" in sql]
+        self.assertEqual(len(reads), 1)
+        # Unique-song counting must be confined to the winner, after ranking.
+        self.assertIn("winner", reads[0])
+
     def test_get_artists_count_filtered_by_search_query(self):
         self.repo.upsertTrack(self._track("t1", "alb1", "a1"))
         self.repo.upsertTrack(self._track("t2", "alb1", "a2"))

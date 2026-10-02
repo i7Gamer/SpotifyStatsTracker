@@ -1068,6 +1068,35 @@ class PlayQueries:
         params += [firstListenStartTs, firstListenEndTs]
         return " HAVING MIN(p.played_at) >= ? AND MIN(p.played_at) < ?"
 
+    def getTopArtistIds(self, username: str, limit: int | None) -> list[str]:
+        """All-time play-ranked ids for Discover's exclusion list.
+
+        Same counts and tie order as getArtistAggregates(sortBy="plays"),
+        without metadata, first-listen dates or canonical unique-song counts
+        that Discover never uses. Every credited artist counts, as on Top
+        Artists; recommendation candidates use their own distinct-play count.
+        When any merge exists, retain the full ranking's missing-track
+        exclusion without fetching canonical metadata for every play."""
+        trackExists = " AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = p.track_id)" if self._anyTrackMerges() else ""
+        rows = self._conn().execute(
+            f"""
+            WITH agg AS (
+                SELECT ta.artist_id, COUNT(*) AS plays,
+                       SUM(p.time_played) AS total_time_listened
+                FROM plays p
+                JOIN track_artists ta ON ta.track_id = p.track_id
+                WHERE p.username = ? AND p.is_skip = 0{trackExists}
+                GROUP BY ta.artist_id
+            )
+            SELECT ar.id
+            FROM agg JOIN artists ar ON ar.id = agg.artist_id
+            ORDER BY plays DESC, total_time_listened DESC, ar.name COLLATE NOCASE ASC, ar.id ASC
+            LIMIT ?
+            """,
+            (username, -1 if limit is None else limit),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     def getArtistAggregates(self, username: str, startTs: float | None = None,
                              endTs: float | None = None, artistId: str | None = None,
                              sortBy: str = "plays", limit: int | None = None, offset: int = 0,
@@ -1162,6 +1191,51 @@ class PlayQueries:
             for r in rows
         ]
 
+    def getDashboardTopArtist(self, username: str) -> list[dict]:
+        """All-time listening-time winner, counting unique songs only for it.
+
+        Broader/ranged lists retain getArtistAggregates: deferred counting was
+        slower there. Rank and count in one statement so an import cannot
+        change the winner between those reads. The merge branch retains the
+        existing aggregate's exclusion of missing track rows, including when
+        a different artist would otherwise win on those orphan plays.
+        """
+        tsongJoin, uniqueSongCount = self._uniqueSongCountSql()
+        trackExists = " AND EXISTS (SELECT 1 FROM tracks t WHERE t.id = p.track_id)" if tsongJoin else ""
+        rows = self._conn().execute(
+            f"""
+            WITH agg AS (
+                SELECT ta.artist_id, COUNT(*) AS plays,
+                       SUM(p.time_played) AS total_time_listened,
+                       MIN(p.played_at) AS first_listened_at
+                FROM plays p JOIN track_artists ta ON ta.track_id = p.track_id
+                WHERE p.username = ? AND p.is_skip = 0{trackExists}
+                GROUP BY ta.artist_id
+            ), winner AS (
+                SELECT ar.id, ar.name, ar.url, ar.image_id,
+                       agg.plays, agg.total_time_listened, agg.first_listened_at
+                FROM agg JOIN artists ar ON ar.id = agg.artist_id
+                ORDER BY total_time_listened DESC, ar.name COLLATE NOCASE ASC, ar.id ASC
+                LIMIT 1
+            )
+            SELECT winner.*,
+                (SELECT {uniqueSongCount}
+                 FROM plays p JOIN track_artists ta ON ta.track_id = p.track_id{tsongJoin}
+                 WHERE p.username = ? AND p.is_skip = 0 AND ta.artist_id = winner.id
+                   AND p.track_id IN (
+                       SELECT ta_ts.track_id FROM track_artists ta_ts WHERE ta_ts.artist_id = winner.id
+                   )) AS unique_song_count
+            FROM winner
+            """,
+            (username, username),
+        ).fetchall()
+        return [
+            {"id": r["id"], "name": r["name"], "url": r["url"], "imageUrl": "", "imageId": r["image_id"],
+             "plays": r["plays"], "totalTimeListened": r["total_time_listened"],
+             "uniqueSongCount": r["unique_song_count"], "firstListenedAt": r["first_listened_at"]}
+            for r in rows
+        ]
+
     def getArtistsCount(self, username: str, startTs: float | None = None, endTs: float | None = None,
                          searchQuery: str | None = None, artistIds: list[str] | None = None,
                          fullPlaysOnly: bool = False) -> int:
@@ -1171,6 +1245,24 @@ class PlayQueries:
         on getArtistAggregates(). `fullPlaysOnly` mirrors getArtistAggregates()'s
         param of the same name."""
         conn = self._conn()
+        if (startTs is None and endTs is None and not searchQuery
+                and artistIds is None and not fullPlaysOnly):
+            # Enumerate credits once per played release, not once per play.
+            # The time index avoids the measured random-read regression from
+            # scanning this user's plays in track order. Keep the artists join
+            # so dangling credits are excluded just as in the filtered path.
+            row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT ta.artist_id) AS c FROM track_artists ta
+                JOIN artists ar ON ar.id = ta.artist_id
+                WHERE ta.track_id IN (
+                    SELECT DISTINCT p.track_id FROM plays p INDEXED BY idx_plays_user_time
+                    WHERE p.username = ? AND p.is_skip = 0
+                )
+                """,
+                (username,),
+            ).fetchone()
+            return row["c"]
         params = [username]
         rangeClause = self._dateRangeClause(params, startTs, endTs, column="p.played_at")
         searchClause = ""

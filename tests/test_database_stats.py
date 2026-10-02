@@ -170,6 +170,22 @@ class TestGetOverallStats(DatabaseTestCase):
         self.assertEqual(stats["totalSongsPlayed"], 0)
         self.assertEqual(stats["totalDurationMs"], 0)
 
+    def test_all_time_headline_uses_focused_artist_query_but_dated_views_do_not(self):
+        tracks, entries = self._sampleData()
+        db = self._makeDb(tracks, entries)
+        expected = db.getTopArtists(by="totalTimeListened", limit=1)
+        with patch.object(db.repo, "getDashboardTopArtist", wraps=db.repo.getDashboardTopArtist) as headline:
+            self.assertEqual(db.getOverallStats()["currentTopArtists"], expected)
+            headline.assert_called_once_with("testuser")
+            epoch = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
+            end = datetime.datetime.fromtimestamp(1000, datetime.timezone.utc)
+            for startDate, endDate in ((epoch, None), (None, end), (epoch, end)):
+                headline.reset_mock()
+                result = db.getOverallStats(startDate, endDate)
+                self.assertEqual(result["currentTopArtists"],
+                                 db.getTopArtists(startDate, endDate, by="totalTimeListened", limit=1))
+                headline.assert_not_called()
+
     def test_play_at_period_boundary_is_not_double_counted(self):
         """_getDateRange documents its result as the half-open interval
         [startDate, endDate) - the previous period is computed as

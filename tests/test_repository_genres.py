@@ -834,6 +834,78 @@ class GenreCoverageTestCase(DatabaseTestCase):
                              {"covered": 0, "total": 0, "percent": 0.0, "ownPercent": 0.0})
         self.assertEqual(coverage["overall"]["percent"], 0.0)
 
+    def _coverageTrace(self, repo, inherited, start=None, end=None):
+        statements = []
+        conn = repo._conn()
+        conn.set_trace_callback(lambda sql: statements.append(" ".join(sql.split())))
+        try:
+            result = repo.getGenreCoverageCounts("testuser", inherited, start, end)
+        finally:
+            conn.set_trace_callback(None)
+        return result, statements
+
+    def test_small_bounded_ranges_seek_genres_and_keep_all_time_materialized(self):
+        db = self._db()
+        for inherited in (0, 1):
+            expected, allTime = self._coverageTrace(db.repo, inherited)
+            self.assertTrue(any("covered_tracks AS" in sql for sql in allTime))
+            self.assertFalse(any("LIMIT 5001" in sql for sql in allTime))
+            for start, end in ((0, None), (None, 5000), (0, 5000)):
+                with self.subTest(inherited=inherited, start=start, end=end):
+                    result, statements = self._coverageTrace(db.repo, inherited, start, end)
+                    self.assertEqual(result, expected)
+                    self.assertTrue(any("EXISTS" in sql and "FROM track_genres" in sql for sql in statements))
+                    guard = next(sql for sql in statements if "LIMIT 5001" in sql)
+                    plan = db.repo._conn().execute("EXPLAIN QUERY PLAN " + guard).fetchall()
+                    self.assertTrue(any("COVERING INDEX idx_plays_user_time" in r["detail"] for r in plan))
+
+    def test_probe_budget_counts_skips_and_falls_back_at_5001_raw_plays(self):
+        budget = 5000
+        db = self._db()
+        conn = db.repo._conn()
+        conn.executemany("INSERT INTO plays(username,track_id,played_at,time_played,is_skip) VALUES (?,?,?,?,1)",
+                         (("testuser", "t1", 5000+i, 0) for i in range(budget-4)))
+        db.repo.commit()
+        expected = db.repo.getGenreCoverageCounts("testuser", 1)
+        small, statements = self._coverageTrace(db.repo, 1, 0)
+        self.assertEqual(small, expected)
+        self.assertTrue(any("EXISTS" in sql and "FROM track_genres" in sql for sql in statements))
+        conn.execute("INSERT INTO plays(username,track_id,played_at,time_played,is_skip) VALUES (?,?,?,?,1)",
+                     ("testuser", "t1", 20000, 0))
+        db.repo.commit()
+        broad, statements = self._coverageTrace(db.repo, 1, 0)
+        self.assertEqual(broad, expected)
+        self.assertTrue(any("covered_tracks AS" in sql for sql in statements))
+
+    def test_seek_coverage_retains_canonical_songs_release_albums_and_orphan_denominator(self):
+        db = self._db()
+        conn = db.repo._conn()
+        # A merged release keeps its own album; its song reads canonical tags.
+        db.repo.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")  # Deliberately corrupt disposable fixture.
+        conn.execute("UPDATE tracks SET canonical_id='t1' WHERE id='t2'")
+        conn.execute("DELETE FROM tracks WHERE id='t3'")
+        conn.execute("INSERT INTO track_genres(track_id,genre,position,inherited) VALUES ('t1','pop',1,1)")
+        db.repo.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        for inherited in (0, 1):
+            with self.subTest(inherited=inherited):
+                expected = db.repo.getGenreCoverageCounts("testuser", inherited)
+                self.assertEqual(expected["total"], 4)
+                self.assertEqual(expected["song_covered"], 3)
+                self.assertEqual(expected["song_own"], 3)
+                self.assertEqual(expected["album_covered"], 2)
+                result, _ = self._coverageTrace(db.repo, inherited, 0, 5000)
+                self.assertEqual(result, expected)
+
+    def test_seek_coverage_empty_reversed_and_skip_only_ranges_return_zeros(self):
+        db = self._db()
+        db.repo.insertPlay("testuser", "t1", 6000, 0, is_skip=1)
+        db.repo.commit()
+        zeros = dict(total=0, song_covered=0, album_covered=0, artist_covered=0, song_own=0, album_own=0)
+        for start, end in ((5000, 5000), (5000, 0), (6000, 7000)):
+            self.assertEqual(db.repo.getGenreCoverageCounts("testuser", 1, start, end), zeros)
+
 
 class GenreDistributionTestCase(DatabaseTestCase):
     def _db(self):

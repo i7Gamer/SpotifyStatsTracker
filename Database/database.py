@@ -1165,7 +1165,7 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         topGenres = list(self.getGenreDistribution(limit=genrePool).keys())
         if not topGenres:
             return []
-        topArtistIds = [artist["id"] for artist in self.getTopArtists(by="plays", limit=excludeTopN)]
+        topArtistIds = self.repo.getTopArtistIds(self.user, excludeTopN)
         return self.repo.getArtistsByGenres(self.user, topGenres, topArtistIds, limit)
 
     def _genreNames(self, rows, includeInherited) -> list[str]:
@@ -1956,7 +1956,10 @@ class Database(MediaFetchMixin, ImportMixin, WorkerLifecycleMixin):
         # its numbers up. currentTopSongs only needs the single top row.
         totalSongsPlayed, totalDurationMs = self.getPlayTotals(startDate, endDate)
         currentTopSongs = self.getTopSongs(startDate=startDate, endDate=endDate, by="plays", limit=1)
-        currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened", limit=1)
+        if startDate is None and endDate is None:
+            currentTopArtists = self.repo.getDashboardTopArtist(self.user)
+        else:
+            currentTopArtists = self.getTopArtists(startDate=startDate, endDate=endDate, by="totalTimeListened", limit=1)
 
         return {
             "currentTopSongs": currentTopSongs,
